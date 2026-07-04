@@ -18,6 +18,16 @@ from winsdk.windows.storage import StorageFile
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "redaction.toml"
 
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+class OcrUnavailableError(RuntimeError):
+    """Raised when no OCR engine/language pack is available. A redaction
+    engine must never silently skip pattern matching — the caller has to
+    decide how to handle it (e.g. fail the capture, or fall back to
+    UIA-metadata-only redaction for that step), not get an unredacted image
+    with no signal that anything was skipped."""
+
 
 def load_config(config_path=DEFAULT_CONFIG_PATH):
     with open(config_path, "rb") as f:
@@ -34,9 +44,10 @@ def compile_patterns(config):
 def is_password_field(element, config):
     if (element.get("control_type") or "").lower() != "edit":
         return False
-    keywords = config.get("password_heuristic", {}).get("name_contains", [])
+    keywords = {k.lower() for k in config.get("password_heuristic", {}).get("name_contains", [])}
     haystack = f"{element.get('name', '')} {element.get('automation_id', '')}".lower()
-    return any(keyword in haystack for keyword in keywords)
+    tokens = set(_WORD_RE.findall(haystack))
+    return bool(tokens & keywords)
 
 
 async def _ocr_words(image_path):
@@ -46,11 +57,15 @@ async def _ocr_words(image_path):
     bytes — the latter silently produced empty OCR results in testing."""
     file = await StorageFile.get_file_from_path_async(str(image_path))
     stream = await file.open_async(0)  # FileAccessMode.READ
-    decoder = await BitmapDecoder.create_async(stream)
-    bitmap = await decoder.get_software_bitmap_async()
+    try:
+        decoder = await BitmapDecoder.create_async(stream)
+        bitmap = await decoder.get_software_bitmap_async()
+    finally:
+        stream.close()
+
     engine = OcrEngine.try_create_from_user_profile_languages()
     if engine is None:
-        return []
+        raise OcrUnavailableError("no OCR engine available for the user profile's languages")
     result = await engine.recognize_async(bitmap)
     words = []
     for line in result.lines:
@@ -100,7 +115,9 @@ def blur_regions(image_path, regions, out_path=None, radius=12):
 
 def redact_screenshot(image_path, element=None, config=None, out_path=None):
     """Full redaction pass for one screenshot: OCR-matched pattern regions,
-    plus the element's whole bounding box if it looks like a password field."""
+    plus the element's whole bounding box if it looks like a password field.
+    Raises OcrUnavailableError rather than silently skipping pattern
+    matching if no OCR engine is available."""
     config = config or load_config()
     patterns = compile_patterns(config)
     regions = find_pattern_regions(image_path, patterns)

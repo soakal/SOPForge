@@ -4,13 +4,17 @@ manifest element metadata, not OCR — masked password text has no plaintext
 to recognize) is tested separately."""
 
 import numpy as np
+import pytest
 from PIL import Image, ImageDraw
 
+import capture.redact as redact_module
 from capture.redact import (
+    OcrUnavailableError,
     compile_patterns,
     find_pattern_regions,
     is_password_field,
     load_config,
+    ocr_words,
     redact_screenshot,
 )
 
@@ -46,16 +50,45 @@ def test_matched_regions_blurred_others_untouched(tmp_path):
     _render(png, ["Contact: test@example.com", "Server: 192.168.1.1", "Hello World"])
     original = Image.open(png).convert("RGB")
 
+    # A real, non-matching word's OCR box — a blank corner wouldn't prove
+    # anything, since blurring uniform white pixels leaves them unchanged
+    # even if the whole image were (wrongly) blurred.
+    words = ocr_words(png)
+    hello_box = next(box for text, box in words if text.lower().startswith("hello"))
+
     out = tmp_path / "redacted.png"
     regions = redact_screenshot(png, out_path=out)
     assert regions
+    assert hello_box not in [tuple(r) for r in regions]
 
     redacted = Image.open(out).convert("RGB")
     for box in regions:
         assert _mean_abs_diff(original, redacted, box) > 5
+    assert _mean_abs_diff(original, redacted, hello_box) < 0.5
 
-    corner_box = (0, 0, 8, 8)  # clearly outside any matched word
-    assert _mean_abs_diff(original, redacted, corner_box) < 0.5
+
+def test_ocr_unavailable_raises_rather_than_silently_skipping(tmp_path, monkeypatch):
+    png = tmp_path / "shot.png"
+    _render(png, ["Contact: test@example.com"])
+    monkeypatch.setattr(
+        redact_module.OcrEngine,
+        "try_create_from_user_profile_languages",
+        staticmethod(lambda: None),
+    )
+    with pytest.raises(OcrUnavailableError):
+        redact_screenshot(png, out_path=tmp_path / "out.png")
+
+
+def test_in_place_redaction_without_out_path(tmp_path):
+    png = tmp_path / "shot.png"
+    _render(png, ["Contact: test@example.com", "Hello World"])
+    original = Image.open(png).convert("RGB")
+
+    regions = redact_screenshot(png)  # no out_path: write back over the input
+    assert regions
+
+    redacted = Image.open(png).convert("RGB")
+    assert _mean_abs_diff(original, redacted, regions[0]) > 5
 
 
 def test_password_field_blurs_whole_element_regardless_of_ocr(tmp_path):
@@ -97,3 +130,23 @@ def test_non_edit_control_never_flagged_even_with_password_name():
     config = load_config()
     element = {"control_type": "Text", "name": "Password", "automation_id": ""}
     assert is_password_field(element, config) is False
+
+
+def test_substring_collision_does_not_false_positive():
+    """ "pin" and "pwd" are configured keywords — but they must match as whole
+    tokens, not bare substrings, so "Shipping address" ("ship-PIN-g") and
+    "typingArea" ("ty-PIN-gArea") don't get wrongly blurred."""
+    config = load_config()
+    assert (
+        is_password_field(
+            {"control_type": "Edit", "name": "Shipping address", "automation_id": ""},
+            config,
+        )
+        is False
+    )
+    assert (
+        is_password_field(
+            {"control_type": "Edit", "name": "", "automation_id": "typingArea"}, config
+        )
+        is False
+    )
