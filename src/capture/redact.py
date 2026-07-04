@@ -8,6 +8,7 @@ password-ish name/automation_id — which blurs the whole element bounding box.
 
 import asyncio
 import re
+import sys
 import tomllib
 from pathlib import Path
 
@@ -16,7 +17,17 @@ from winsdk.windows.graphics.imaging import BitmapDecoder
 from winsdk.windows.media.ocr import OcrEngine
 from winsdk.windows.storage import StorageFile
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "redaction.toml"
+
+def _app_root():
+    """Repo root in dev mode; the PyInstaller onefile extraction directory
+    (sys._MEIPASS) when frozen — sopforge.spec bundles config/redaction.toml
+    into that same 'config' subdirectory via its `datas` entry."""
+    if getattr(sys, "frozen", False):
+        return Path(sys._MEIPASS)
+    return Path(__file__).resolve().parent.parent.parent
+
+
+DEFAULT_CONFIG_PATH = _app_root() / "config" / "redaction.toml"
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
