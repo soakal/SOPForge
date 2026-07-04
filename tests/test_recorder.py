@@ -12,6 +12,7 @@ from pathlib import Path
 
 import jsonschema
 
+import capture.recorder as recorder_module
 from capture.recorder import Recorder
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -19,7 +20,7 @@ SCHEMA = json.loads((FIXTURES / "manifest.schema.json").read_text(encoding="utf-
 
 
 def test_scripted_session_produces_ordered_manifest_and_screenshots(
-    scratch_window, fake_mss, tmp_path
+    scratch_window, fake_mss, tmp_path, monkeypatch
 ):
     rect = scratch_window.rectangle()
     # Offsets deep enough to land inside the Scintilla text area, not the tab
@@ -27,6 +28,19 @@ def test_scripted_session_produces_ordered_manifest_and_screenshots(
     # working offsets in tests/test_uia_resolver.py).
     p1 = (rect.left + 250, rect.top + 200)
     p2 = (rect.left + 300, rect.top + 250)
+
+    # Spy on the redaction call to prove it's actually wired into the
+    # pipeline (screenshot written to disk *before* redaction runs on it),
+    # not just that the end state happens to look right.
+    redact_calls = []
+    real_redact_screenshot = recorder_module._redact_screenshot
+
+    def spying_redact_screenshot(image_path, element=None, config=None, out_path=None):
+        assert Path(image_path).exists() and Path(image_path).stat().st_size > 0
+        redact_calls.append(Path(image_path))
+        return real_redact_screenshot(image_path, element=element, config=config, out_path=out_path)
+
+    monkeypatch.setattr(recorder_module, "_redact_screenshot", spying_redact_screenshot)
 
     recorder = Recorder(tmp_path, machine="TESTHOST", os_build="26100")
     recorder.start()
@@ -72,6 +86,13 @@ def test_scripted_session_produces_ordered_manifest_and_screenshots(
         png = session_dir / step["screenshot"]
         assert png.exists()
         assert png.stat().st_size > 0
+        assert isinstance(step["redactions"], list)
+
+    # Redaction ran exactly once per step, over that step's own screenshot —
+    # proves the capture-then-redact wiring, independent of whether any
+    # pattern happened to match this run's (uniform gray, faked) pixels.
+    assert len(redact_calls) == 3
+    assert redact_calls == [session_dir / s["screenshot"] for s in data["steps"]]
 
     click_steps = [s for s in data["steps"] if s["action"] == "click"]
     assert all(s["window"]["process"].lower() == "notepad++.exe" for s in click_steps)
