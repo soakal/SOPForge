@@ -132,6 +132,16 @@ def test_non_edit_control_never_flagged_even_with_password_name():
     assert is_password_field(element, config) is False
 
 
+def test_camel_case_automation_id_still_detected():
+    """Stock WPF/WinForms conventions (PasswordBox, txtPassword, userPin) must
+    still be flagged — the substring-collision fix must not regress these by
+    lowercasing before splitting camelCase word boundaries."""
+    config = load_config()
+    for automation_id in ("txtPassword", "PasswordBox", "userPin"):
+        element = {"control_type": "Edit", "name": "", "automation_id": automation_id}
+        assert is_password_field(element, config) is True, automation_id
+
+
 def test_substring_collision_does_not_false_positive():
     """ "pin" and "pwd" are configured keywords — but they must match as whole
     tokens, not bare substrings, so "Shipping address" ("ship-PIN-g") and

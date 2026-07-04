@@ -45,8 +45,12 @@ def is_password_field(element, config):
     if (element.get("control_type") or "").lower() != "edit":
         return False
     keywords = {k.lower() for k in config.get("password_heuristic", {}).get("name_contains", [])}
-    haystack = f"{element.get('name', '')} {element.get('automation_id', '')}".lower()
-    tokens = set(_WORD_RE.findall(haystack))
+    raw = f"{element.get('name', '')} {element.get('automation_id', '')}"
+    # Split camelCase boundaries (txtPassword -> txt Password) *before*
+    # lowercasing, so "PasswordBox"/"txtPassword"-style automation IDs still
+    # tokenize to a "password" word instead of one opaque lowercased blob.
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", raw)
+    tokens = set(_WORD_RE.findall(spaced.lower()))
     return bool(tokens & keywords)
 
 
