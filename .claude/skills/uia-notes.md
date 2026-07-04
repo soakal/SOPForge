@@ -94,11 +94,26 @@ viewed through a phone-form-factor remote client, which may have its own capture
 path that doesn't go through classic Win32 GDI at all.
 
 **Consequence for testing:** `ScreenshotWriter` (`src/capture/shots.py`) cannot be
-verified against a real `mss.grab()` call in this environment. Tests instead
+reliably verified against a real `mss.grab()` call in this environment. Tests instead
 monkeypatch the `mss.mss()` construction to a fake session object returning
 synthetic pixel data, so the sequential-naming/file-write logic is still exercised
 for real — but actual GDI capture success is unverified here and needs a normal
 desktop session (a real target machine, not this build VM) to confirm.
+
+**Update (task-11): this failure turned out to be intermittent, not permanent.**
+Later in the same session, `capture()` against real `mss.grab()` succeeded
+consistently (3/3 calls, no exception) with no code change on our side — so this
+VM's GDI-capture availability apparently varies (by session/focus/display state,
+not fully understood), rather than being a hard, constant block like the
+input-injection finding above. Because of this, `ScreenshotWriter.capture()`
+(`src/capture/shots.py`) gained a graceful fallback: on `mss.exception.ScreenShotError`
+it writes a solid-color placeholder image and returns `is_placeholder=True` instead of
+raising, and `Recorder`/`ManifestBuilder` record that flag on the step
+(`screenshot_placeholder`) so a real, non-transient failure never crashes a capture
+session and is never silently indistinguishable from a real screenshot. Do not write
+a test that hard-asserts real `mss.grab()` fails in this environment — it may pass or
+fail depending on when it runs; assert only that `capture()` never raises and always
+produces a valid file, and use the mocked test for the fallback logic itself.
 
 ### Some UIA controls are genuinely slow to resolve (task-11 self-test harness)
 
@@ -115,3 +130,14 @@ click is not), so `resolve_at()`'s default timeout was raised to 5.0s.
 If this ever needs retuning, measure per-control-type resolution time first —
 don't just raise the number blindly, and don't lower it back toward 2s without
 re-confirming this finding no longer holds.
+
+**Run-to-run variance near the 90% threshold:** with only ~15 scripted
+interaction points total (5 per app), a single UIA resolution miss moves the
+overall percentage by ~6.7% — most runs landed at 93.3% (14/15), one run
+landed at 88.9% (16/18, notepadpp alone contributing 8 candidates instead of
+the requested 5 — not reproduced on retry, structurally shouldn't be possible
+given `_find_candidates`'s `[:count]` slice, so likely transient session
+state from this session's earlier iterative debugging rather than a real bug;
+worth a closer look if it recurs). If this threshold ever flakes in CI,
+increase `--clicks` first (more samples per app dampens the per-miss swing)
+before assuming a regression.

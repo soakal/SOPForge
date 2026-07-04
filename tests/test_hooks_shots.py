@@ -94,18 +94,20 @@ def test_typing_burst_summarized_without_capturing_content():
     assert (type_event["x"], type_event["y"]) == (50, 60)
 
 
-def test_capture_falls_back_to_placeholder_when_gdi_fails_for_real(tmp_path):
-    """No monkeypatching here: real mss.grab() genuinely fails with
-    ScreenShotError (BitBlt) on this build VM — see uia-notes.md. Proves the
-    production fallback works against the actual failure, not a simulation
-    of it."""
+def test_capture_against_real_gdi_never_raises(tmp_path):
+    """No monkeypatching here: real mss.grab() (BitBlt) has been observed to
+    both fail and succeed on this build VM across this session — see
+    uia-notes.md, it's apparently intermittent rather than a hard permanent
+    block. So this doesn't assert which branch fires, only that capture()
+    always produces a valid file either way (the deterministic mocked test
+    below proves the fallback logic itself)."""
     writer = ScreenshotWriter(tmp_path)
     filename, monitor_idx, is_placeholder = writer.capture(100, 100)
     path = tmp_path / filename
     assert path.exists()
     assert path.stat().st_size > 0
     assert monitor_idx >= 1
-    assert is_placeholder is True
+    assert isinstance(is_placeholder, bool)
 
 
 def test_capture_falls_back_to_placeholder_on_mocked_grab_failure(tmp_path, monkeypatch):
