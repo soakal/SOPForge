@@ -19,5 +19,6 @@ target-version = "py312"
 testpaths = ["tests"]
 markers = [
     "ui: browser-based UI smoke tests requiring playwright + chromium (opt-in via -m ui; excluded from the default run so the core suite stays browser-free)",
+    "exe: end-to-end tests requiring a pre-built dist/sopforge-server/sopforge-server.exe (opt-in via -m exe; excluded from the default run since the EXE is a build artifact, not always present)",
 ]
-addopts = "-m 'not ui'"
+addopts = "-m 'not ui and not exe'"

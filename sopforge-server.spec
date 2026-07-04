@@ -46,7 +46,13 @@ a = Analysis(
             "sop_factory_2",
         ),
     ],
-    hiddenimports=[],
+    # SOP Factory 2's sop_lib.py is bundled as a *data* file (imported
+    # dynamically at runtime via sys.path, not a real import statement
+    # anywhere in this repo's own code) — PyInstaller's static analysis
+    # can't see that it needs python-docx, so its import must be declared
+    # explicitly. Found by running the actual built EXE end-to-end
+    # (task-11), which failed with "No module named 'docx'"; not assumed.
+    hiddenimports=["docx"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
