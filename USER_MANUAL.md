@@ -67,6 +67,22 @@ Both scripts wrap PyInstaller with the right UPX settings and print the
 built size; `build_server_exe.py` also launches the built EXE to verify it
 actually starts and responds before reporting success.
 
+### Distributing to someone else
+
+Once both EXEs are built, package everything a recipient needs — no Python,
+no PyInstaller, no repo clone required on their end — into one folder (and
+zip) with:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\build_release.py --zip
+```
+
+This produces `release\SOPForge\` (and `release\SOPForge.zip`) containing
+both built EXEs, `install.ps1`/`uninstall.ps1`, `USER_MANUAL.md`, and
+`LICENSE` — the recipient just unzips it and runs `install.ps1` from inside,
+exactly as described above. `release/` is gitignored; rerun this after every
+rebuild you want to hand off.
+
 ### Option B — run from source (development)
 
 See §9 below.
