@@ -58,7 +58,7 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
     return "\n".join(lines)
 
 
-def _narrative_html_blocks(narrative_text):
+def narrative_html_blocks(narrative_text):
     """Splits narrative text into HTML blocks, rendering '> '-prefixed
     lines (task-08's [verify] blockquotes) as <blockquote> elements instead
     of flattening them into a single escaped paragraph — otherwise the
@@ -93,7 +93,7 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
         f"<h1>{html.escape(title)}</h1>",
     ]
     if narrative_text:
-        parts.extend(_narrative_html_blocks(narrative_text))
+        parts.extend(narrative_html_blocks(narrative_text))
     for step, result, shot in zip(manifest.steps, step_results, annotated_paths):
         parts.append(f"<h2>Step {html.escape(step.id)}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
