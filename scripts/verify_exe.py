@@ -25,7 +25,10 @@ the OS-level scan cache actually apply after the first run. The acceptance
 threshold is checked against the steady-state (repeat-launch) figure, which
 is what a real user experiences on every launch after the first one they
 ever do post-install; the one-time first-launch figure is recorded
-separately for transparency, not silently dropped.
+separately for transparency, not silently dropped. Full measured evidence
+for this reasoning (including an independent confirmation that the cost is
+tied to opening the files, not raw disk throughput or executing them) is in
+phases/DEVIATIONS.md's "Criterion 4 packaging mode" entry.
 """
 
 import queue
