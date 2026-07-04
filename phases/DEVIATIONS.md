@@ -243,7 +243,7 @@ code — `generate_step_text` (src/pipeline/generation.py) has no locks, no
 retries, and catches every exception from the LLM call, so it cannot itself
 hang. **Fix:** `test_exe_e2e.py`'s poll interval was slowed from 0.1s to 1.0s
 and its timeouts widened (DONE_TIMEOUT 20s → 90s, per-request client timeout
-30s → 60s) — 3/3 clean passes at ~25s each afterward. This only affects this
+15s → 60s) — 3/3 clean passes at ~25s each afterward. This only affects this
 one opt-in `exe`-marked test against the real subprocess; every in-process
 test (test_server.py, test_webui_pages.py, etc.) injects a fast, deterministic
 stub LLM client (tests/pipeline/_stub_llm.py) via `create_app`'s new
