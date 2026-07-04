@@ -8,6 +8,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+# TODO(phase-03/task-08): frozen-path resolution. This resolves relative to
+# __file__, which won't exist under a PyInstaller frozen build's _internal
+# layout — GET /config (server.py) will break in the packaged EXE until
+# task-08's resource_path() helper is adopted here too (see phases/03-tasks.md).
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "models.toml"
 
 
