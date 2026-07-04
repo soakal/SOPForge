@@ -34,7 +34,7 @@ def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_t
         pdf.set_font("Helvetica", "", 11)
         pdf.multi_cell(0, 6, _safe_text(narrative_text))
 
-    for step, result, shot in zip(manifest.steps, step_results, annotated_paths):
+    for step, result, shot in zip(manifest.steps, step_results, annotated_paths, strict=True):
         pdf.add_page()
         pdf.set_font("Helvetica", "B", 14)
         pdf.cell(0, 10, _safe_text(f"Step {step.id}"), new_x="LMARGIN", new_y="NEXT")
