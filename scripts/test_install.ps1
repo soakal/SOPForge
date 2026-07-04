@@ -7,11 +7,22 @@
     scheduled task, confirms it via Get-ScheduledTask, then removes it.
 
 .DESCRIPTION
-    If scheduled-task creation fails (e.g. elevation/policy blocks
-    ONLOGON-triggered task registration for the current user), this
-    records the failure and exits non-zero -- per CLAUDE.md prime
-    directive 1, an escalation-worthy blocker is never silently skipped
-    or treated as a pass.
+    This was originally going to treat scheduled-task creation failure as
+    an escalation-worthy blocker (exit non-zero, per CLAUDE.md prime
+    directive 1), and did exactly that the first time it ran here: both
+    Register-ScheduledTask and schtasks.exe /create failed with "Access is
+    denied" on this build's own VM/account, a genuine Task Scheduler
+    permission restriction rather than a bug. That finding was escalated
+    to the user, who decided -Autostart should be a documented best-effort
+    feature rather than a release blocker (see phases/DEVIATIONS.md's
+    "task-12 -Autostart scheduled task" entry for the full history).
+
+    Per that decision, round trip 2 below now treats "the scheduled task
+    could not be created on this machine" as a documented SKIP (exit 0),
+    not a failure -- while still fully exercising create -> confirm ->
+    remove on a machine/account where the restriction is absent. Round
+    trip 1 (the core AC4 requirement: install -> health check -> uninstall
+    -> directory state matches) is unconditional and always asserted.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -115,7 +126,13 @@ if (-not $Task) {
     Write-Output "SKIP: scheduled task '$TaskName' could not be created on this machine/account"
     Write-Output "(Task Scheduler permission restriction, documented in phases/DEVIATIONS.md)."
     Write-Output "install.ps1 itself still succeeded -- this is the accepted best-effort behavior."
-    & $UninstallScript -InstallPath $TestRoot2 -RemoveData | Out-Null
+
+    & $UninstallScript -InstallPath $TestRoot2 -RemoveData
+    if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 failed while cleaning up the skipped autostart test (exit $LASTEXITCODE)" }
+    if (Test-Path $TestRoot2) {
+        throw "FAIL: $TestRoot2 still exists after uninstall (cleanup of the skipped autostart test did not complete)"
+    }
+
     Write-Output ""
     Write-Output "ALL PASS (autostart round trip skipped: known environment limitation)"
     exit 0
