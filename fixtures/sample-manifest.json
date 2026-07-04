@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "session": {
+    "id": "20260703-142200-a1b2",
+    "title": "",
+    "started_utc": "2026-07-03T14:22:00Z",
+    "ended_utc": "2026-07-03T14:26:41Z",
+    "machine": "WS-EXAMPLE",
+    "os_build": "26100",
+    "narration_wav": "narration.wav"
+  },
+  "steps": [
+    {
+      "id": "step-001",
+      "ts_utc": "2026-07-03T14:22:04.120Z",
+      "action": "click",
+      "button": "left",
+      "screen": { "x": 412, "y": 233, "monitor": 1 },
+      "screenshot": "001.png",
+      "window": {
+        "title": "SmartDeploy Console",
+        "process": "SmartDeploy.exe",
+        "class": "win32"
+      },
+      "element": {
+        "name": "Save",
+        "control_type": "Button",
+        "automation_id": "btnSave",
+        "framework": "WinForms",
+        "bounding_rect": [380, 210, 460, 250]
+      },
+      "redactions": []
+    },
+    {
+      "id": "step-002",
+      "ts_utc": "2026-07-03T14:22:19.874Z",
+      "action": "type",
+      "text_summary": "entered value in field (content not captured)",
+      "screen": { "x": 640, "y": 300, "monitor": 1 },
+      "screenshot": "002.png",
+      "window": {
+        "title": "Answer File Editor - SmartDeploy Console",
+        "process": "SmartDeploy.exe",
+        "class": "win32"
+      },
+      "element": {
+        "name": "Computer name",
+        "control_type": "Edit",
+        "automation_id": "txtComputerName",
+        "framework": "WinForms",
+        "bounding_rect": [520, 280, 820, 320]
+      },
+      "redactions": [
+        { "region": [522, 282, 818, 318], "reason": "user-text" }
+      ]
+    },
+    {
+      "id": "step-003",
+      "ts_utc": "2026-07-03T14:23:02.001Z",
+      "action": "click",
+      "button": "left",
+      "screen": { "x": 900, "y": 512, "monitor": 1 },
+      "screenshot": "003.png",
+      "window": {
+        "title": "Downloads - Google Chrome",
+        "process": "chrome.exe",
+        "class": "chromium"
+      },
+      "element": {
+        "name": "",
+        "control_type": "",
+        "automation_id": "",
+        "framework": "",
+        "bounding_rect": null
+      },
+      "redactions": []
+    }
+  ]
+}
