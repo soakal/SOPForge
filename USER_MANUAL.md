@@ -83,11 +83,11 @@ See §9 below.
   ```
   (Private repo — `gh auth login` with access to `soakal/SOP-Factory` first.)
   If cloned elsewhere, set `SOPFORGE_SOP_FACTORY_2_DIR` to that path.
-- (Optional, for LLM-phrased steps and narration) An Ollama server reachable at
-  the endpoint in `config/models.toml` (default `http://192.168.200.60:11434/v1`),
-  with the `qwen3:14b` and `qwen3:32b` models pulled. Everything works without
-  this — steps just render via the deterministic template fallback instead, and
-  the live server currently always runs in this template-only mode (see §6).
+- (Optional, for LLM-phrased steps) Either an Ollama server reachable at the
+  endpoint in `config/models.toml` (default `http://192.168.200.60:11434/v1`,
+  with the `qwen3:14b` model pulled), or Anthropic routing configured with
+  `ANTHROPIC_API_KEY` set (§7). Everything works without either — steps just
+  render via the deterministic template fallback instead (§4/§6).
 - (Optional, for narration/transcription) faster-whisper downloads its own model
   weights from Hugging Face on first use of a given model size.
 
@@ -174,11 +174,17 @@ Every step's wording can come from one of two places:
   'Answer File Editor' window."). Never requires the LLM, never wrong by
   construction.
 
-**The live server currently always runs in template mode** — the LLM
-client/generation orchestrator and narration/claim-coverage pipeline are
-built and fully unit-tested, but wiring them into `POST /sessions`' live
-generation path hasn't been done yet. Nothing is lost either way: template
-mode is always factually correct, just less fluent to read.
+**The live server now generates step text via the LLM configured in
+`config/models.toml`'s `[steps]` section** (Ollama by default, or Anthropic
+if you've set `anthropic = true` — see §7). Each step is one generation
+attempt, round-trip-checked against the manifest's own facts — if the
+configured endpoint is unreachable, the API key is missing, or the reply
+doesn't hold up, that one step falls back to the template automatically.
+Nothing ever retries, and a single broken/unreachable LLM can never take
+down doc generation. Narration/claim-coverage (audio transcripts, `[verify]`
+blockquotes) is still not wired into the live server — there's no transcript
+upload endpoint yet, so `verify_claims` in the sidecar report (§6) is always
+empty for now.
 
 ---
 
@@ -205,19 +211,19 @@ Every generated doc ships with a report (`GET /sessions/{id}/report`, the
 listing three things a reviewer should check:
 
 - **Template-fallback steps** (red if non-empty) — steps where the LLM's
-  phrasing didn't hold up (or wasn't attempted) and the plain template
-  sentence was used instead. Always empty today, since the live server runs
-  template-mode only (§4).
+  phrasing didn't hold up, or the configured LLM was unreachable/errored, so
+  the plain template sentence was used instead. Not wrong, just less fluent
+  — worth a glance to see if they're worth polishing by hand or if your LLM
+  endpoint needs attention.
 - **Verify claims** (yellow if non-empty) — narration claims (from an audio
   transcript) that couldn't be matched to anything in the generated
   narrative text. Appear in the doc as `> [verify] (claim-id): <original
   claim text>` blockquotes — nothing from a recording is ever silently
   dropped. Always empty today, since narration isn't wired into the live
-  server either.
+  server yet (no transcript upload endpoint exists).
 - **Empty-metadata steps** (yellow if non-empty) — steps where no UI
   Automation element info was captured at all. These render using screen
   coordinates instead of an element name — still factual, just less specific.
-  This is the one category that reflects real data through the live server.
 
 An all-green report means every step made it into the doc with full
 information and no fallback.
@@ -241,18 +247,58 @@ passes = 3                                      # draft -> critique -> revise ro
 anthropic = false
 ```
 
+`[steps]` controls how each step's text is generated (§4); `[narrative]`
+controls the not-yet-wired narration pipeline. `endpoint`/`model` point at
+an Ollama (or any OpenAI-compatible chat-completions) server by default.
+
 View the currently-active config at `GET /config` or the `/ui/sessions/{id}`
-page's config panel. Anthropic routing per section exists as a config flag
-but has no client implementation yet (`LLMClient.chat()` raises
-`NotImplementedError` if `anthropic = true`, deliberately — a misconfigured
-section fails loudly instead of silently talking to the wrong endpoint).
+page's config panel. Edits to `config/models.toml` take effect on the next
+session generated or re-rendered — no server restart needed.
+
+### Using Anthropic instead of Ollama
+
+Set `anthropic = true` on a section to route it to Anthropic's API instead:
+
+```toml
+[steps]
+endpoint = "unused-when-anthropic-is-true"
+model = "claude-sonnet-5"       # or claude-haiku-4-5-20251001, etc.
+anthropic = true
+```
+
+1. `endpoint` is ignored once `anthropic = true` — Anthropic's API address
+   is fixed, not configurable per-section.
+2. `model` must be a real Anthropic model name.
+3. Set the **`ANTHROPIC_API_KEY`** environment variable before launching
+   `sopforge-server.exe` (or `python -m pipeline`). The key is read only
+   from this environment variable — never from a config file, and never
+   committed to the repo. In PowerShell:
+   ```powershell
+   $env:ANTHROPIC_API_KEY = "sk-ant-..."
+   .\dist\sopforge-server\sopforge-server.exe --port 8420
+   ```
+   To make it stick across launches without setting it every time, set it
+   as a persistent user environment variable instead (Windows Settings →
+   System → About → Advanced system settings → Environment Variables), or
+   set it in the same terminal session before running the scheduled task /
+   shortcut that launches the server.
+4. If `anthropic = true` and `ANTHROPIC_API_KEY` isn't set, every step on
+   that section falls back to the template automatically (§4/§6's
+   "Template-fallback steps" turns red) — it fails loudly in the server's
+   logs but never breaks doc generation.
 
 ---
 
 ## 8. Known limitations
 
-- LLM-phrased steps and narration/transcription are built and unit-tested but
-  not wired into the live server's generation path — see §4/§6.
+- Narration/transcription (audio transcripts, claim-coverage, `[verify]`
+  blockquotes) is built and unit-tested but not wired into the live server —
+  there's no transcript upload endpoint. Step generation itself (§4) is now
+  LLM-backed (Ollama or Anthropic, per `config/models.toml`).
+- A configured LLM endpoint that's unreachable adds real latency per step
+  (a short connect-timeout wait before falling back), not just an instant
+  fallback — a misconfigured/down endpoint will make generation slower, not
+  incorrect.
 - `-Autostart` scheduled-task registration is best-effort; some
   machines/accounts restrict it (see §2 and `phases/DEVIATIONS.md`). The
   server always works fine launched manually regardless.

@@ -175,3 +175,18 @@ concrete evidence and several genuine bugs found and fixed by actually
 running things rather than assuming they'd work. Phase 3 is green. SOPForge's
 build is complete: capture agent (Phase 1) → generation pipeline (Phase 2) →
 exports, review UI, and packaging (Phase 3).
+
+## Post-Phase-3: Anthropic routing + LLM-backed step generation
+
+Added after Phase 3 closed, at Brian's request: Anthropic API routing
+(`config/models.toml`'s `anthropic = true` per section, `ANTHROPIC_API_KEY`
+env var) is now implemented (`src/pipeline/llm_client.py`), and step
+generation is now genuinely LLM-backed on the live server
+(`render_steps_llm_mode`, wired into `server.py`'s `_generate()`) rather than
+always template-mode. Rebuilt `sopforge-server.exe` and re-verified AC3's
+timing budget still holds: first launch 6.620s, steady-state average 3.712s
+(threshold 5.0s), clean exit codes `[0, 0, 0, 0]`. Full suite: 233 passed, 5
+skipped, 3 deselected; `ruff` clean. See `phases/DEVIATIONS.md` for the
+task-09 sidecar-flags update and a documented intermittent-network-stall
+finding in the packaged-EXE end-to-end test.
+

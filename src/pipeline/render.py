@@ -4,22 +4,27 @@ from per-step outputs, annotated screenshots, and [verify] blockquotes.
 fallback (invariant L3) through task-04's assembler — it doesn't even
 accept an LLM client parameter, so there is no code path through which it
 could make a model call. This is the forerunner of AC3: a complete,
-correct doc requires zero LLM requests."""
+correct doc requires zero LLM requests.
+
+`render_steps_llm_mode` is the LLM-backed counterpart: one generation
+attempt per step through task-06's round-trip gate, falling back to the
+exact same template per step on any failure (invariant L2/L3) — never a
+retry loop. Both share the same screenshot-annotation logic below; only
+how each step's text gets generated differs."""
+
+from pathlib import Path
 
 import html
-from pathlib import Path
 
 from pipeline.annotate import annotate_click
 from pipeline.assembler import assemble_steps
+from pipeline.generation import generate_all_steps
 from pipeline.template import render_step_template
 
 
-def render_steps_template_mode(manifest, screenshot_dir, annotated_dir):
-    """Renders every manifest step via the template fallback and writes an
-    annotated copy of each step's screenshot. Returns (step_results,
-    annotated_paths), both in manifest order — no LLM call anywhere."""
-    step_results = assemble_steps(manifest, render_step_template)
-
+def _annotate_all(manifest, screenshot_dir, annotated_dir):
+    """Writes an annotated copy of each step's screenshot. Returns
+    annotated_paths in manifest order."""
     annotated_dir.mkdir(parents=True, exist_ok=True)
     annotated_paths = []
     for step in manifest.steps:
@@ -27,7 +32,27 @@ def render_steps_template_mode(manifest, screenshot_dir, annotated_dir):
         out = annotated_dir / step.screenshot
         annotate_click(src, step.screen.x, step.screen.y, out_path=out)
         annotated_paths.append(out)
+    return annotated_paths
 
+
+def render_steps_template_mode(manifest, screenshot_dir, annotated_dir):
+    """Renders every manifest step via the template fallback and writes an
+    annotated copy of each step's screenshot. Returns (step_results,
+    annotated_paths), both in manifest order — no LLM call anywhere."""
+    step_results = assemble_steps(manifest, render_step_template)
+    annotated_paths = _annotate_all(manifest, screenshot_dir, annotated_dir)
+    return step_results, annotated_paths
+
+
+def render_steps_llm_mode(manifest, screenshot_dir, annotated_dir, llm_client):
+    """Renders every manifest step via the LLM with a round-trip gate and
+    per-step template fallback (task-06's generate_all_steps — one
+    generation attempt per step, never retried), and writes an annotated
+    copy of each step's screenshot. Returns (step_results, annotated_paths);
+    each step_result also carries "used_fallback" (bool), unlike
+    render_steps_template_mode's plain {"step_id", "text"} shape."""
+    step_results = generate_all_steps(manifest, llm_client)
+    annotated_paths = _annotate_all(manifest, screenshot_dir, annotated_dir)
     return step_results, annotated_paths
 
 

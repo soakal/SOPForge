@@ -15,11 +15,15 @@ from PIL import Image
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 
+from _stub_llm import stub_llm_client_factory
+
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 
 
 def _make_client(tmp_path):
-    app = create_app(sessions_root=tmp_path / "sessions")
+    app = create_app(
+        sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
+    )
     return TestClient(app)
 
 
@@ -120,14 +124,14 @@ def test_report_and_doc_endpoints_409_while_not_done(tmp_path, monkeypatch):
 
     reached = threading.Event()
     release = threading.Event()
-    real_render = server_module.render_steps_template_mode
+    real_render = server_module.render_steps_llm_mode
 
     def gated_render(*args, **kwargs):
         reached.set()
         release.wait(timeout=5)
         return real_render(*args, **kwargs)
 
-    monkeypatch.setattr(server_module, "render_steps_template_mode", gated_render)
+    monkeypatch.setattr(server_module, "render_steps_llm_mode", gated_render)
 
     client = _make_client(tmp_path)
     session_id = _create_session(client, tmp_path).json()["session_id"]

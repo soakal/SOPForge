@@ -6,12 +6,15 @@ DOM, and download a valid docx. Isolated behind the `ui` pytest marker
 so the default suite stays fast and browser-free (`pytest -q -m ui
 tests/pipeline/test_ui_smoke.py` to run this file).
 
-See phases/DEVIATIONS.md ("task-09 UI smoke test's expected sidecar
-flags") for why this asserts empty-metadata-yellow + the other two
-categories green, rather than the fallback/verify-claim colors the Phase 3
-task list originally assumed — the live server has no LLM/narration
-pipeline wired in yet, so those two categories are structurally always
-empty today."""
+Step generation is now LLM-backed on the live server (round-trip gated,
+per-step template fallback — never a retry loop). This test injects the
+shared stub LLM client (tests/pipeline/_stub_llm.py), which deterministically
+fails every step's round-trip check, so every step falls back to its
+template — genuinely exercising the red "Template-fallback steps" flag,
+not just asserting it stays green. "Verify claims" stays green regardless:
+narration/claim-coverage still isn't wired into the live server's request
+path at all (see phases/DEVIATIONS.md's "task-09 UI smoke test's expected
+sidecar flags" for the full history of this scoping)."""
 
 import threading
 import time
@@ -26,6 +29,8 @@ from PIL import Image
 
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
+
+from _stub_llm import stub_llm_client_factory
 
 pytestmark = pytest.mark.ui
 
@@ -63,7 +68,9 @@ class _ServerThread:
 
 @pytest.fixture
 def running_server(tmp_path):
-    app = create_app(sessions_root=tmp_path / "sessions")
+    app = create_app(
+        sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
+    )
     server = _ServerThread(app)
     server.start()
     try:
@@ -119,17 +126,20 @@ def test_ui_smoke_upload_to_docx_download(running_server):
             page = browser.new_page()
             page.goto(f"{base_url}/ui/sessions/{session_id}", timeout=15000)
 
-            # Report page shows the expected 3 flags, correctly colored
-            # per the real (template-mode-only) server behavior — see the
-            # module docstring / DEVIATIONS.md for why fallback and
-            # verify-claims are green, not red/yellow, here.
+            # Report page shows the expected 3 flags, correctly colored.
+            # The stub LLM client deterministically fails every step's
+            # round-trip check, so every step genuinely falls back to its
+            # template -- "Template-fallback steps" is red, not vacuously
+            # green. "Verify claims" stays green since narration still
+            # isn't wired into the live server at all (see the module
+            # docstring / DEVIATIONS.md).
             sections = page.query_selector_all("section[data-status]")
             assert len(sections) == 3
             status_by_title = {}
             for section in sections:
                 title = section.query_selector("h2").inner_text()
                 status_by_title[title] = section.get_attribute("data-status")
-            assert status_by_title["Template-fallback steps"] == "green"
+            assert status_by_title["Template-fallback steps"] == "red"
             assert status_by_title["Verify claims"] == "green"
             assert status_by_title["Empty-metadata steps"] == "yellow"
 

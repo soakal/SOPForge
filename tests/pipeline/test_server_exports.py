@@ -17,11 +17,15 @@ from pypdf import PdfReader
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 
+from _stub_llm import stub_llm_client_factory
+
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 
 
 def _make_client(tmp_path):
-    app = create_app(sessions_root=tmp_path / "sessions")
+    app = create_app(
+        sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
+    )
     return TestClient(app)
 
 

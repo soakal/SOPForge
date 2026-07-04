@@ -13,11 +13,15 @@ from PIL import Image
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 
+from _stub_llm import stub_llm_client_factory
+
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 
 
 def _make_client(tmp_path):
-    app = create_app(sessions_root=tmp_path / "sessions")
+    app = create_app(
+        sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
+    )
     return TestClient(app)
 
 
@@ -105,14 +109,14 @@ def test_session_page_shows_processing_state_before_done(tmp_path, monkeypatch):
 
     reached = threading.Event()
     release = threading.Event()
-    real_render = server_module.render_steps_template_mode
+    real_render = server_module.render_steps_llm_mode
 
     def gated_render(*args, **kwargs):
         reached.set()
         release.wait(timeout=5)
         return real_render(*args, **kwargs)
 
-    monkeypatch.setattr(server_module, "render_steps_template_mode", gated_render)
+    monkeypatch.setattr(server_module, "render_steps_llm_mode", gated_render)
 
     client = _make_client(tmp_path)
     manifest_path = FIXTURES / "sample-manifest.json"
@@ -195,14 +199,18 @@ def test_session_page_shows_doc_preview_iframe(tmp_path):
 def test_session_page_colors_sidecar_sections_correctly(tmp_path):
     client = _make_client(tmp_path)
     # sample-manifest.json's step-003 has empty element metadata -> that
-    # section should be yellow; template_fallback_steps is always empty in
-    # template mode -> green; verify_claims is empty here too -> green.
+    # section is yellow. Step generation is LLM-backed now; the stub LLM
+    # client (tests/pipeline/_stub_llm.py) deterministically fails every
+    # step's round-trip check, so every step falls back to its template ->
+    # "Template-fallback steps" is genuinely red here. "Verify claims" is
+    # green regardless -- narration/claim-coverage still isn't wired into
+    # the live server's request path at all.
     session_id = _create_and_wait(client, tmp_path)
 
     resp = client.get(f"/ui/sessions/{session_id}")
     matches = re.findall(r'data-status="(\w+)"[^<]*<h2>([^<]+)</h2>', resp.text)
     title_to_status = {title: status for status, title in matches}
-    assert title_to_status["Template-fallback steps"] == "green"
+    assert title_to_status["Template-fallback steps"] == "red"
     assert title_to_status["Verify claims"] == "green"
     assert title_to_status["Empty-metadata steps"] == "yellow"
 

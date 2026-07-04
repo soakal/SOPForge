@@ -33,8 +33,9 @@ from pipeline.export_pdf import render_pdf
 from pipeline.jobs import JobRunner
 from pipeline.library import search as library_search
 from pipeline.library import upsert_entry
+from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest
-from pipeline.render import render_html, render_markdown, render_steps_template_mode
+from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.sidecar import build_sidecar_report
 from pipeline.webui.pages import (
     render_library_page,
@@ -54,21 +55,45 @@ def _zip_directory(directory):
     return buf.getvalue()
 
 
-def create_app(sessions_root: Path) -> FastAPI:
+def _default_llm_client_factory():
+    return LLMClient(load_models_config().steps)
+
+
+def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
+    """llm_client_factory: zero-arg callable returning an object with a
+    .chat(messages) method (matching LLMClient's interface), called fresh
+    for every generation. Defaults to a real LLMClient built from the
+    CURRENT config/models.toml (loaded fresh each call, not cached at
+    app-creation time, so /rerender's promise to reflect config edits is
+    actually true). Tests override this to a fast, deterministic stub —
+    without it, every session creation would make a real network attempt
+    to the (usually unreachable in a dev/test environment) configured
+    endpoint before falling back, adding real seconds per step."""
     app = FastAPI()
     sessions_root.mkdir(parents=True, exist_ok=True)
     jobs = JobRunner()
+    make_llm_client = llm_client_factory or _default_llm_client_factory
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
 
     def _generate(session_id):
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
 
-        step_results, annotated_paths = render_steps_template_mode(
-            manifest, screenshots_dir, annotated_dir
-        )
-        report_step_results = [{**result, "used_fallback": False} for result in step_results]
-        report = build_sidecar_report(manifest, report_step_results, [], {})
+        # One generation attempt per step, round-trip-gated with a
+        # template fallback (task-06) -- if the configured endpoint is
+        # unreachable, or Anthropic routing is on with no API key, or the
+        # reply doesn't hold up, that step just falls back; nothing here
+        # ever retries.
+        llm_client = make_llm_client()
+        try:
+            step_results, annotated_paths = render_steps_llm_mode(
+                manifest, screenshots_dir, annotated_dir, llm_client
+            )
+        finally:
+            close = getattr(llm_client, "close", None)
+            if callable(close):
+                close()
+        report = build_sidecar_report(manifest, step_results, [], {})
 
         md = render_markdown(manifest, step_results, annotated_paths, base_dir=annotated_dir)
         (session_dir / "doc.md").write_text(md, encoding="utf-8")

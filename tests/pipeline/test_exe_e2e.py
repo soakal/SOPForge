@@ -32,7 +32,14 @@ FIXTURES = REPO_ROOT / "fixtures"
 GOLDEN_XML = FIXTURES / "golden-document.xml"
 
 READY_TIMEOUT = 15.0
-DONE_TIMEOUT = 20.0
+# Step generation is now LLM-backed (round-trip gated, per-step template
+# fallback). This test runs the real packaged EXE via subprocess, so unlike
+# the in-process tests it cannot inject a stub LLM client — it genuinely
+# attempts the configured (unreachable, in this environment) Ollama
+# endpoint once per step before falling back, each attempt bounded by
+# LLMClient's ~5s connect timeout. sample-manifest.json has 3 steps, so
+# budget generously beyond the ~15-20s that alone can take.
+DONE_TIMEOUT = 90.0
 
 
 def _find_free_port():
@@ -91,7 +98,14 @@ def test_golden_fixture_through_built_exe_matches_committed_golden_docx(running_
     manifest_path = FIXTURES / "sample-manifest.json"
     manifest = load_manifest(manifest_path)
 
-    with httpx.Client(timeout=15) as client:
+    # A single status poll can occasionally stall well past what the LLM
+    # client's own connect_timeout would suggest — this process's GIL is
+    # shared between JobRunner's background-generation thread and uvicorn's
+    # request handling, and CPU-bound work (docx/pdf assembly, not just the
+    # LLM connection attempts) can delay how quickly a concurrent request
+    # gets scheduled. Generous per-request timeout here, not just a longer
+    # poll-loop deadline.
+    with httpx.Client(timeout=60) as client:
         files = []
         buffers = []
         for step in manifest.steps:
@@ -116,7 +130,11 @@ def test_golden_fixture_through_built_exe_matches_committed_golden_docx(running_
                 break
             if status["status"] == "error":
                 raise AssertionError(f"session failed on the built EXE: {status.get('error')}")
-            time.sleep(0.1)
+            # A slower poll interval than the in-process tests use: LLM-backed
+            # generation on the real EXE makes real (if bounded) network
+            # attempts per step, and polling at a slower rate here reduces
+            # request-rate contention with that background work.
+            time.sleep(1.0)
         else:
             raise AssertionError("session never reached done on the built EXE")
 

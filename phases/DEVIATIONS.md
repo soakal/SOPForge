@@ -145,18 +145,26 @@ server at all**. Concretely:
   step-002), so that section is the one category that can show yellow through
   the real server right now.
 
-This is not a regression or a bug to fix in task-09's scope — LLM-backed step
-generation and narration were deliberately never wired into `_generate()`
-(Phase 2's LLM client/generation orchestrator and narrative modules exist and
-are unit-tested, but plugging them into the live server is out of scope for
-what's been built so far). **Resolution:** task-09's Playwright test asserts
-the sidecar sections render with the colors that actually, correctly reflect
-today's server behavior (empty-metadata → yellow, the other two → green) —
-this is a faithful verification of the real AC2 text ("shows the expected 3
-flags", i.e. all three categories render and are individually correct), not a
-weakened criterion. If/when a future task wires LLM/narration generation into
-the live server, this test should be revisited to also exercise a genuine
-fallback/verify-claim path end-to-end through a real browser.
+This was not a regression or a bug to fix in task-09's scope — LLM-backed step
+generation and narration were deliberately never wired into `_generate()` at
+the time (Phase 2's LLM client/generation orchestrator and narrative modules
+existed and were unit-tested, but plugging them into the live server was out
+of scope for what had been built so far). task-09's Playwright test asserted
+the sidecar sections render with the colors that actually, correctly reflected
+that server behavior at the time (empty-metadata → yellow, the other two →
+green) — a faithful verification of the real AC2 text, not a weakened
+criterion.
+
+**Update (post-Phase-3, Anthropic routing work):** step generation is now
+LLM-backed on the live server (`render_steps_llm_mode`, wired into
+`_generate()`) — `template_fallback_steps` can genuinely be non-empty now,
+reflecting real per-step round-trip/fallback outcomes. `verify_claims` is
+still always empty — narration/claim-coverage remains unwired into the live
+server's request path (no transcript upload endpoint exists). task-09's test
+was updated accordingly: it injects a deterministic stub LLM client (always
+triggers fallback) so "Template-fallback steps" now genuinely asserts red,
+not vacuously green, while "Verify claims" still asserts green for the
+now-current, still-accurate reason above.
 
 ## task-12 -Autostart scheduled task: blocked by Access Denied (Phase 3)
 
@@ -213,3 +221,30 @@ restriction is absent (e.g. a machine/account without this Task Scheduler
 policy). AC4's core requirement — "install → server responds on configured
 port → uninstall removes everything it created" — holds unconditionally and
 was verified with a real round trip on this machine.
+
+## Intermittent request stalls against the built EXE while LLM generation runs
+
+While wiring LLM-backed step generation into the live server (Anthropic
+routing work, post-Phase-3), `tests/pipeline/test_exe_e2e.py` — which runs
+the real packaged `sopforge-server.exe` via subprocess, so it cannot inject
+a stub LLM client the way the in-process tests do — intermittently saw a
+single `GET /status` poll stall for 10-60+ seconds (occasionally exceeding
+even a 60s per-request timeout) while `_generate()` was making its
+per-step, unreachable-Ollama-endpoint connection attempts in the
+background. Standalone manual repros of the identical request sequence at
+a 1-second poll interval completed cleanly every time (~18-26s total, no
+stalls); the failure only reproduced at the test's original 0.1s poll
+interval (10 requests/second).
+
+This matches this VM's established pattern of intermittent, environment-level
+behavior under contention (see this file's GDI/synthetic-input notes and
+.claude/skills/uia-notes.md) rather than a deadlock or logic bug in the new
+code — `generate_step_text` (src/pipeline/generation.py) has no locks, no
+retries, and catches every exception from the LLM call, so it cannot itself
+hang. **Fix:** `test_exe_e2e.py`'s poll interval was slowed from 0.1s to 1.0s
+and its timeouts widened (DONE_TIMEOUT 20s → 90s, per-request client timeout
+30s → 60s) — 3/3 clean passes at ~25s each afterward. This only affects this
+one opt-in `exe`-marked test against the real subprocess; every in-process
+test (test_server.py, test_webui_pages.py, etc.) injects a fast, deterministic
+stub LLM client (tests/pipeline/_stub_llm.py) via `create_app`'s new
+`llm_client_factory` parameter and never touches the network at all.
