@@ -14,7 +14,43 @@ import time
 
 import pytest
 
+import capture.shots as shots_module
+
 NPP_PATH = r"C:\Program Files\Notepad++\notepad++.exe"
+
+
+class _FakeShot:
+    def __init__(self, width, height):
+        self.size = (width, height)
+        self.rgb = bytes([120, 120, 120]) * (width * height)
+
+
+class _FakeSct:
+    """Real GDI screen capture (BitBlt, via mss or PIL.ImageGrab) fails on
+    this build VM regardless of library — see .claude/skills/uia-notes.md.
+    Stands in for mss.mss() so naming/file-write logic is still exercised
+    against real bytes on disk."""
+
+    monitors = [
+        {"left": 0, "top": 0, "width": 824, "height": 1560},
+        {"left": 0, "top": 0, "width": 824, "height": 1560},
+    ]
+
+    def grab(self, monitor):
+        return _FakeShot(monitor["width"], monitor["height"])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+@pytest.fixture
+def fake_mss(monkeypatch):
+    """Patches capture.shots' mss.mss() construction so ScreenshotWriter
+    writes real bytes to disk without depending on real GDI capture."""
+    monkeypatch.setattr(shots_module.mss, "mss", lambda: _FakeSct())
 
 
 def _running_pids(image_name):
