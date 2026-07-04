@@ -43,33 +43,34 @@
   ~4-6s. The resolver/self-test harness should poll with a generous timeout
   (used 10s/15s/20s here) rather than a fixed sleep.
 
-### Environment limitation: synthetic input is invisible to global hooks (task-06)
+### Environment limitation: synthetic input injection is intermittent here (task-06, revised task-12)
 
-**Confirmed on this build VM: neither pynput's `mouse.Controller`/`keyboard.Controller`
-nor a raw `SendInput` call via ctypes (bypassing pynput entirely) is observed by a
-`WH_MOUSE_LL`/`WH_KEYBOARD_LL` listener** (`pynput.mouse.Listener` /
-`keyboard.Listener`), even with the listener confirmed running and the injecting
-process at the same (non-admin) integrity level as the hook. Repro: install a
-listener, call `l.wait()` to confirm it's live, inject one click/keypress via each
-of pynput's Controller and a hand-rolled ctypes `SendInput`, and in both cases zero
-events arrive. Root cause is sharper than "invisible": a direct `SendInput` call
-returns `0` (failure) with `GetLastError() == ERROR_ACCESS_DENIED (5)` — this
-session actively **denies** synthetic input injection, it doesn't just fail to
-route it to hooks. This is very likely specific to however this remote/automated
-VM session delivers input (whatever mechanism gives the agent "hands" on this
-machine is evidently blocked from injecting raw input, by design) — it should not
-reflect how `src/capture/hooks.py`'s `InputRecorder` behaves for a real physical
-user, since hardware-generated input is exactly what `WH_MOUSE_LL`/`WH_KEYBOARD_LL`
-exist to see, and a real user's OS session would not have this restriction.
+**Originally recorded (task-06) as a hard, permanent block; task-12 discovered it's
+actually intermittent — do not re-state either extreme as settled fact.** Initial
+repro: install a `WH_MOUSE_LL`/`WH_KEYBOARD_LL` listener, confirm it's live via
+`l.wait()`, inject one click/keypress via each of pynput's Controller and a
+hand-rolled ctypes `SendInput` (bypassing pynput entirely) — zero events arrived,
+and `SendInput` returned `0` with `GetLastError() == ERROR_ACCESS_DENIED (5)`.
+That looked like a hard, designed-in restriction of this remote/automated VM
+session. But later in the *same* session, with no code change: pynput's
+Controller-based click worked once (real click event received), then failed
+3/3 times on immediate retry; a raw `SendInput` call also failed 3/3 times in a
+separate check. **The honest characterization is "unreliable, varies run to
+run" — not "always denied" and not "generally works."** This exactly mirrors the
+GDI-capture intermittency finding below; the two were investigated independently
+and show the same pattern, which suggests something session-wide (not specific
+to either subsystem) intermittently restricts this VM's synthetic I/O.
 
-**Consequence for testing:** any test in this environment that relies on injected
-synthetic input reaching a global low-level hook cannot pass, regardless of which
-API does the injecting (pynput, raw SendInput, or pywinauto's `click_input()`, which
-is SendInput-based too). `InputRecorder`'s callback *logic* (coordinate/button
-handling, typing-burst summarization) is still fully testable by invoking
-`_on_click`/`_on_press` directly, which is what `tests/test_hooks_shots.py` does —
-but true end-to-end verification that the OS hook fires on real input is out of
-scope for this autonomous build and would need a human at the keyboard.
+**Consequence for testing:** don't write a test that hard-asserts either outcome
+for synthetic input reaching a global low-level hook — it may pass or fail
+depending on when it runs, regardless of which API does the injecting (pynput,
+raw SendInput, or pywinauto's `click_input()`, which is SendInput-based too).
+`InputRecorder`'s callback *logic* (coordinate/button handling, typing-burst
+summarization) is fully testable by invoking `_on_click`/`_on_press` directly,
+which is what `tests/test_hooks_shots.py` does. If you need to know whether
+injection happens to work *this run*, probe it live (see
+`scripts/check_elevated_hotkey.py`'s `probe_injection_works_this_run()`) — never
+trust a cached result, including this note.
 
 **Consequence for task-11 (self-test harness) / acceptance criterion 1:** the ≥90%
 non-empty-element-metadata measurement should be driven by calling
@@ -100,12 +101,14 @@ synthetic pixel data, so the sequential-naming/file-write logic is still exercis
 for real — but actual GDI capture success is unverified here and needs a normal
 desktop session (a real target machine, not this build VM) to confirm.
 
-**Update (task-11): this failure turned out to be intermittent, not permanent.**
-Later in the same session, `capture()` against real `mss.grab()` succeeded
-consistently (3/3 calls, no exception) with no code change on our side — so this
-VM's GDI-capture availability apparently varies (by session/focus/display state,
-not fully understood), rather than being a hard, constant block like the
-input-injection finding above. Because of this, `ScreenshotWriter.capture()`
+**Update (task-11, and see task-12): this failure turned out to be intermittent,
+not permanent** — and the input-injection finding above turned out to be the same
+way (task-12 revised it after finding the same pattern independently; the two
+were not initially recognized as related). Later in the same session,
+`capture()` against real `mss.grab()` succeeded consistently (3/3 calls, no
+exception) with no code change on our side — so this VM's GDI-capture
+availability apparently varies (by session/focus/display state, not fully
+understood). Because of this, `ScreenshotWriter.capture()`
 (`src/capture/shots.py`) gained a graceful fallback: on `mss.exception.ScreenShotError`
 it writes a solid-color placeholder image and returns `is_placeholder=True` instead of
 raising, and `Recorder`/`ManifestBuilder` record that flag on the step
