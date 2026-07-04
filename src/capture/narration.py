@@ -33,21 +33,28 @@ class NarrationRecorder:
         self._active = False
 
     def start(self):
+        if self._active:
+            return True  # already recording: no-op, not a second `open`
         if not has_audio_input():
-            self._active = False
             return False
         _mci(f"open new type waveaudio alias {self.ALIAS}")
-        _mci(f"record {self.ALIAS}")
+        try:
+            _mci(f"record {self.ALIAS}")
+        except OSError:
+            # Device present but record failed (busy, OS privacy block, ...)
+            # — never leave the alias open, or every future start() fails.
+            _mci(f"close {self.ALIAS}")
+            raise
         self._active = True
         return True
 
     def stop(self, out_path):
         if not self._active:
             return None
+        self._active = False
         try:
             _mci(f"stop {self.ALIAS}")
             _mci(f'save {self.ALIAS} "{out_path}"')
         finally:
             _mci(f"close {self.ALIAS}")
-            self._active = False
         return str(out_path)
