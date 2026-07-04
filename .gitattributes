@@ -1,0 +1,4 @@
+# Golden-file fixtures are byte-exact references (task-14/AC5) — never let
+# core.autocrlf rewrite their line endings on checkout, or the byte-compare
+# breaks on any machine/clone that doesn't happen to match this one's config.
+fixtures/golden-*.xml -text

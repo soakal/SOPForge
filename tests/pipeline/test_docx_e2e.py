@@ -65,7 +65,11 @@ def test_docx_contains_every_step_text_and_a_title_page(tmp_path):
     with zipfile.ZipFile(out) as zf:
         document_xml = zf.read("word/document.xml").decode("utf-8")
 
-    assert manifest.session.title.upper() in document_xml
+    title = manifest.session.title or manifest.session.id
+    assert title  # sanity: the fixture must actually have a non-empty title/id,
+    # otherwise the assertion below would be vacuously true (empty string is
+    # a substring of everything).
+    assert title.upper() in document_xml
     for result in step_results:
         assert result["text"] in document_xml
 
