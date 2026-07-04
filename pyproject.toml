@@ -17,3 +17,7 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "ui: browser-based UI smoke tests requiring playwright + chromium (opt-in via -m ui; excluded from the default run so the core suite stays browser-free)",
+]
+addopts = "-m 'not ui'"

@@ -84,6 +84,15 @@ def render_session_page(session_id, report, config):
         for section, values in config.items()
     )
     sid = html.escape(session_id)
+    downloads = "".join(
+        f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
+        for path, label in (
+            ("doc.docx", "docx"),
+            ("doc.pdf", "pdf"),
+            ("doc.single.html", "single-file html"),
+            ("export.md.zip", "markdown bundle (zip)"),
+        )
+    )
     return (
         "<!doctype html>"
         '<html><head><meta charset="utf-8"><title>SOPForge Review</title></head><body>'
@@ -93,6 +102,7 @@ def render_session_page(session_id, report, config):
         f"{sections}"
         f'<form method="post" action="/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'
+        f"<h2>Downloads</h2><ul>{downloads}</ul>"
         f"<h2>Config (read-only)</h2><ul>{config_rows}</ul>"
         "</body></html>"
     )

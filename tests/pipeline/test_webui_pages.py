@@ -204,6 +204,18 @@ def test_session_page_has_rerender_form(tmp_path):
     assert "<button" in resp.text
 
 
+def test_session_page_download_links_all_resolve(tmp_path):
+    client = _make_client(tmp_path)
+    session_id = _create_and_wait(client, tmp_path)
+
+    resp = client.get(f"/ui/sessions/{session_id}")
+    hrefs = re.findall(r'<a href="([^"]+)" data-download=', resp.text)
+    assert len(hrefs) == 4
+    for href in hrefs:
+        download_resp = client.get(href)
+        assert download_resp.status_code == 200, href
+
+
 def test_rerender_form_submission_actually_rerenders(tmp_path):
     client = _make_client(tmp_path)
     session_id = _create_and_wait(client, tmp_path)

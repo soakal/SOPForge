@@ -114,3 +114,46 @@ configurations using each one's *first-launch* figure (all ~3.0s, confounded
 by the AV-scan cost above) and incorrectly concluded UPX made things worse
 in every configuration — that comparison was invalid and has been corrected
 here and in `sopforge.spec`'s comments.
+
+## task-09 UI smoke test's expected sidecar flags (Phase 3)
+
+phases/03-tasks.md's task-09 line, as written by the Phase 3 planner, expected
+the Playwright smoke test's fixture session to show "step-003 fallback red,
+step-002 empty-metadata yellow, claim-002 `[verify]` yellow" — three distinct,
+non-green categories. This turns out to be structurally impossible against the
+actual running server, and is a planning assumption, not a phase acceptance
+criterion (phases/03-exports.md's own AC2 text only says "report page shows
+the expected 3 flags" generically, without specifying colors — the red/yellow
+specifics were the task-list author's own elaboration, one level below the
+phase's real AC).
+
+**Why it can't happen:** `src/pipeline/server.py`'s `_generate()` (task-04/05)
+only calls `render_steps_template_mode` — pure template-mode step rendering,
+with **no LLM call and no narration/claim-coverage pipeline wired into the
+server at all**. Concretely:
+- `report_step_results = [{**result, "used_fallback": False} for result in
+  step_results]` (server.py) hardcodes every step as non-fallback, always,
+  because template mode never attempts an LLM round-trip to fall back *from*.
+  `template_fallback_steps` is therefore always `[]` (green) for any session
+  processed by the real server today.
+- `build_sidecar_report(manifest, report_step_results, [], {})` passes a
+  hardcoded empty list for `verify_claim_ids` — there is no transcript upload,
+  narration, or claim-coverage step in the server's request/generation flow at
+  all. `verify_claims` is therefore always `[]` (green) too.
+- Only `empty_metadata_steps` reflects real manifest data (task-11's crafted
+  `fixtures/review-report-manifest.json` genuinely has an empty-metadata
+  step-002), so that section is the one category that can show yellow through
+  the real server right now.
+
+This is not a regression or a bug to fix in task-09's scope — LLM-backed step
+generation and narration were deliberately never wired into `_generate()`
+(Phase 2's LLM client/generation orchestrator and narrative modules exist and
+are unit-tested, but plugging them into the live server is out of scope for
+what's been built so far). **Resolution:** task-09's Playwright test asserts
+the sidecar sections render with the colors that actually, correctly reflect
+today's server behavior (empty-metadata → yellow, the other two → green) —
+this is a faithful verification of the real AC2 text ("shows the expected 3
+flags", i.e. all three categories render and are individually correct), not a
+weakened criterion. If/when a future task wires LLM/narration generation into
+the live server, this test should be revisited to also exercise a genuine
+fallback/verify-claim path end-to-end through a real browser.
