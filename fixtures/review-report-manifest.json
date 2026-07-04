@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "session": {
+    "id": "review-report-session",
+    "title": "Review Report Demo",
+    "started_utc": "2026-01-01T00:00:00Z",
+    "ended_utc": "2026-01-01T00:05:00Z",
+    "machine": "TEST-VM",
+    "os_build": "10.0.26200",
+    "narration_wav": null
+  },
+  "steps": [
+    {
+      "id": "step-001",
+      "ts_utc": "2026-01-01T00:00:01Z",
+      "action": "click",
+      "button": "left",
+      "screen": { "x": 412, "y": 233, "monitor": 1 },
+      "screenshot": "001.png",
+      "window": { "title": "Answer File Editor", "process": "SmartDeploy.exe", "class": "win32" },
+      "element": {
+        "name": "Save",
+        "control_type": "Button",
+        "automation_id": "btnSave",
+        "framework": "Win32",
+        "bounding_rect": [400, 220, 480, 250]
+      },
+      "redactions": []
+    },
+    {
+      "id": "step-002",
+      "ts_utc": "2026-01-01T00:00:05Z",
+      "action": "click",
+      "button": "left",
+      "screen": { "x": 900, "y": 600, "monitor": 1 },
+      "screenshot": "002.png",
+      "window": { "title": "Answer File Editor", "process": "SmartDeploy.exe", "class": "win32" },
+      "element": {
+        "name": "",
+        "control_type": "",
+        "automation_id": "",
+        "framework": "",
+        "bounding_rect": null
+      },
+      "redactions": []
+    },
+    {
+      "id": "step-003",
+      "ts_utc": "2026-01-01T00:00:09Z",
+      "action": "type",
+      "text_summary": "entered computer name",
+      "screen": { "x": 500, "y": 300, "monitor": 1 },
+      "screenshot": "003.png",
+      "window": { "title": "Answer File Editor", "process": "SmartDeploy.exe", "class": "win32" },
+      "element": {
+        "name": "Computer name",
+        "control_type": "Edit",
+        "automation_id": "txtComputerName",
+        "framework": "Win32",
+        "bounding_rect": [450, 290, 650, 315]
+      },
+      "redactions": []
+    }
+  ]
+}

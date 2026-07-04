@@ -1,0 +1,14 @@
+{
+  "segments": [
+    {
+      "text": "Click Save to save your changes.",
+      "start": 0.0,
+      "end": 2.0
+    },
+    {
+      "text": "This step is not mentioned anywhere in the generated narrative.",
+      "start": 2.0,
+      "end": 4.5
+    }
+  ]
+}
