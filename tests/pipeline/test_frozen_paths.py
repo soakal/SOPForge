@@ -65,7 +65,7 @@ def test_sop_factory_2_dir_env_override_wins_in_both_modes(monkeypatch, tmp_path
     assert sop_factory_2_dir() == Path(override_dir)
 
 
-def test_config_env_override_wins_in_frozen_mode_too(monkeypatch, tmp_path):
+def test_config_explicit_path_wins_in_frozen_mode(monkeypatch, tmp_path):
     """default_config_path() itself has no env override, but
     load_models_config(path=...) accepts an explicit path regardless of
     frozen state — confirm the explicit-path branch is never shadowed by
