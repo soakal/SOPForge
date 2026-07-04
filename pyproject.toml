@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["capture*"]
+include = ["capture*", "pipeline*"]
 
 [tool.ruff]
 line-length = 100

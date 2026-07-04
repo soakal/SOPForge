@@ -1,0 +1,15 @@
+# Runtime LLM routing: per-section endpoint/model, Ollama by default.
+# "anthropic" opts that section into the Anthropic API instead of the local
+# Ollama endpoint — off by default (CLAUDE.md: "Anthropic routing per section
+# is a config option, default off").
+
+[steps]
+endpoint = "http://192.168.200.60:11434/v1"
+model = "qwen3:14b"
+anthropic = false
+
+[narrative]
+endpoint = "http://192.168.200.60:11434/v1"
+model = "qwen3:32b"
+anthropic = false
+passes = 3
