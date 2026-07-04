@@ -32,6 +32,11 @@ from pipeline.library import upsert_entry
 from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_template_mode
 from pipeline.sidecar import build_sidecar_report
+from pipeline.webui.pages import (
+    render_library_page,
+    render_session_page,
+    render_session_processing_page,
+)
 from pipeline.webui.review import render_review_page
 
 
@@ -219,5 +224,20 @@ def create_app(sessions_root: Path) -> FastAPI:
     @app.get("/config")
     def get_config():
         return load_models_config().model_dump()
+
+    @app.get("/ui")
+    def ui_library(q: str | None = None):
+        return HTMLResponse(render_library_page(library_search(sessions_root, q), q))
+
+    @app.get("/ui/sessions/{session_id}")
+    def ui_session(session_id: str):
+        _require_known_session(session_id)
+        status = jobs.status(session_id)
+        if status["status"] != "done":
+            return HTMLResponse(render_session_processing_page(session_id, status))
+        session_dir = sessions[session_id][3]
+        report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+        config = load_models_config().model_dump()
+        return HTMLResponse(render_session_page(session_id, report, config))
 
     return app
