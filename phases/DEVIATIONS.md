@@ -200,10 +200,16 @@ task, not a bug in `install.ps1`.
    boundary, not a logic bug — retrying, replanning, or rewriting
    `install.ps1` cannot change what account privilege allows.
 
-**What's needed to unblock:** either running the install/verification flow
-from an elevated session (if Brian confirms that's acceptable for this
-autostart feature), or accepting `-Autostart` as a documented, best-effort
-feature that may require the user to register the scheduled task manually
-(or grant the necessary Task Scheduler rights) on machines where this
-restriction applies, with `install.ps1` still installing and working
-correctly without `-Autostart` regardless (already proven).
+**Resolution (Brian, 2026-07-04):** accept `-Autostart` as best-effort and
+close out Phase 3. `install.ps1`'s scheduled-task registration now catches
+its own failure internally (`try`/`catch` around `Register-ScheduledTask`),
+prints a clear warning explaining the restriction and the manual workaround,
+and still exits 0 — the base install (files + config) never depends on
+`-Autostart` succeeding. `scripts/test_install.ps1`'s autostart round trip
+treats "task could not be created on this machine" as a documented SKIP
+(exit 0), not a failure, when this restriction is present; it still fully
+verifies the scheduled task's creation → confirmation → removal when the
+restriction is absent (e.g. a machine/account without this Task Scheduler
+policy). AC4's core requirement — "install → server responds on configured
+port → uninstall removes everything it created" — holds unconditionally and
+was verified with a real round trip on this machine.

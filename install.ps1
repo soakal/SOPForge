@@ -13,9 +13,17 @@
     the -Autostart scheduled task for its launch arguments).
 
     -Autostart registers a per-user "SOPForge-Server" scheduled task
-    (AtLogOn trigger, current user, no elevation required for a
-    non-elevated logon trigger) that launches sopforge-server.exe with the
-    chosen port and sessions root.
+    (AtLogOn trigger, current user) that launches sopforge-server.exe with
+    the chosen port and sessions root. This is best-effort: registering an
+    ONLOGON-triggered scheduled task can be blocked by Task Scheduler
+    permission policy on some machines/accounts even without elevation
+    (confirmed via both Register-ScheduledTask and schtasks.exe on this
+    build's own VM — see phases/DEVIATIONS.md's "task-12 -Autostart
+    scheduled task" entry). Installing and running the server WITHOUT
+    -Autostart never depends on this and always works; if -Autostart fails
+    here, register the scheduled task manually (or grant the needed Task
+    Scheduler rights) and re-run, or just launch sopforge-server.exe
+    yourself / via a shortcut instead.
 #>
 param(
     [string]$InstallPath = "$env:LOCALAPPDATA\SOPForge",
@@ -60,12 +68,23 @@ $InstallConfig = [ordered]@{
 $InstallConfig | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath "install-config.json") -Encoding utf8
 
 if ($Autostart) {
-    $ServerExe = Join-Path $ServerInstallPath "sopforge-server.exe"
-    $Action = New-ScheduledTaskAction -Execute $ServerExe `
-        -Argument "--port $Port --sessions-root `"$SessionsRoot`""
-    $Trigger = New-ScheduledTaskTrigger -AtLogOn
-    Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Force | Out-Null
-    Write-Output "Registered autostart scheduled task '$TaskName'."
+    # Best-effort: the base install (files + config, above) already
+    # succeeded regardless of what happens here, so a Task Scheduler
+    # permission restriction on this branch must not fail the whole
+    # install -- see this script's .DESCRIPTION and
+    # phases/DEVIATIONS.md's "task-12 -Autostart scheduled task" entry.
+    try {
+        $ServerExe = Join-Path $ServerInstallPath "sopforge-server.exe"
+        $Action = New-ScheduledTaskAction -Execute $ServerExe `
+            -Argument "--port $Port --sessions-root `"$SessionsRoot`""
+        $Trigger = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Force -ErrorAction Stop | Out-Null
+        Write-Output "Registered autostart scheduled task '$TaskName'."
+    } catch {
+        Write-Warning "Could not register the '$TaskName' autostart scheduled task: $_"
+        Write-Warning "SOPForge is installed and works without autostart -- launch sopforge-server.exe"
+        Write-Warning "directly, or register the scheduled task manually / with elevated rights."
+    }
 }
 
 Write-Output "Installed SOPForge to $InstallPath (port $Port)."

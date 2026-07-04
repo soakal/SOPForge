@@ -87,8 +87,18 @@ if (Test-Path $TestRoot) {
 Write-Output "PASS: install/uninstall round trip -- directory state matches pre-install baseline (absent)."
 
 # --- Round trip 2: -Autostart branch ---
+# Best-effort by design (install.ps1's .DESCRIPTION and
+# phases/DEVIATIONS.md's "task-12 -Autostart scheduled task" entry):
+# Task Scheduler permission policy can block ONLOGON-triggered task
+# registration on some machines/accounts even without elevation. When
+# that happens here, install.ps1 itself still succeeds (the scheduled
+# task step catches its own failure) -- this round trip verifies the
+# scheduled task WHEN it can be created, and treats "could not be
+# created on this machine" as a documented, known limitation rather than
+# a test failure, per the user's explicit decision to accept -Autostart
+# as best-effort rather than block the release on it.
 Write-Output ""
-Write-Output "=== Round trip 2: -Autostart scheduled task ==="
+Write-Output "=== Round trip 2: -Autostart scheduled task (best-effort) ==="
 $TestRoot2 = Join-Path $env:TEMP "sopforge-install-test-autostart-$(Get-Random)"
 $TaskName = "SOPForge-Server"
 $Port2 = $Port + 1
@@ -96,16 +106,19 @@ $Port2 = $Port + 1
 & $InstallScript -InstallPath $TestRoot2 -Port $Port2 -Autostart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Autostart failed (exit $LASTEXITCODE)" }
 
+if (-not (Test-Path (Join-Path $TestRoot2 "server\sopforge-server.exe"))) {
+    throw "FAIL: base install (files) did not succeed even though -Autostart is best-effort"
+}
+
 $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
 if (-not $Task) {
-    Write-Output "ESCALATE: scheduled task '$TaskName' was not created after -Autostart install."
-    Write-Output "This looks like an elevation/policy restriction on ONLOGON-triggered task"
-    Write-Output "registration for the current user, not a bug in install.ps1 -- see"
-    Write-Output "CLAUDE.md prime directive 1 and record this in phases/DEVIATIONS.md rather"
-    Write-Output "than silently skipping the autostart round trip."
-    # Best-effort cleanup of the half-completed install before escalating.
+    Write-Output "SKIP: scheduled task '$TaskName' could not be created on this machine/account"
+    Write-Output "(Task Scheduler permission restriction, documented in phases/DEVIATIONS.md)."
+    Write-Output "install.ps1 itself still succeeded -- this is the accepted best-effort behavior."
     & $UninstallScript -InstallPath $TestRoot2 -RemoveData | Out-Null
-    exit 1
+    Write-Output ""
+    Write-Output "ALL PASS (autostart round trip skipped: known environment limitation)"
+    exit 0
 }
 Write-Output "Autostart scheduled task confirmed via Get-ScheduledTask."
 
