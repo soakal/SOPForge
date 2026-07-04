@@ -11,7 +11,7 @@ from pathlib import Path
 from capture.hooks import InputRecorder
 from capture.manifest import ManifestBuilder
 from capture.redact import OcrUnavailableError, blur_regions, is_password_field, load_config
-from capture.redact import redact_screenshot as _redact_screenshot
+from capture.redact import redact_screenshot_tagged as _redact_screenshot_tagged
 from capture.shots import ScreenshotWriter
 from capture.uia import resolve_at
 
@@ -72,10 +72,9 @@ class Recorder:
         """Returns the manifest `redactions` list (region+reason) for the
         regions actually blurred."""
         try:
-            regions = _redact_screenshot(
+            return _redact_screenshot_tagged(
                 screenshot_path, element=element, config=self._redact_config
             )
-            return [{"region": list(r), "reason": "pattern"} for r in regions]
         except OcrUnavailableError:
             # OCR pattern-matching (email/IPv4) is unavailable this run, but
             # the password-field heuristic doesn't depend on OCR at all —
@@ -85,8 +84,8 @@ class Recorder:
             if element is not None and is_password_field(element, self._redact_config):
                 rect = element.get("bounding_rect")
                 if rect:
-                    blur_regions(screenshot_path, [tuple(rect)])
-                    return [{"region": list(rect), "reason": "password_heuristic"}]
+                    applied = blur_regions(screenshot_path, [tuple(rect)])
+                    return [{"region": list(r), "reason": "password_heuristic"} for r in applied]
             return []
 
     def _on_input_event(self, event):

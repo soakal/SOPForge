@@ -33,14 +33,18 @@ def test_scripted_session_produces_ordered_manifest_and_screenshots(
     # pipeline (screenshot written to disk *before* redaction runs on it),
     # not just that the end state happens to look right.
     redact_calls = []
-    real_redact_screenshot = recorder_module._redact_screenshot
+    real_redact_screenshot_tagged = recorder_module._redact_screenshot_tagged
 
-    def spying_redact_screenshot(image_path, element=None, config=None, out_path=None):
+    def spying_redact_screenshot_tagged(image_path, element=None, config=None, out_path=None):
         assert Path(image_path).exists() and Path(image_path).stat().st_size > 0
         redact_calls.append(Path(image_path))
-        return real_redact_screenshot(image_path, element=element, config=config, out_path=out_path)
+        return real_redact_screenshot_tagged(
+            image_path, element=element, config=config, out_path=out_path
+        )
 
-    monkeypatch.setattr(recorder_module, "_redact_screenshot", spying_redact_screenshot)
+    monkeypatch.setattr(
+        recorder_module, "_redact_screenshot_tagged", spying_redact_screenshot_tagged
+    )
 
     recorder = Recorder(tmp_path, machine="TESTHOST", os_build="26100")
     recorder.start()
@@ -97,3 +101,33 @@ def test_scripted_session_produces_ordered_manifest_and_screenshots(
     click_steps = [s for s in data["steps"] if s["action"] == "click"]
     assert all(s["window"]["process"].lower() == "notepad++.exe" for s in click_steps)
     assert all(s["window"]["class"] == "win32" for s in click_steps)
+
+
+def test_redaction_result_is_attached_to_its_manifest_step(
+    scratch_window, fake_mss, tmp_path, monkeypatch
+):
+    """Deterministic check that whatever redact_screenshot_tagged() returns
+    ends up verbatim on the *correct* step's `redactions` field — would catch
+    e.g. a password-heuristic blur mislabeled as reason "pattern", or a
+    region silently dropped between redaction and manifest write."""
+    fake_result = [{"region": [1, 2, 3, 4], "reason": "password_heuristic"}]
+    monkeypatch.setattr(recorder_module, "_redact_screenshot_tagged", lambda *a, **k: fake_result)
+
+    rect = scratch_window.rectangle()
+    recorder = Recorder(tmp_path)
+    recorder.start()
+    try:
+        recorder._on_input_event(
+            {
+                "action": "click",
+                "button": "left",
+                "x": rect.left + 250,
+                "y": rect.top + 200,
+                "ts": 1_700_000_000.0,
+            }
+        )
+    finally:
+        manifest_path = recorder.stop()
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert data["steps"][0]["redactions"] == fake_result

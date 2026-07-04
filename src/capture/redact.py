@@ -117,16 +117,42 @@ def blur_regions(image_path, regions, out_path=None, radius=12):
     return applied
 
 
+def redact_screenshot_tagged(image_path, element=None, config=None, out_path=None):
+    """Like redact_screenshot, but returns each applied region tagged with
+    *why* it was blurred — `[{"region": [...], "reason": "pattern" |
+    "password_heuristic"}, ...]` — so callers (e.g. the manifest) can record
+    which rule matched instead of conflating a password-field blur as an
+    OCR pattern match. Regions come from `blur_regions`' own return value
+    (post-clamping), not the raw input, so a manifest entry never claims a
+    region wider than what was actually blurred.
+
+    Always writes out_path (or image_path in place) exactly once for the
+    pattern pass, even with zero matches, matching redact_screenshot's
+    original "always produces an output file" behavior; the password pass
+    (if any) then blurs on top of that same file."""
+    config = config or load_config()
+    patterns = compile_patterns(config)
+    pattern_regions = find_pattern_regions(image_path, patterns)
+
+    applied_pattern = blur_regions(image_path, pattern_regions, out_path=out_path)
+    tagged = [{"region": list(r), "reason": "pattern"} for r in applied_pattern]
+
+    if element is not None and is_password_field(element, config):
+        rect = element.get("bounding_rect")
+        if rect:
+            target = out_path or image_path
+            applied_password = blur_regions(target, [tuple(rect)], out_path=out_path)
+            tagged += [
+                {"region": list(r), "reason": "password_heuristic"} for r in applied_password
+            ]
+    return tagged
+
+
 def redact_screenshot(image_path, element=None, config=None, out_path=None):
     """Full redaction pass for one screenshot: OCR-matched pattern regions,
     plus the element's whole bounding box if it looks like a password field.
     Raises OcrUnavailableError rather than silently skipping pattern
-    matching if no OCR engine is available."""
-    config = config or load_config()
-    patterns = compile_patterns(config)
-    regions = find_pattern_regions(image_path, patterns)
-    if element is not None and is_password_field(element, config):
-        rect = element.get("bounding_rect")
-        if rect:
-            regions.append(tuple(rect))
-    return blur_regions(image_path, regions, out_path=out_path)
+    matching if no OCR engine is available. Returns bare region tuples; use
+    redact_screenshot_tagged for the region-to-reason mapping."""
+    tagged = redact_screenshot_tagged(image_path, element=element, config=config, out_path=out_path)
+    return [tuple(entry["region"]) for entry in tagged]

@@ -81,7 +81,18 @@ class InputRecorder:
         self._keyboard_listener.wait()
 
     def stop(self):
+        """Stops and *joins* both listener threads (pynput's Listener is a
+        threading.Thread subclass) so that by the time stop() returns, no
+        on_click/on_press callback can still be executing — a caller (e.g.
+        Recorder.stop()) that finalizes state right after this call is
+        guaranteed there's no in-flight event that could still mutate it."""
         self._flush_typing()
-        for listener in (self._mouse_listener, self._keyboard_listener):
-            if listener is not None:
-                listener.stop()
+        listeners = [
+            listener
+            for listener in (self._mouse_listener, self._keyboard_listener)
+            if listener is not None
+        ]
+        for listener in listeners:
+            listener.stop()
+        for listener in listeners:
+            listener.join()
