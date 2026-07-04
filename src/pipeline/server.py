@@ -1,13 +1,15 @@
 """sopforge-server: FastAPI app consuming manifests + screenshot PNGs,
-running the Phase 2 template-mode pipeline (render.py + sidecar.py), and
-exposing session status, the sidecar report, generated docs, and a
-plain-HTML review page for a human reviewer.
+running the Phase 2/3 template-mode pipeline (render.py + sidecar.py +
+export_*.py) in the background (jobs.py), and exposing session status,
+the sidecar report, generated docs, and a plain-HTML review page.
 
-Everything here runs in template mode (task-12) — invariant L3 guarantees
-that's always available and always factually correct; no LLM call happens
-server-side yet. Sessions are processed synchronously and kept in an
-in-memory dict; a session id is only ever handed back once processing
-actually succeeded, so there's nothing orphaned or unreachable to track."""
+Generation is queued on a background worker thread (task-05) — POST
+/sessions returns as soon as the upload is validated and saved, never
+blocking on the actual rendering/export work; status moves
+queued -> processing -> done | error. Rendered artifacts are written to
+each session's own directory on disk (not duplicated in memory) and read
+back on each GET, the same way the manifest/screenshots themselves already
+lived on disk rather than in a Python object."""
 
 import io
 import json
@@ -23,6 +25,7 @@ from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import export_markdown_bundle
 from pipeline.export_pdf import render_pdf
+from pipeline.jobs import JobRunner
 from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_template_mode
 from pipeline.sidecar import build_sidecar_report
@@ -42,7 +45,40 @@ def _zip_directory(directory):
 def create_app(sessions_root: Path) -> FastAPI:
     app = FastAPI()
     sessions_root.mkdir(parents=True, exist_ok=True)
+    jobs = JobRunner()
+    # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
+
+    def _generate(session_id):
+        manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+
+        step_results, annotated_paths = render_steps_template_mode(
+            manifest, screenshots_dir, annotated_dir
+        )
+        report_step_results = [{**result, "used_fallback": False} for result in step_results]
+        report = build_sidecar_report(manifest, report_step_results, [], {})
+
+        md = render_markdown(manifest, step_results, annotated_paths, base_dir=annotated_dir)
+        (session_dir / "doc.md").write_text(md, encoding="utf-8")
+
+        html_doc = render_html(manifest, step_results, annotated_paths, base_dir=annotated_dir)
+        (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
+
+        docx_path = session_dir / "doc.docx"
+        _out, docx_warnings = assemble_docx(manifest, step_results, annotated_dir, docx_path)
+        report["docx_warnings"] = docx_warnings
+
+        pdf_path = session_dir / "doc.pdf"
+        render_pdf(manifest, step_results, annotated_paths, pdf_path)
+
+        single_html = render_single_file_html(manifest, step_results, annotated_paths)
+        (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
+
+        md_bundle_dir = session_dir / "md_bundle"
+        export_markdown_bundle(manifest, step_results, annotated_paths, md_bundle_dir)
+        (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
+
+        (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
 
     @app.post("/sessions")
     def create_session(manifest_json: str = Form(...), files: list[UploadFile] = File(default=[])):
@@ -76,100 +112,98 @@ def create_app(sessions_root: Path) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"invalid upload: {exc}") from exc
 
-        try:
-            step_results, annotated_paths = render_steps_template_mode(
-                manifest, screenshots_dir, annotated_dir
-            )
-            # Pure template mode never attempts an LLM call, so nothing here
-            # "fell back" from anything — used_fallback is False for every
-            # step (build_sidecar_report's shape, not assemble_steps' own).
-            report_step_results = [{**result, "used_fallback": False} for result in step_results]
-            report = build_sidecar_report(manifest, report_step_results, [], {})
-            md = render_markdown(manifest, step_results, annotated_paths, base_dir=annotated_dir)
-            html_doc = render_html(manifest, step_results, annotated_paths, base_dir=annotated_dir)
+        sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
+        jobs.submit(session_id, lambda: _generate(session_id))
+        return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
 
-            docx_path = session_dir / "doc.docx"
-            assemble_docx(manifest, step_results, annotated_dir, docx_path)
-            docx_bytes = docx_path.read_bytes()
+    @app.post("/sessions/{session_id}/rerender")
+    def rerender(session_id: str):
+        """Re-runs generation + all exports for an already-uploaded session
+        against the current config/models.toml (a no-op on template-mode
+        output today, since no LLM call reads it yet — the hook exists so
+        LLM-backed generation can be re-triggered after a config change
+        without re-uploading the manifest/screenshots)."""
+        _require_known_session(session_id)
+        jobs.submit(session_id, lambda: _generate(session_id))
+        return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
 
-            pdf_path = session_dir / "doc.pdf"
-            render_pdf(manifest, step_results, annotated_paths, pdf_path)
-            pdf_bytes = pdf_path.read_bytes()
-
-            single_html = render_single_file_html(manifest, step_results, annotated_paths)
-
-            md_bundle_dir = session_dir / "md_bundle"
-            export_markdown_bundle(manifest, step_results, annotated_paths, md_bundle_dir)
-            md_zip_bytes = _zip_directory(md_bundle_dir)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"generation failed: {exc}") from exc
-
-        sessions[session_id] = {
-            "status": "done",
-            "report": report,
-            "md": md,
-            "html": html_doc,
-            "docx": docx_bytes,
-            "pdf": pdf_bytes,
-            "single_html": single_html,
-            "md_zip": md_zip_bytes,
-        }
-        return {"session_id": session_id, "status": "done"}
-
-    def _session_or_404(session_id):
-        session = sessions.get(session_id)
-        if session is None:
+    def _require_known_session(session_id):
+        if session_id not in sessions:
             raise HTTPException(status_code=404, detail="session not found")
-        return session
+
+    def _require_done(session_id):
+        _require_known_session(session_id)
+        status = jobs.status(session_id)
+        if status["status"] != "done":
+            raise HTTPException(
+                status_code=409, detail=f"session not ready (status: {status['status']})"
+            )
+        return sessions[session_id][3]  # session_dir
 
     @app.get("/sessions/{session_id}/status")
-    async def get_status(session_id: str):
-        return {"status": _session_or_404(session_id)["status"]}
+    def get_status(session_id: str):
+        _require_known_session(session_id)
+        status = jobs.status(session_id)
+        body = {"status": status["status"]}
+        if status["status"] == "error":
+            body["error"] = status["error"]
+        return body
 
     @app.get("/sessions/{session_id}/report")
-    async def get_report(session_id: str):
-        return _session_or_404(session_id)["report"]
+    def get_report(session_id: str):
+        session_dir = _require_done(session_id)
+        return json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
 
     @app.get("/sessions/{session_id}/doc.md")
-    async def get_doc_md(session_id: str):
-        return PlainTextResponse(_session_or_404(session_id)["md"], media_type="text/markdown")
+    def get_doc_md(session_id: str):
+        session_dir = _require_done(session_id)
+        return PlainTextResponse(
+            (session_dir / "doc.md").read_text(encoding="utf-8"), media_type="text/markdown"
+        )
 
     @app.get("/sessions/{session_id}/doc.html")
-    async def get_doc_html(session_id: str):
-        return HTMLResponse(_session_or_404(session_id)["html"])
+    def get_doc_html(session_id: str):
+        session_dir = _require_done(session_id)
+        return HTMLResponse((session_dir / "doc.html").read_text(encoding="utf-8"))
 
     @app.get("/sessions/{session_id}/review")
-    async def get_review(session_id: str):
-        return HTMLResponse(render_review_page(_session_or_404(session_id)["report"]))
+    def get_review(session_id: str):
+        session_dir = _require_done(session_id)
+        report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+        return HTMLResponse(render_review_page(report))
 
     @app.get("/sessions/{session_id}/doc.docx")
-    async def get_doc_docx(session_id: str):
+    def get_doc_docx(session_id: str):
+        session_dir = _require_done(session_id)
         return Response(
-            _session_or_404(session_id)["docx"],
+            (session_dir / "doc.docx").read_bytes(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             headers={"Content-Disposition": 'attachment; filename="doc.docx"'},
         )
 
     @app.get("/sessions/{session_id}/doc.pdf")
-    async def get_doc_pdf(session_id: str):
+    def get_doc_pdf(session_id: str):
+        session_dir = _require_done(session_id)
         return Response(
-            _session_or_404(session_id)["pdf"],
+            (session_dir / "doc.pdf").read_bytes(),
             media_type="application/pdf",
             headers={"Content-Disposition": 'attachment; filename="doc.pdf"'},
         )
 
     @app.get("/sessions/{session_id}/doc.single.html")
-    async def get_doc_single_html(session_id: str):
+    def get_doc_single_html(session_id: str):
+        session_dir = _require_done(session_id)
         return Response(
-            _session_or_404(session_id)["single_html"],
+            (session_dir / "doc.single.html").read_text(encoding="utf-8"),
             media_type="text/html",
             headers={"Content-Disposition": 'attachment; filename="doc.single.html"'},
         )
 
     @app.get("/sessions/{session_id}/export.md.zip")
-    async def get_export_md_zip(session_id: str):
+    def get_export_md_zip(session_id: str):
+        session_dir = _require_done(session_id)
         return Response(
-            _session_or_404(session_id)["md_zip"],
+            (session_dir / "export.md.zip").read_bytes(),
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="export.md.zip"'},
         )

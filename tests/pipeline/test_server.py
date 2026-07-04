@@ -1,7 +1,12 @@
 """sopforge-server FastAPI app: POST /sessions (manifest + PNGs), GET
 status/report, doc downloads, and the plain-HTML review page — all running
-template mode (task-12) end-to-end through a real TestClient."""
+template mode (task-12) end-to-end through a real TestClient.
 
+Generation runs on a background job (task-05), so POST /sessions returns
+"queued"/"processing" immediately — tests poll /status until "done" (or a
+terminal "error") before asserting on downstream endpoints."""
+
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -37,35 +42,52 @@ def _create_session(client, tmp_path, fixture="sample-manifest.json"):
     return resp
 
 
+def _wait_for_terminal_status(client, session_id, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = client.get(f"/sessions/{session_id}/status").json()
+        if status["status"] in ("done", "error"):
+            return status
+        time.sleep(0.05)
+    raise AssertionError(f"session {session_id} never reached a terminal status")
+
+
+def _create_and_wait(client, tmp_path, fixture="sample-manifest.json"):
+    session_id = _create_session(client, tmp_path, fixture).json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    return session_id, status
+
+
 def test_create_session_and_check_status(tmp_path):
     client = _make_client(tmp_path)
     resp = _create_session(client, tmp_path)
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] == "done"
+    assert body["status"] in ("queued", "processing", "done")
     session_id = body["session_id"]
 
-    status_resp = client.get(f"/sessions/{session_id}/status")
-    assert status_resp.status_code == 200
-    assert status_resp.json() == {"status": "done"}
+    status = _wait_for_terminal_status(client, session_id)
+    assert status == {"status": "done"}
 
 
 def test_get_report_lists_expected_categories(tmp_path):
     client = _make_client(tmp_path)
-    session_id = _create_session(client, tmp_path).json()["session_id"]
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
 
     report_resp = client.get(f"/sessions/{session_id}/report")
     assert report_resp.status_code == 200
     report = report_resp.json()
-    assert set(report) == {"template_fallback_steps", "verify_claims", "empty_metadata_steps"}
+    assert {"template_fallback_steps", "verify_claims", "empty_metadata_steps"} <= set(report)
     # sample-manifest.json's step-003 has empty element metadata.
     assert "step-003" in report["empty_metadata_steps"]
 
 
 def test_get_doc_md_and_html(tmp_path):
     client = _make_client(tmp_path)
-    session_id = _create_session(client, tmp_path).json()["session_id"]
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
 
     md_resp = client.get(f"/sessions/{session_id}/doc.md")
     assert md_resp.status_code == 200
@@ -78,7 +100,8 @@ def test_get_doc_md_and_html(tmp_path):
 
 def test_review_page_renders_sidecar_report(tmp_path):
     client = _make_client(tmp_path)
-    session_id = _create_session(client, tmp_path).json()["session_id"]
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
 
     review_resp = client.get(f"/sessions/{session_id}/review")
     assert review_resp.status_code == 200
@@ -86,11 +109,51 @@ def test_review_page_renders_sidecar_report(tmp_path):
     assert review_resp.text.startswith("<!doctype html>")
 
 
+def test_report_and_doc_endpoints_409_while_not_done(tmp_path):
+    """Requesting a doc before the background job finishes must be a clear
+    409, never a crash or a silently-empty/partial response."""
+    client = _make_client(tmp_path)
+    session_id = _create_session(client, tmp_path).json()["session_id"]
+
+    # There is necessarily a window (however short) before "done"; if the
+    # background thread already finished by the time we check, the 409
+    # path just wasn't exercised this run — assert only when it's real.
+    status = client.get(f"/sessions/{session_id}/status").json()
+    if status["status"] != "done":
+        resp = client.get(f"/sessions/{session_id}/report")
+        assert resp.status_code == 409
+
+    _wait_for_terminal_status(client, session_id)
+
+
 def test_unknown_session_returns_404_on_every_endpoint(tmp_path):
     client = _make_client(tmp_path)
     for path in ("status", "report", "doc.md", "doc.html", "review"):
         resp = client.get(f"/sessions/does-not-exist/{path}")
         assert resp.status_code == 404, path
+
+
+def test_rerender_endpoint_requeues_and_reaches_done_again(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+
+    rerender_resp = client.post(f"/sessions/{session_id}/rerender")
+    assert rerender_resp.status_code == 200
+    assert rerender_resp.json()["status"] in ("queued", "processing", "done")
+
+    status = _wait_for_terminal_status(client, session_id)
+    assert status == {"status": "done"}
+
+    # Downstream content still there after re-render.
+    report_resp = client.get(f"/sessions/{session_id}/report")
+    assert report_resp.status_code == 200
+
+
+def test_rerender_unknown_session_returns_404(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.post("/sessions/does-not-exist/rerender")
+    assert resp.status_code == 404
 
 
 def test_invalid_manifest_json_returns_400_and_creates_no_session(tmp_path):
@@ -123,9 +186,12 @@ def test_path_traversal_in_uploaded_filename_cannot_escape_the_session_directory
         data={"manifest_json": manifest_json},
         files=[("files", ("../../escape.png", buf, "image/png"))],
     )
+    assert resp.status_code == 200  # upload accepted; generation fails in the background
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
     # The manifest's real screenshots are still missing (only the
     # traversal filename was uploaded), so generation fails loudly...
-    assert resp.status_code in (400, 500)
+    assert status["status"] == "error"
     # ...and, critically, nothing was ever written outside sessions_root.
     sessions_root = tmp_path / "sessions"
     escaped = sessions_root / "escape.png"

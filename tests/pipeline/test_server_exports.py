@@ -1,8 +1,12 @@
 """Server export download endpoints (AC1 rollup): /doc.docx, /doc.pdf,
 /doc.single.html, /export.md.zip — each with correct content-type and
-content-disposition, serving structurally valid content."""
+content-disposition, serving structurally valid content.
+
+Generation runs on a background job (task-05), so session creation polls
+/status until "done" before any export endpoint is hit."""
 
 import io
+import time
 import zipfile
 from pathlib import Path
 
@@ -19,6 +23,18 @@ FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 def _make_client(tmp_path):
     app = create_app(sessions_root=tmp_path / "sessions")
     return TestClient(app)
+
+
+def _wait_until_done(client, session_id, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = client.get(f"/sessions/{session_id}/status").json()
+        if status["status"] == "done":
+            return
+        if status["status"] == "error":
+            raise AssertionError(f"session failed: {status.get('error')}")
+        time.sleep(0.05)
+    raise AssertionError(f"session {session_id} never reached done")
 
 
 def _create_session(tmp_path):
@@ -38,7 +54,9 @@ def _create_session(tmp_path):
         files=files,
     )
     assert resp.status_code == 200
-    return client, resp.json()["session_id"], manifest
+    session_id = resp.json()["session_id"]
+    _wait_until_done(client, session_id)
+    return client, session_id, manifest
 
 
 def test_doc_docx_endpoint(tmp_path):
