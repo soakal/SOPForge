@@ -21,11 +21,14 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
+from pipeline.config import load_models_config
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import export_markdown_bundle
 from pipeline.export_pdf import render_pdf
 from pipeline.jobs import JobRunner
+from pipeline.library import search as library_search
+from pipeline.library import upsert_entry
 from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_template_mode
 from pipeline.sidecar import build_sidecar_report
@@ -79,6 +82,7 @@ def create_app(sessions_root: Path) -> FastAPI:
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
 
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
+        upsert_entry(sessions_root, session_id, manifest, report)
 
     @app.post("/sessions")
     def create_session(manifest_json: str = Form(...), files: list[UploadFile] = File(default=[])):
@@ -207,5 +211,13 @@ def create_app(sessions_root: Path) -> FastAPI:
             media_type="application/zip",
             headers={"Content-Disposition": 'attachment; filename="export.md.zip"'},
         )
+
+    @app.get("/library")
+    def get_library(q: str | None = None):
+        return library_search(sessions_root, q)
+
+    @app.get("/config")
+    def get_config():
+        return load_models_config().model_dump()
 
     return app
