@@ -8,6 +8,7 @@ module never generates a docx itself, only compares two that already exist."""
 
 import re
 import zipfile
+from pathlib import Path
 
 _RSID_ATTR_RE = re.compile(rb'\sw:rsid\w*="[0-9A-Fa-f]+"')
 _TIMESTAMP_ATTR_RE = re.compile(rb'\s(?:w:date|dcterms:created|dcterms:modified)="[^"]*"')
@@ -33,4 +34,13 @@ def compare_document_xml(docx_path, golden_path):
     normalization."""
     actual = normalize_document_xml(extract_document_xml(docx_path))
     golden = normalize_document_xml(extract_document_xml(golden_path))
+    return actual == golden, actual, golden
+
+
+def compare_document_xml_to_golden_file(docx_path, golden_xml_path):
+    """Like compare_document_xml, but the golden reference is a bare
+    word/document.xml file committed directly to the repo — diffable in a
+    PR, unlike an opaque docx zip blob."""
+    actual = normalize_document_xml(extract_document_xml(docx_path))
+    golden = normalize_document_xml(Path(golden_xml_path).read_bytes())
     return actual == golden, actual, golden
