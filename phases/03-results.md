@@ -190,3 +190,30 @@ skipped, 3 deselected; `ruff` clean. See `phases/DEVIATIONS.md` for the
 task-09 sidecar-flags update and a documented intermittent-network-stall
 finding in the packaged-EXE end-to-end test.
 
+## Post-Phase-3: review UI usability pass + a real restart bug fixed
+
+A live walkthrough of the actual review UI (not just re-reading source)
+found a serious bug: the in-memory `sessions` index was never rebuilt from
+disk at startup, so restarting the server (which happens routinely --
+reboots, manual relaunches, crashes) made every previously-completed
+session permanently 404 via the API/UI, even though the persistent library
+index still listed it and its docs were still on disk. Fixed by persisting
+each upload's raw manifest JSON to `session_dir/manifest.json` and
+rebuilding `sessions` (plus seeding job status as done) from any session
+directory with both `manifest.json` and `report.json` present at server
+startup. Verified directly: created a session, killed the server process,
+started a fresh one against the same sessions root, confirmed the session
+was still viewable, downloadable, and re-renderable (not just via the test
+suite -- against a real running dev server, with a real process restart).
+
+Also added, found missing during the same walkthrough: a browser upload
+form on the library page (previously upload was API/curl-only), a
+re-render button that redirects back to the session page instead of
+dumping raw JSON in the browser, a back-to-library link, the session's
+real title/date instead of just its UUID, and a delete button (session
+directory + library entry + in-memory registration, all removed
+together). Rebuilt `sopforge-server.exe`; AC3 timing re-verified: first
+launch 6.541s, steady-state average 3.751s (threshold 5.0s), clean exit
+codes `[0, 0, 0, 0]`. AC5's golden-docx E2E test against the rebuilt EXE:
+still passes. Full suite: 240 passed, 5 skipped, 3 deselected; `ruff` clean.
+

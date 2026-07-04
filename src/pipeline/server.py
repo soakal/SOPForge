@@ -12,7 +12,15 @@ blocking on the actual rendering/export work; status moves
 queued -> processing -> done | error. Rendered artifacts are written to
 each session's own directory on disk (not duplicated in memory) and read
 back on each GET, the same way the manifest/screenshots themselves already
-lived on disk rather than in a Python object."""
+lived on disk rather than in a Python object.
+
+The in-memory `sessions` index is rebuilt from disk at startup
+(_restore_sessions_from_disk) -- without this, a session becomes
+permanently inaccessible via the API/UI the moment the process restarts,
+even though the persistent library index (library.py) still lists it and
+its generated docs are still sitting on disk. Each upload's raw manifest
+JSON is persisted to session_dir/manifest.json specifically so this
+restore is possible."""
 
 import io
 import json
@@ -26,7 +34,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
 from pipeline.config import load_models_config
 from pipeline.docx_assembler import assemble_docx
@@ -34,6 +42,7 @@ from pipeline.export_html import render_single_file_html
 from pipeline.export_md import export_markdown_bundle
 from pipeline.export_pdf import render_pdf
 from pipeline.jobs import JobRunner
+from pipeline.library import remove_entry
 from pipeline.library import search as library_search
 from pipeline.library import upsert_entry
 from pipeline.llm_client import LLMClient
@@ -62,6 +71,37 @@ def _default_llm_client_factory():
     return LLMClient(load_models_config().steps)
 
 
+def _restore_sessions_from_disk(sessions_root, sessions, jobs):
+    """Rebuilds the in-memory `sessions` index from session directories a
+    previous server run left on disk. Only restores sessions that finished
+    cleanly (manifest.json AND report.json both present) -- a session that
+    was mid-upload or mid-generation when the previous process died has no
+    completed output to serve and was never added to the library index
+    either (upsert_entry only runs after report.json is written), so it's
+    left alone rather than guessed at."""
+    if not sessions_root.exists():
+        return
+    for session_dir in sessions_root.iterdir():
+        if not session_dir.is_dir():
+            continue
+        manifest_path = session_dir / "manifest.json"
+        report_path = session_dir / "report.json"
+        if not (manifest_path.exists() and report_path.exists()):
+            continue
+        try:
+            manifest = load_manifest(manifest_path)
+        except Exception:  # noqa: BLE001 - a corrupt leftover must never crash startup
+            continue
+        session_id = session_dir.name
+        sessions[session_id] = (
+            manifest,
+            session_dir / "screenshots",
+            session_dir / "annotated",
+            session_dir,
+        )
+        jobs.seed_done(session_id)
+
+
 def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -78,6 +118,7 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
     make_llm_client = llm_client_factory or _default_llm_client_factory
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
+    _restore_sessions_from_disk(sessions_root, sessions, jobs)
 
     def _generate(session_id):
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
@@ -121,8 +162,10 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
 
-    @app.post("/sessions")
-    def create_session(manifest_json: str = Form(...), files: list[UploadFile] = File(default=[])):
+    def _ingest_session(manifest_json, files):
+        """Shared by the JSON API (POST /sessions) and the browser upload
+        form (POST /ui/upload). Returns the new session_id, or raises
+        HTTPException on bad input."""
         try:
             manifest = load_manifest(json.loads(manifest_json))
         except Exception as exc:
@@ -153,9 +196,32 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"invalid upload: {exc}") from exc
 
+        # Persisted so a server restart can rebuild `sessions` from disk
+        # (_restore_sessions_from_disk) -- the manifest otherwise only ever
+        # exists as an in-memory object.
+        (session_dir / "manifest.json").write_text(manifest_json, encoding="utf-8")
+
         sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
         jobs.submit(session_id, lambda: _generate(session_id))
+        return session_id
+
+    @app.post("/sessions")
+    def create_session(manifest_json: str = Form(...), files: list[UploadFile] = File(default=[])):
+        session_id = _ingest_session(manifest_json, files)
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
+
+    @app.post("/ui/upload")
+    def ui_upload(
+        manifest_file: UploadFile = File(...), files: list[UploadFile] = File(default=[])
+    ):
+        try:
+            manifest_json = manifest_file.file.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"invalid manifest encoding: {exc}"
+            ) from exc
+        session_id = _ingest_session(manifest_json, files)
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")
     def rerender(session_id: str):
@@ -167,6 +233,28 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         _require_known_session(session_id)
         jobs.submit(session_id, lambda: _generate(session_id))
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
+
+    @app.post("/ui/sessions/{session_id}/rerender")
+    def ui_rerender(session_id: str):
+        """Same effect as POST /sessions/{id}/rerender, but redirects back
+        to the session page instead of returning JSON -- the JSON route
+        stays as-is for API/script callers, since a plain HTML <form> POST
+        would otherwise navigate the browser to a raw JSON blob."""
+        _require_known_session(session_id)
+        jobs.submit(session_id, lambda: _generate(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    @app.post("/ui/sessions/{session_id}/delete")
+    def ui_delete(session_id: str):
+        """Removes a session entirely: its directory on disk, its library
+        index entry, and its in-memory registration. Irreversible -- there
+        is no undo/trash, matching how uninstall.ps1 -RemoveData works."""
+        _require_known_session(session_id)
+        session_dir = sessions[session_id][3]
+        del sessions[session_id]
+        shutil.rmtree(session_dir, ignore_errors=True)
+        remove_entry(sessions_root, session_id)
+        return RedirectResponse("/ui", status_code=303)
 
     def _require_known_session(session_id):
         if session_id not in sessions:
@@ -268,10 +356,13 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         status = jobs.status(session_id)
         if status["status"] != "done":
             return HTMLResponse(render_session_processing_page(session_id, status))
+        manifest = sessions[session_id][0]
         session_dir = sessions[session_id][3]
         report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
         config = load_models_config().model_dump()
-        return HTMLResponse(render_session_page(session_id, report, config))
+        title = manifest.session.title or manifest.session.id
+        date = manifest.session.started_utc
+        return HTMLResponse(render_session_page(session_id, title, date, report, config))
 
     @app.get("/sessions/{session_id}/{filename}")
     def get_annotated_image(session_id: str, filename: str):

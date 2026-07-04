@@ -43,6 +43,13 @@ def render_library_page(entries, query=None):
         f'<input type="text" name="q" value="{query_value}" placeholder="Search title or date">'
         '<button type="submit">Search</button></form>'
         f"<ul>{rows}</ul>"
+        "<h2>Upload a new session</h2>"
+        '<form method="post" action="/ui/upload" enctype="multipart/form-data">'
+        "<p><label>Manifest (manifest.json): "
+        '<input type="file" name="manifest_file" accept=".json" required></label></p>'
+        "<p><label>Screenshots: "
+        '<input type="file" name="files" multiple required></label></p>'
+        '<button type="submit">Upload</button></form>'
         "</body></html>"
     )
 
@@ -51,6 +58,7 @@ def render_session_processing_page(session_id, status):
     return (
         "<!doctype html>"
         '<html><head><meta charset="utf-8"><title>SOPForge Review</title></head><body>'
+        '<p><a href="/ui">&larr; Back to library</a></p>'
         f"<h1>Session {html.escape(session_id)}</h1>"
         f'<p data-status="{html.escape(status["status"])}">Status: {html.escape(status["status"])}</p>'
         + (f"<p>{html.escape(status.get('error', ''))}</p>" if status["status"] == "error" else "")
@@ -58,7 +66,7 @@ def render_session_processing_page(session_id, status):
     )
 
 
-def render_session_page(session_id, report, config):
+def render_session_page(session_id, title, date, report, config):
     verify_items = [
         f"{c['claim_id']}: {c['text']}" if c.get("text") else c["claim_id"]
         for c in report.get("verify_claims", [])
@@ -96,12 +104,16 @@ def render_session_page(session_id, report, config):
     return (
         "<!doctype html>"
         '<html><head><meta charset="utf-8"><title>SOPForge Review</title></head><body>'
-        f"<h1>Session {sid}</h1>"
+        '<p><a href="/ui">&larr; Back to library</a></p>'
+        f"<h1>{html.escape(title)}</h1>"
+        f"<p>{html.escape(date)} &mdash; {sid}</p>"
         f'<iframe src="/sessions/{sid}/doc.html" '
         'style="width:100%;height:400px;border:1px solid #ccc;"></iframe>'
         f"{sections}"
-        f'<form method="post" action="/sessions/{sid}/rerender">'
+        f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'
+        f'<form method="post" action="/ui/sessions/{sid}/delete">'
+        '<button type="submit">Delete</button></form>'
         f"<h2>Downloads</h2><ul>{downloads}</ul>"
         f"<h2>Config (read-only)</h2><ul>{config_rows}</ul>"
         "</body></html>"

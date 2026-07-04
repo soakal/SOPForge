@@ -46,8 +46,38 @@ registers a per-user scheduled task that launches the server at logon.
 `-Autostart` is **best-effort** — some machines/accounts restrict
 `AtLogOn`-triggered scheduled task registration even without elevation; if
 that happens you'll see a warning, but SOPForge itself still installs and
-works fine. Launch `sopforge-server.exe` yourself in that case, or register
-the task manually.
+works fine either way.
+
+#### If `-Autostart` fails: two manual ways to start the server automatically
+
+**Option 1 — Startup folder shortcut (simplest, usually works even when the
+scheduled task doesn't, since it isn't subject to the same Task Scheduler
+restriction):**
+```powershell
+$startup = [Environment]::GetFolderPath("Startup")
+$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut("$startup\SOPForge-Server.lnk")
+$shortcut.TargetPath = "$env:LOCALAPPDATA\SOPForge\server\sopforge-server.exe"
+$shortcut.Arguments = "--port 8420 --sessions-root `"$env:LOCALAPPDATA\SOPForge\sessions`""
+$shortcut.Save()
+```
+This runs the server whenever you log in. To remove it later, just delete
+`SOPForge-Server.lnk` from that Startup folder (or open it with
+`explorer (Get-Item $startup).FullName`).
+
+**Option 2 — register the scheduled task yourself** through the Task
+Scheduler GUI (`taskschd.msc`), if your account's restriction only blocks
+the *unattended*/scripted registration path and not an interactive one:
+1. Task Scheduler → Create Task (not "Create Basic Task").
+2. General tab: name it "SOPForge-Server"; under "Security options" choose
+   "Run only when user is logged on."
+3. Triggers tab → New → "At log on" → your user account.
+4. Actions tab → New → Program/script: the full path to
+   `sopforge-server.exe` (e.g. `%LOCALAPPDATA%\SOPForge\server\sopforge-server.exe`);
+   Add arguments: `--port 8420 --sessions-root "%LOCALAPPDATA%\SOPForge\sessions"`.
+5. OK, then right-click the new task → Run, to confirm it starts the server
+   (check `http://127.0.0.1:8420/` in a browser).
+
+Either way, this only needs doing once per machine.
 
 ```powershell
 .\uninstall.ps1                                  # removes what install.ps1 created
@@ -208,15 +238,26 @@ empty for now.
 
 Open **http://127.0.0.1:<port>/** (or `/ui`):
 
-- **Library page**: every past session, searchable by title/date substring.
-  Click a session to open its review page.
-- **Session page**: an iframe preview of the generated doc, the sidecar
-  report as three color-coded sections (see §6), a **Re-render** button, a
-  **Downloads** list (docx/pdf/single-file-html/markdown-zip), and a
-  read-only panel showing the current `config/models.toml`.
+- **Library page**: every past session, searchable by title/date substring,
+  plus an **upload form** — pick a captured session's `manifest.json` and its
+  screenshots, hit Upload, and it lands you on that session's processing
+  page. This is the easiest way to generate a doc; no `curl`/API calls
+  needed (§4's API walkthrough still works too, e.g. for scripting).
+- **Session page**: a back-to-library link, the session's real title and
+  date, an iframe preview of the generated doc, the sidecar report as three
+  color-coded sections (see §6), a **Re-render** button, a **Delete**
+  button (removes the session's files, library entry, and everything —
+  irreversible, no undo), a **Downloads** list
+  (docx/pdf/single-file-html/markdown-zip), and a read-only panel showing
+  the current `config/models.toml`.
 
-No JavaScript is required — the search box and re-render button are plain
-HTML forms.
+No JavaScript is required — the search box, upload form, re-render button,
+and delete button are all plain HTML forms.
+
+Sessions survive a server restart: a session's manifest is saved to its own
+folder on disk, and the server rebuilds its session list from disk at
+startup — restarting (or a crash) never makes a past session's docs
+inaccessible.
 
 ---
 

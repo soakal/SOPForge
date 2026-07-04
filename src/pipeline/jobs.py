@@ -36,6 +36,16 @@ class JobRunner:
         with self._lock:
             return dict(self._statuses.get(job_id, {}))
 
+    def seed_done(self, job_id):
+        """Marks job_id as done without running anything -- used at server
+        startup to restore status for sessions that finished in a previous
+        run (their output files already exist on disk; nothing needs
+        regenerating). Never call this for a job that hasn't actually
+        completed -- there is no way to distinguish a seeded "done" from a
+        genuinely finished one afterward."""
+        with self._lock:
+            self._statuses[job_id] = {"status": "done", "error": None}
+
     def _worker(self):
         while True:
             job_id, fn = self._queue.get()

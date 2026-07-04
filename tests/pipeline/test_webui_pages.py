@@ -220,7 +220,7 @@ def test_session_page_has_rerender_form(tmp_path):
     session_id = _create_and_wait(client, tmp_path)
 
     resp = client.get(f"/ui/sessions/{session_id}")
-    assert f'<form method="post" action="/sessions/{session_id}/rerender">' in resp.text
+    assert f'<form method="post" action="/ui/sessions/{session_id}/rerender">' in resp.text
     assert "<button" in resp.text
 
 
@@ -240,8 +240,13 @@ def test_rerender_form_submission_actually_rerenders(tmp_path):
     client = _make_client(tmp_path)
     session_id = _create_and_wait(client, tmp_path)
 
-    resp = client.post(f"/sessions/{session_id}/rerender")
-    assert resp.status_code == 200
+    # Matches what the session page's <form> actually submits to -- the
+    # UI route redirects back to the session page instead of returning
+    # JSON, since a browser form POST would otherwise navigate to a raw
+    # JSON blob.
+    resp = client.post(f"/ui/sessions/{session_id}/rerender", follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/ui/sessions/{session_id}"
     _wait_until_done(client, session_id)
 
     page = client.get(f"/ui/sessions/{session_id}")

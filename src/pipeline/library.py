@@ -76,6 +76,13 @@ def upsert_entry(sessions_root, session_id, manifest, report):
     return entry
 
 
+def remove_entry(sessions_root, session_id):
+    """Removes this session's library entry, if present. No-op if it isn't
+    (deleting an already-removed or never-indexed session)."""
+    entries = [e for e in load_index(sessions_root) if e["session_id"] != session_id]
+    _save_index(sessions_root, entries)
+
+
 def search(sessions_root, query=None):
     """Returns library entries whose title or date contains `query`
     (case-insensitive substring), or all entries if query is empty/None."""
