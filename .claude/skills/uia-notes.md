@@ -52,12 +52,15 @@ nor a raw `SendInput` call via ctypes (bypassing pynput entirely) is observed by
 process at the same (non-admin) integrity level as the hook. Repro: install a
 listener, call `l.wait()` to confirm it's live, inject one click/keypress via each
 of pynput's Controller and a hand-rolled ctypes `SendInput`, and in both cases zero
-events arrive. This is very likely specific to however this remote/automated VM
-session delivers input (whatever mechanism gives the agent "hands" on this machine
-does not appear to be indistinguishable hardware-level input from the hook's point
-of view) — it should not reflect how `src/capture/hooks.py`'s `InputRecorder` behaves
-for a real physical user, since hardware-generated input is exactly what
-`WH_MOUSE_LL`/`WH_KEYBOARD_LL` exist to see.
+events arrive. Root cause is sharper than "invisible": a direct `SendInput` call
+returns `0` (failure) with `GetLastError() == ERROR_ACCESS_DENIED (5)` — this
+session actively **denies** synthetic input injection, it doesn't just fail to
+route it to hooks. This is very likely specific to however this remote/automated
+VM session delivers input (whatever mechanism gives the agent "hands" on this
+machine is evidently blocked from injecting raw input, by design) — it should not
+reflect how `src/capture/hooks.py`'s `InputRecorder` behaves for a real physical
+user, since hardware-generated input is exactly what `WH_MOUSE_LL`/`WH_KEYBOARD_LL`
+exist to see, and a real user's OS session would not have this restriction.
 
 **Consequence for testing:** any test in this environment that relies on injected
 synthetic input reaching a global low-level hook cannot pass, regardless of which

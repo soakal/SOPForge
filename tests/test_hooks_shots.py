@@ -1,12 +1,15 @@
 """InputRecorder logic is verified by driving its callback methods directly
-rather than injecting real OS-level clicks/keystrokes: this build VM's input
-path does not deliver synthetic input (pynput Controller *or* a hand-rolled
-ctypes SendInput) to WH_MOUSE_LL/WH_KEYBOARD_LL hooks — confirmed by direct
+rather than injecting real OS-level clicks/keystrokes: this build VM denies
+synthetic input outright (pynput Controller and a hand-rolled ctypes SendInput
+both fail — SendInput returns 0 with GetLastError=ERROR_ACCESS_DENIED) so it
+can never reach WH_MOUSE_LL/WH_KEYBOARD_LL hooks here — confirmed by direct
 repro and documented in .claude/skills/uia-notes.md. That's an environment
 limitation, not a defect in InputRecorder: real hardware input does reach
-those hooks, which is what matters for an actual capture session. Screenshot
-capture (ScreenshotWriter) doesn't depend on input hooks at all, so it's
-exercised for real against the live desktop."""
+those hooks, which is what matters for an actual capture session.
+ScreenshotWriter's naming/file-write logic is exercised for real (bytes
+actually hit disk), but the underlying mss session is faked too — real GDI
+BitBlt capture also fails on this VM (see uia-notes.md) and is unverified
+here; it needs a normal desktop session to confirm."""
 
 from pynput import keyboard, mouse
 
@@ -40,6 +43,22 @@ class _FakeSct:
 
     def __exit__(self, *exc_info):
         return False
+
+
+def test_start_stop_lifecycle_wires_real_pynput_listeners():
+    """start()/stop() do reach real pynput.Listener objects in this
+    environment (only *injected* input is blocked, not listener installation
+    — see module docstring), so a wiring bug here (swapped callbacks, wrong
+    kwarg) would not be caught by the direct-callback tests above."""
+    recorder = InputRecorder(on_event=lambda e: None)
+    recorder.start()
+    try:
+        assert recorder._mouse_listener.running
+        assert recorder._keyboard_listener.running
+    finally:
+        recorder.stop()
+    assert not recorder._mouse_listener.running
+    assert not recorder._keyboard_listener.running
 
 
 def test_click_events_carry_screen_coords_and_button():

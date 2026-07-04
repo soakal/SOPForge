@@ -3,6 +3,7 @@ only. Typed content is never captured — a burst of keystrokes is summarized
 as a fixed, content-free string (redaction-by-design, not a redaction pass
 applied after the fact)."""
 
+import threading
 import time
 
 from pynput import keyboard, mouse
@@ -17,17 +18,22 @@ _BUTTON_NAMES = {
 
 
 def _button_name(button):
-    return _BUTTON_NAMES.get(button, "left")
+    return _BUTTON_NAMES.get(button, getattr(button, "name", "unknown"))
 
 
 class InputRecorder:
     """Records clicks as individual events and contiguous keystroke bursts as
-    a single summarized "type" event, flushed on the next click or on stop()."""
+    a single summarized "type" event, flushed on the next click or on stop().
+    `_on_press` runs on pynput's keyboard-listener thread while `_flush_typing`
+    can run from the mouse-listener thread or the caller's thread (stop()), so
+    the typing-state read/emit/clear is guarded by a lock to avoid losing a
+    keypress that lands mid-flush."""
 
     def __init__(self, on_event):
         self.on_event = on_event
         self._typing = False
         self._last_pos = (0, 0)
+        self._lock = threading.Lock()
         self._mouse_listener = None
         self._keyboard_listener = None
 
@@ -47,12 +53,15 @@ class InputRecorder:
         )
 
     def _on_press(self, key):
-        self._typing = True
+        with self._lock:
+            self._typing = True
 
     def _flush_typing(self):
-        if not self._typing:
-            return
-        x, y = self._last_pos
+        with self._lock:
+            if not self._typing:
+                return
+            self._typing = False
+            x, y = self._last_pos
         self.on_event(
             {
                 "action": "type",
@@ -62,13 +71,14 @@ class InputRecorder:
                 "ts": time.time(),
             }
         )
-        self._typing = False
 
     def start(self):
         self._mouse_listener = mouse.Listener(on_click=self._on_click)
         self._keyboard_listener = keyboard.Listener(on_press=self._on_press)
         self._mouse_listener.start()
         self._keyboard_listener.start()
+        self._mouse_listener.wait()
+        self._keyboard_listener.wait()
 
     def stop(self):
         self._flush_typing()
