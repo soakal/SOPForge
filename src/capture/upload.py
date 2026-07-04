@@ -45,9 +45,9 @@ def upload_session(output_dir, server_url=None, timeout=10.0, transport=None):
         logger.warning("could not read manifest at %s for auto-upload", manifest_path)
         return None
 
-    screenshot_names = {step["screenshot"] for step in manifest.get("steps", [])}
     opened = []
     try:
+        screenshot_names = {step["screenshot"] for step in manifest.get("steps", [])}
         files = []
         for name in screenshot_names:
             path = output_dir / name

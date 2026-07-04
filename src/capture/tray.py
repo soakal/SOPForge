@@ -108,19 +108,27 @@ class TrayApp:
         # Off the lock, on a background thread: uploading can take a few
         # seconds (screenshot transfer + queuing), and "stop recording"
         # must feel instant regardless of whether a server is even running.
-        threading.Thread(target=self._auto_upload, args=(recorder.output_dir,), daemon=True).start()
+        # upload_fn/server_url are bound to their CURRENT values here, at
+        # spawn time -- not read from self inside the thread -- so
+        # self_check()'s temporary no-op swap can never race a late-running
+        # thread from a stop() that happened just before the swap (or just
+        # after its restoration).
+        threading.Thread(
+            target=self._auto_upload,
+            args=(recorder.output_dir, self._upload_fn, self.server_url),
+            daemon=True,
+        ).start()
 
-    def _auto_upload(self, output_dir):
-        """Best-effort: uploads to self.server_url and opens the browser
-        straight to the review page on success. Never raises -- a failed
-        upload just means the user opens the browser and uses the library
-        page's upload form manually later; the capture is already safe on
-        disk regardless."""
-        session_id = self._upload_fn(output_dir, server_url=self.server_url)
+    def _auto_upload(self, output_dir, upload_fn, server_url):
+        """Best-effort: uploads via upload_fn and opens the browser straight
+        to the review page on success. Never raises -- a failed upload just
+        means the user opens the browser and uses the library page's upload
+        form manually later; the capture is already safe on disk regardless."""
+        session_id = upload_fn(output_dir, server_url=server_url)
         if not session_id:
             return
         try:
-            self._open_browser_fn(f"{self.server_url}/ui/sessions/{session_id}")
+            self._open_browser_fn(f"{server_url}/ui/sessions/{session_id}")
         except Exception:  # noqa: BLE001 - the doc is generated either way; opening a tab is a convenience
             logger.warning("could not open browser to session %s", session_id, exc_info=True)
 
