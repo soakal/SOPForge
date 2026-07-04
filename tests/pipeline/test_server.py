@@ -109,21 +109,38 @@ def test_review_page_renders_sidecar_report(tmp_path):
     assert review_resp.text.startswith("<!doctype html>")
 
 
-def test_report_and_doc_endpoints_409_while_not_done(tmp_path):
+def test_report_and_doc_endpoints_409_while_not_done(tmp_path, monkeypatch):
     """Requesting a doc before the background job finishes must be a clear
-    409, never a crash or a silently-empty/partial response."""
+    409, never a crash or a silently-empty/partial response. Forced
+    deterministic via a gated stub (not a timing race against the real,
+    fast template-mode pipeline) — mirrors test_jobs.py's Event pattern."""
+    import threading
+
+    import pipeline.server as server_module
+
+    reached = threading.Event()
+    release = threading.Event()
+    real_render = server_module.render_steps_template_mode
+
+    def gated_render(*args, **kwargs):
+        reached.set()
+        release.wait(timeout=5)
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(server_module, "render_steps_template_mode", gated_render)
+
     client = _make_client(tmp_path)
     session_id = _create_session(client, tmp_path).json()["session_id"]
 
-    # There is necessarily a window (however short) before "done"; if the
-    # background thread already finished by the time we check, the 409
-    # path just wasn't exercised this run — assert only when it's real.
+    assert reached.wait(timeout=5)
     status = client.get(f"/sessions/{session_id}/status").json()
-    if status["status"] != "done":
-        resp = client.get(f"/sessions/{session_id}/report")
-        assert resp.status_code == 409
+    assert status["status"] in ("queued", "processing")
+    resp = client.get(f"/sessions/{session_id}/report")
+    assert resp.status_code == 409
 
-    _wait_for_terminal_status(client, session_id)
+    release.set()
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
 
 
 def test_unknown_session_returns_404_on_every_endpoint(tmp_path):

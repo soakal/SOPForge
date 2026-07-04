@@ -11,8 +11,10 @@ import threading
 class JobRunner:
     """One worker thread pulls jobs off a FIFO queue and runs them in
     order. Each job's status lives in a shared dict, mutated only by the
-    worker thread (the sole writer) — callers only ever read it, so no
-    lock is needed around a read, only around the dict mutation itself."""
+    worker thread (the sole writer). Every access — including reads in
+    status() — still takes the same lock: dict mutation isn't guaranteed
+    atomic across all CPython builds, and this dict is tiny and accessed
+    rarely enough that the lock costs nothing worth optimizing away."""
 
     def __init__(self):
         self._queue = queue.Queue()
