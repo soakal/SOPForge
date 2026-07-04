@@ -29,8 +29,8 @@ def generate_step_text(step, llm_client):
     """Returns (text, used_fallback). Exactly one LLM call attempt; any
     failure — HTTP error, malformed response body, or a round-trip mismatch
     — falls back to the template, never retried."""
+    prompt = _build_prompt(step)  # outside the try: a bug here is ours, not the LLM's
     try:
-        prompt = _build_prompt(step)
         reply = llm_client.chat([{"role": "user", "content": prompt}])
     except Exception:  # noqa: BLE001 - any generation failure means fallback, never retry
         return render_step_template(step), True
