@@ -11,7 +11,14 @@ from typing import Literal
 import jsonschema
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-SCHEMA_PATH = Path(__file__).resolve().parent.parent.parent / "fixtures" / "manifest.schema.json"
+from pipeline.resource_path import resource_path
+
+# A module-level constant (not lazily resolved like config.py's
+# default_config_path()) is fine here: sys.frozen is already set correctly
+# by the time this module is first imported in a real frozen EXE (unlike a
+# GET /config request path that needs to reflect a *test's* monkeypatch
+# after import), and the schema itself never changes at runtime.
+SCHEMA_PATH = resource_path("fixtures", "manifest.schema.json")
 _SCHEMA = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
 _VALIDATOR = jsonschema.Draft202012Validator(_SCHEMA)
 

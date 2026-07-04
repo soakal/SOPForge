@@ -14,7 +14,10 @@ lived on disk rather than in a Python object."""
 import io
 import json
 import mimetypes
+import os
 import shutil
+import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -226,6 +229,7 @@ def create_app(sessions_root: Path) -> FastAPI:
     def get_config():
         return load_models_config().model_dump()
 
+    @app.get("/")
     @app.get("/ui")
     def ui_library(q: str | None = None):
         return HTMLResponse(render_library_page(library_search(sessions_root, q), q))
@@ -262,5 +266,25 @@ def create_app(sessions_root: Path) -> FastAPI:
             raise HTTPException(status_code=404, detail="file not found")
         mime, _ = mimetypes.guess_type(str(dest))
         return Response(dest.read_bytes(), media_type=mime or "application/octet-stream")
+
+    @app.post("/shutdown")
+    def shutdown():
+        """Stops the server process. A console=False (windowed-subsystem)
+        PyInstaller build does not reliably receive Windows console control
+        events (CTRL_BREAK_EVENT/CTRL_C_EVENT) the way a console-subsystem
+        process does — confirmed empirically while building task-10's
+        verify script, not assumed — so an HTTP-triggered stop is the
+        reliable mechanism for both scripts/build_server_exe.py and the
+        eventual install.ps1/uninstall.ps1 (task-12). Assumes this server
+        is only ever bound to localhost, matching its default; there is no
+        auth on this endpoint. A short delay lets this response flush
+        before the process actually exits."""
+
+        def _stop():
+            time.sleep(0.2)
+            os._exit(0)
+
+        threading.Thread(target=_stop, daemon=True).start()
+        return {"status": "shutting down"}
 
     return app

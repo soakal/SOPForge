@@ -64,6 +64,18 @@ def test_library_page_lists_sessions_and_has_search_form(tmp_path):
     assert f"/ui/sessions/{session_id}" in resp.text
 
 
+def test_root_path_serves_the_same_library_page(tmp_path):
+    """GET / is the frozen EXE's health/UI-smoke target (task-10) — it
+    must serve real UI markup, not a 404 or a bare JSON welcome message."""
+    client = _make_client(tmp_path)
+    session_id = _create_and_wait(client, tmp_path)
+
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert resp.text.startswith("<!doctype html>")
+    assert f"/ui/sessions/{session_id}" in resp.text
+
+
 def test_library_page_search_filters_results(tmp_path):
     client = _make_client(tmp_path)
     session_id = _create_and_wait(client, tmp_path)

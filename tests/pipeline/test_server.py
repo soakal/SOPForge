@@ -215,3 +215,27 @@ def test_path_traversal_in_uploaded_filename_cannot_escape_the_session_directory
     assert not escaped.exists()
     for path in sessions_root.rglob("escape.png"):
         assert path.parent.name == "screenshots"
+
+
+def test_stop_endpoint_triggers_process_exit_without_terminating_this_test(tmp_path, monkeypatch):
+    """The process-stop endpoint (task-10) must call the real process-exit
+    primitive to actually stop the frozen EXE — but calling the real one
+    here would terminate the pytest process running this test. Replace it
+    with a recording stub so the code path is genuinely exercised without
+    ending anything."""
+    import time as time_module
+
+    import pipeline.server as server_module
+
+    exit_calls = []
+    monkeypatch.setattr(server_module.os, "_exit", lambda code: exit_calls.append(code))
+
+    client = _make_client(tmp_path)
+    resp = client.post("/shutdown")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "shutting down"}
+
+    deadline = time_module.monotonic() + 2.0
+    while time_module.monotonic() < deadline and not exit_calls:
+        time_module.sleep(0.02)
+    assert exit_calls == [0]
