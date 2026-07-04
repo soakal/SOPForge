@@ -7,6 +7,7 @@ could make a model call. This is the forerunner of AC3: a complete,
 correct doc requires zero LLM requests."""
 
 import html
+from pathlib import Path
 
 from pipeline.annotate import annotate_click
 from pipeline.assembler import assemble_steps
@@ -30,7 +31,17 @@ def render_steps_template_mode(manifest, screenshot_dir, annotated_dir):
     return step_results, annotated_paths
 
 
-def render_markdown(manifest, step_results, annotated_paths, narrative_text=None):
+def _image_ref(shot, base_dir):
+    """A doc-relative path for embedding an image, so the rendered doc
+    doesn't hardcode an absolute filesystem path (which won't resolve once
+    task-13's server serves the doc from a different root, and can break
+    Markdown's `![]()` syntax outright if it contains a space or `)`)."""
+    if base_dir is None:
+        return str(shot)
+    return Path(shot).relative_to(base_dir).as_posix()
+
+
+def render_markdown(manifest, step_results, annotated_paths, narrative_text=None, base_dir=None):
     """Assembles a Markdown document: title, optional narrative section,
     then one section per step with its text and annotated screenshot."""
     lines = [f"# {manifest.session.title or manifest.session.id}", ""]
@@ -42,12 +53,37 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
         lines.append("")
         lines.append(result["text"])
         lines.append("")
-        lines.append(f"![{step.id}]({shot})")
+        lines.append(f"![{step.id}]({_image_ref(shot, base_dir)})")
         lines.append("")
     return "\n".join(lines)
 
 
-def render_html(manifest, step_results, annotated_paths, narrative_text=None):
+def _narrative_html_blocks(narrative_text):
+    """Splits narrative text into HTML blocks, rendering '> '-prefixed
+    lines (task-08's [verify] blockquotes) as <blockquote> elements instead
+    of flattening them into a single escaped paragraph — otherwise the
+    blockquote marker and its newlines collapse into unreadable inline text."""
+    blocks = []
+    paragraph = []
+
+    def flush_paragraph():
+        if paragraph:
+            blocks.append(f"<p>{html.escape(' '.join(paragraph))}</p>")
+            paragraph.clear()
+
+    for line in narrative_text.splitlines():
+        if line.startswith("> "):
+            flush_paragraph()
+            blocks.append(f"<blockquote>{html.escape(line[2:])}</blockquote>")
+        elif line.strip():
+            paragraph.append(line)
+        else:
+            flush_paragraph()
+    flush_paragraph()
+    return blocks
+
+
+def render_html(manifest, step_results, annotated_paths, narrative_text=None, base_dir=None):
     """Assembles a minimal HTML document mirroring render_markdown's
     structure — plain string building, no templating engine dependency."""
     title = manifest.session.title or manifest.session.id
@@ -57,10 +93,11 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None):
         f"<h1>{html.escape(title)}</h1>",
     ]
     if narrative_text:
-        parts.append(f"<p>{html.escape(narrative_text)}</p>")
+        parts.extend(_narrative_html_blocks(narrative_text))
     for step, result, shot in zip(manifest.steps, step_results, annotated_paths):
         parts.append(f"<h2>Step {html.escape(step.id)}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
-        parts.append(f'<img src="{html.escape(str(shot))}" alt="{html.escape(step.id)}">')
+        img_ref = _image_ref(shot, base_dir)
+        parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(step.id)}">')
     parts.append("</body></html>")
     return "\n".join(parts)
