@@ -4,15 +4,19 @@ off, per CLAUDE.md's "Anthropic routing per section is a config option,
 default off")."""
 
 import tomllib
-from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-# TODO(phase-03/task-08): frozen-path resolution. This resolves relative to
-# __file__, which won't exist under a PyInstaller frozen build's _internal
-# layout — GET /config (server.py) will break in the packaged EXE until
-# task-08's resource_path() helper is adopted here too (see phases/03-tasks.md).
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "models.toml"
+from pipeline.resource_path import resource_path
+
+
+def default_config_path():
+    """Resolved fresh on every call (not a load-once module constant) so
+    that GET /config (server.py) actually reflects sys.frozen/sys._MEIPASS
+    at request time — a frozen-at-import-time constant would still hold
+    the dev-mode path even after a test (or a real frozen build) changes
+    sys.frozen, since nothing re-imports this module to recompute it."""
+    return resource_path("config", "models.toml")
 
 
 class SectionConfig(BaseModel):
@@ -31,7 +35,9 @@ class ModelsConfig(BaseModel):
     narrative: SectionConfig
 
 
-def load_models_config(path=DEFAULT_CONFIG_PATH):
+def load_models_config(path=None):
+    if path is None:
+        path = default_config_path()
     with open(path, "rb") as f:
         data = tomllib.load(f)
     return ModelsConfig.model_validate(data)

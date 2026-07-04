@@ -11,12 +11,25 @@ import os
 import sys
 from pathlib import Path
 
+from pipeline.resource_path import resource_path
+
 DEFAULT_SOP_FACTORY_2_DIR = Path(r"C:\Users\Brian\Documents\SOP_Factory_2\template")
 
 
 def sop_factory_2_dir():
+    """Dev/test mode: the external SOP_Factory_2 clone (never vendored into
+    this repo — see the module docstring). Frozen mode: task-10's
+    PyInstaller spec bundles just the engine module + template assets
+    (not the whole external working project) under "sop_factory_2" inside
+    the frozen bundle, so resolution there goes through resource_path()
+    like every other in-repo resource. An env var override always wins,
+    in either mode, for pointing at a non-default clone location."""
     override = os.environ.get("SOPFORGE_SOP_FACTORY_2_DIR")
-    return Path(override) if override else DEFAULT_SOP_FACTORY_2_DIR
+    if override:
+        return Path(override)
+    if getattr(sys, "frozen", False):
+        return resource_path("sop_factory_2")
+    return DEFAULT_SOP_FACTORY_2_DIR
 
 
 def _import_sop_builder():
