@@ -31,7 +31,7 @@ def launch_notepadpp():
 
     pids_before = running_pids("notepad++.exe")
     before = {w.element_info.handle for w in Desktop(backend="uia").windows()}
-    subprocess.Popen([NPP_PATH, "-multiInst", "-nosession"])
+    proc = subprocess.Popen([NPP_PATH, "-multiInst", "-nosession"])
 
     deadline = time.time() + 10.0
     while time.time() < deadline:
@@ -45,6 +45,7 @@ def launch_notepadpp():
             if "Notepad++" in title:
                 return w, pids_before
         time.sleep(0.3)
+    subprocess.run(["taskkill", "/PID", str(proc.pid), "/F", "/T"], capture_output=True)
     raise RuntimeError("Notepad++ window never appeared")
 
 
