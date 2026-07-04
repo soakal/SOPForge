@@ -217,3 +217,17 @@ launch 6.541s, steady-state average 3.751s (threshold 5.0s), clean exit
 codes `[0, 0, 0, 0]`. AC5's golden-docx E2E test against the rebuilt EXE:
 still passes. Full suite: 240 passed, 5 skipped, 3 deselected; `ruff` clean.
 
+A fable-model review of that commit passed, with one follow-up: `ui_delete`
+used `shutil.rmtree(ignore_errors=True)`, which never raises even when a
+file is locked (a real, documented Windows AV-lock scenario elsewhere in
+this project) -- it just silently leaves things behind, which could
+resurrect a "deleted" session's in-memory registration (not its library
+entry) on the next restart if `report.json` survived. Fixed by deleting
+`report.json` first, independent of whether the full rmtree succeeds --
+its absence is exactly what `_restore_sessions_from_disk` checks for.
+Verified with a test that makes `rmtree` a no-op and confirms the session
+still doesn't resurrect. Rebuilt `sopforge-server.exe` again; AC3 timing:
+first launch 6.678s, steady-state average 3.803s (threshold 5.0s), clean
+exit codes `[0, 0, 0, 0]`. AC5 E2E: still passes. Full suite: 241 passed,
+5 skipped, 3 deselected; `ruff` clean.
+
