@@ -44,6 +44,7 @@ class ManifestBuilder:
         button=None,
         text_summary=None,
         redactions=None,
+        screenshot_placeholder=False,
     ):
         """Append a step; returns its assigned step-NNN id. Steps are numbered
         by append order — the caller never chooses the id."""
@@ -54,6 +55,7 @@ class ManifestBuilder:
             "action": action,
             "screen": screen,
             "screenshot": screenshot,
+            "screenshot_placeholder": screenshot_placeholder,
             "window": window,
             "element": element,
             "redactions": redactions or [],

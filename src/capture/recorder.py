@@ -4,6 +4,7 @@ resolution, manifest building, and redaction into one
 
 import datetime as dt
 import logging
+import queue
 import threading
 import uuid
 from pathlib import Path
@@ -16,6 +17,8 @@ from capture.shots import ScreenshotWriter
 from capture.uia import resolve_at
 
 logger = logging.getLogger(__name__)
+
+_STOP_SENTINEL = object()
 
 
 def new_session_id():
@@ -34,18 +37,22 @@ def _now_iso():
 
 
 class Recorder:
-    """start()/stop() around one capture session. Each click/type event from
-    InputRecorder triggers, in order: UIA resolution at the event's screen
-    point, a screenshot, a redaction pass over that screenshot, and a step
-    appended to the session's manifest.
+    """start()/stop() around one capture session.
 
-    InputRecorder delivers events from pynput's mouse- and keyboard-listener
-    threads (and stop()'s flush can run from either), so every event and
-    stop()'s finalization share one lock — otherwise concurrent events could
-    race on ScreenshotWriter's/ManifestBuilder's counters and produce
-    duplicate filenames or step ids (breaking the 1:1 step-mapping
-    invariant), or stop() could finalize the manifest while a step is
-    mid-flight."""
+    InputRecorder's on_click/on_press callbacks run *directly on pynput's
+    WH_MOUSE_LL/WH_KEYBOARD_LL hook threads*. Windows enforces a low-level
+    hook timeout (LowLevelHooksTimeout, a few hundred ms by default) and will
+    silently detach a hook that blocks past it — so the callback must return
+    almost instantly. resolve_at()/screenshot/redaction can legitimately take
+    several seconds (some UIA controls alone take ~4s — see
+    .claude/skills/uia-notes.md), which would blow that budget many times
+    over if run inline. So the hook callback (`_enqueue_event`) only ever
+    does a queue.Queue.put() — fast and thread-safe — and a single dedicated
+    worker thread (`_drain_queue`) does the actual slow pipeline
+    (`_process_event`) one event at a time, preserving arrival order without
+    needing a lock (only one thread ever calls _process_event in normal
+    operation; it still takes a lock for defense in depth since tests and
+    selftest.py call _process_event directly for deterministic behavior)."""
 
     def __init__(self, captures_root, session_id=None, machine="", os_build="", redact_config=None):
         self.session_id = session_id or new_session_id()
@@ -56,17 +63,38 @@ class Recorder:
             self.session_id, started_utc=_now_iso(), machine=machine, os_build=os_build
         )
         self._shots = ScreenshotWriter(self.output_dir)
-        self._input = InputRecorder(on_event=self._on_input_event)
+        self._input = InputRecorder(on_event=self._enqueue_event)
         self._lock = threading.Lock()
+        self._queue = queue.Queue()
+        self._worker = None
 
     def start(self):
+        self._worker = threading.Thread(target=self._drain_queue, daemon=True)
+        self._worker.start()
         self._input.start()
 
     def stop(self):
+        # Listener threads are joined inside InputRecorder.stop() (hooks.py),
+        # so no more events can be enqueued after this line returns — the
+        # sentinel below is guaranteed to be the last item in the queue.
         self._input.stop()
+        self._queue.put(_STOP_SENTINEL)
+        self._worker.join()
         with self._lock:
             self._builder.finish(_now_iso())
             return self._builder.write(self.output_dir / "manifest.json")
+
+    def _enqueue_event(self, event):
+        """The actual pynput hook callback — must stay fast (see class
+        docstring). Never process an event inline here."""
+        self._queue.put(event)
+
+    def _drain_queue(self):
+        while True:
+            event = self._queue.get()
+            if event is _STOP_SENTINEL:
+                return
+            self._process_event(event)
 
     def _redact(self, screenshot_path, element):
         """Returns the manifest `redactions` list (region+reason) for the
@@ -88,11 +116,15 @@ class Recorder:
                     return [{"region": list(r), "reason": "password_heuristic"} for r in applied]
             return []
 
-    def _on_input_event(self, event):
+    def _process_event(self, event):
+        """The actual slow pipeline: UIA resolution, screenshot, redaction,
+        manifest append. Runs on the queue-draining worker thread in normal
+        operation; tests and selftest.py call this directly for
+        deterministic, synchronous behavior."""
         with self._lock:
             x, y = event["x"], event["y"]
             element, window = resolve_at(x, y)
-            filename, monitor_idx = self._shots.capture(x, y)
+            filename, monitor_idx, is_placeholder = self._shots.capture(x, y)
             redactions = self._redact(self.output_dir / filename, element)
 
             kwargs = {
@@ -100,6 +132,7 @@ class Recorder:
                 "action": event["action"],
                 "screen": {"x": x, "y": y, "monitor": monitor_idx},
                 "screenshot": filename,
+                "screenshot_placeholder": is_placeholder,
                 "window": window,
                 "element": element,
                 "redactions": redactions,

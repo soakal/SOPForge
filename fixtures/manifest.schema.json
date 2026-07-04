@@ -54,6 +54,7 @@
           }
         },
         "screenshot": { "type": "string", "pattern": "^[^/\\\\]+\\.png$" },
+        "screenshot_placeholder": { "type": "boolean" },
         "window": {
           "type": "object",
           "required": ["title", "process", "class"],

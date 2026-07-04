@@ -100,11 +100,12 @@ def test_capture_falls_back_to_placeholder_when_gdi_fails_for_real(tmp_path):
     production fallback works against the actual failure, not a simulation
     of it."""
     writer = ScreenshotWriter(tmp_path)
-    filename, monitor_idx = writer.capture(100, 100)
+    filename, monitor_idx, is_placeholder = writer.capture(100, 100)
     path = tmp_path / filename
     assert path.exists()
     assert path.stat().st_size > 0
     assert monitor_idx >= 1
+    assert is_placeholder is True
 
 
 def test_capture_falls_back_to_placeholder_on_mocked_grab_failure(tmp_path, monkeypatch):
@@ -119,9 +120,10 @@ def test_capture_falls_back_to_placeholder_on_mocked_grab_failure(tmp_path, monk
     monkeypatch.setattr(shots_module.mss, "mss", lambda: RaisingSct())
 
     writer = ScreenshotWriter(tmp_path)
-    filename, _ = writer.capture(100, 100)
+    filename, _, is_placeholder = writer.capture(100, 100)
     path = tmp_path / filename
     assert path.exists()
+    assert is_placeholder is True
 
     from PIL import Image
 

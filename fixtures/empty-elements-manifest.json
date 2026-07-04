@@ -20,6 +20,7 @@
         "monitor": 1
       },
       "screenshot": "001.png",
+      "screenshot_placeholder": false,
       "window": {
         "title": "Test Window",
         "process": "test.exe",
@@ -45,6 +46,7 @@
         "monitor": 1
       },
       "screenshot": "002.png",
+      "screenshot_placeholder": false,
       "window": {
         "title": "Test Window",
         "process": "test.exe",
@@ -70,6 +72,7 @@
         "monitor": 1
       },
       "screenshot": "003.png",
+      "screenshot_placeholder": false,
       "window": {
         "title": "Test Window",
         "process": "test.exe",

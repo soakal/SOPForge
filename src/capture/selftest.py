@@ -75,6 +75,25 @@ def _kill_if_new(win, pids_before):
     subprocess.run(["taskkill", "/PID", pid, "/F", "/T"], capture_output=True)
 
 
+def _launch_and_run(image_name, popen_args, title_predicate, wait_timeout, body):
+    """Launches popen_args, waits for its window, runs body(win), and always
+    kills what was launched — including if the window never appears. That
+    failure path used to leak the just-launched process: the only cleanup,
+    _kill_if_new(win, ...), was unreachable without a win to pass it."""
+    pids_before = _running_pids(image_name)
+    before = {w.element_info.handle for w in Desktop(backend="uia").windows()}
+    proc = subprocess.Popen(popen_args)
+    try:
+        win = _wait_new_window(before, title_predicate, timeout=wait_timeout)
+    except Exception:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/F", "/T"], capture_output=True)
+        raise
+    try:
+        body(win)
+    finally:
+        _kill_if_new(win, pids_before)
+
+
 def _find_candidates(win, count, timeout=15.0):
     """Polls until enough non-window-chrome descendants with a real
     (non-empty) rectangle appear, then returns up to `count` of them spread
@@ -122,29 +141,27 @@ def _interact_and_feed(win, recorder, count):
             pass
         x = rect.left + rect.width() // 2
         y = rect.top + rect.height() // 2
-        recorder._on_input_event(
+        recorder._process_event(
             {"action": "click", "button": "left", "x": x, "y": y, "ts": time.time()}
         )
 
 
 def run_notepadpp(recorder, click_count):
-    pids_before = _running_pids("notepad++.exe")
-    before = {w.element_info.handle for w in Desktop(backend="uia").windows()}
-    subprocess.Popen([NPP_PATH, "-multiInst", "-nosession"])
-    win = _wait_new_window(before, lambda t: "Notepad++" in t, timeout=10)
-    try:
-        _interact_and_feed(win, recorder, click_count)
-    finally:
-        _kill_if_new(win, pids_before)
+    _launch_and_run(
+        "notepad++.exe",
+        [NPP_PATH, "-multiInst", "-nosession"],
+        lambda t: "Notepad++" in t,
+        10,
+        lambda win: _interact_and_feed(win, recorder, click_count),
+    )
 
 
 def run_chrome(recorder, click_count):
-    pids_before = _running_pids("chrome.exe")
-    before = {w.element_info.handle for w in Desktop(backend="uia").windows()}
     with tempfile.TemporaryDirectory(
         prefix="sopforge-selftest-chrome-", ignore_cleanup_errors=True
     ) as profile_dir:
-        subprocess.Popen(
+        _launch_and_run(
+            "chrome.exe",
             [
                 CHROME_PATH,
                 f"--user-data-dir={profile_dir}",
@@ -152,37 +169,32 @@ def run_chrome(recorder, click_count):
                 "--no-first-run",
                 "--no-default-browser-check",
                 "about:blank",
-            ]
+            ],
+            lambda t: "Chrome" in t or t == "New Tab",
+            15,
+            lambda win: _interact_and_feed(win, recorder, click_count),
         )
-        win = _wait_new_window(before, lambda t: "Chrome" in t or t == "New Tab", timeout=15)
-        try:
-            _interact_and_feed(win, recorder, click_count)
-        finally:
-            _kill_if_new(win, pids_before)
-            time.sleep(1)
+        time.sleep(1)
 
 
 def run_vscode(recorder, click_count):
-    pids_before = _running_pids("Code.exe")
-    before = {w.element_info.handle for w in Desktop(backend="uia").windows()}
     with tempfile.TemporaryDirectory(
         prefix="sopforge-selftest-vscode-", ignore_cleanup_errors=True
     ) as data_dir:
         extensions_dir = str(Path(data_dir) / "extensions")
-        subprocess.Popen(
+        _launch_and_run(
+            "Code.exe",
             [
                 VSCODE_PATH,
                 "--new-window",
                 f"--user-data-dir={data_dir}",
                 f"--extensions-dir={extensions_dir}",
-            ]
+            ],
+            lambda t: "Visual Studio Code" in t,
+            20,
+            lambda win: _interact_and_feed(win, recorder, click_count),
         )
-        win = _wait_new_window(before, lambda t: "Visual Studio Code" in t, timeout=20)
-        try:
-            _interact_and_feed(win, recorder, click_count)
-        finally:
-            _kill_if_new(win, pids_before)
-            time.sleep(1)
+        time.sleep(1)
 
 
 APPS = {
