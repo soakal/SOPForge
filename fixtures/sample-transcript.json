@@ -1,0 +1,19 @@
+{
+  "segments": [
+    {
+      "text": "First, open the SmartDeploy console.",
+      "start": 0.0,
+      "end": 2.5
+    },
+    {
+      "text": "Then click Save to save your changes.",
+      "start": 2.5,
+      "end": 5.0
+    },
+    {
+      "text": "Make sure you enter the computer name correctly.",
+      "start": 5.0,
+      "end": 8.2
+    }
+  ]
+}
