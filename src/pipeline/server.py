@@ -13,6 +13,7 @@ lived on disk rather than in a Python object."""
 
 import io
 import json
+import mimetypes
 import shutil
 import uuid
 import zipfile
@@ -239,5 +240,21 @@ def create_app(sessions_root: Path) -> FastAPI:
         report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
         config = load_models_config().model_dump()
         return HTMLResponse(render_session_page(session_id, report, config))
+
+    @app.get("/sessions/{session_id}/{filename}")
+    def get_annotated_image(session_id: str, filename: str):
+        """Serves annotated screenshots that doc.html references by bare
+        relative filename (task-12's base_dir=annotated_dir) — without
+        this, the /ui doc-preview iframe's <img> tags 404 and every
+        screenshot in the preview shows broken. Registered last so it
+        never shadows the specific routes above (doc.md, doc.pdf, etc.)."""
+        _require_known_session(session_id)
+        annotated_dir = sessions[session_id][2]
+        name = Path(filename).name
+        dest = (annotated_dir / name).resolve()
+        if annotated_dir.resolve() not in dest.parents or not dest.is_file():
+            raise HTTPException(status_code=404, detail="file not found")
+        mime, _ = mimetypes.guess_type(str(dest))
+        return Response(dest.read_bytes(), media_type=mime or "application/octet-stream")
 
     return app

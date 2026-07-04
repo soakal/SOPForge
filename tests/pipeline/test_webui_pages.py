@@ -126,6 +126,41 @@ def test_session_page_shows_processing_state_before_done(tmp_path, monkeypatch):
     _wait_until_done(client, session_id)
 
 
+def test_doc_preview_iframe_image_references_actually_resolve(tmp_path):
+    """Regression: doc.html's images are relative filenames (task-12's
+    base_dir=annotated_dir), so a browser rendering the /ui iframe would
+    resolve <img src="001.png"> against /sessions/{id}/001.png (same
+    directory as doc.html itself) — this must not 404, or the preview
+    shows every screenshot broken."""
+    client = _make_client(tmp_path)
+    session_id = _create_and_wait(client, tmp_path)
+
+    doc_html = client.get(f"/sessions/{session_id}/doc.html").text
+    img_srcs = re.findall(r'<img src="([^"]+)"', doc_html)
+    assert img_srcs, "expected at least one <img> tag in doc.html"
+    for src in img_srcs:
+        img_resp = client.get(f"/sessions/{session_id}/{src}")
+        assert img_resp.status_code == 200, f"{src} did not resolve"
+        assert img_resp.headers["content-type"].startswith("image/")
+
+
+def test_specific_routes_are_not_shadowed_by_the_image_catch_all_route(tmp_path):
+    client = _make_client(tmp_path)
+    session_id = _create_and_wait(client, tmp_path)
+
+    for path in ("doc.md", "doc.pdf", "doc.docx", "doc.single.html", "report", "review", "status"):
+        resp = client.get(f"/sessions/{session_id}/{path}")
+        assert resp.status_code == 200, path
+
+
+def test_image_route_rejects_path_traversal(tmp_path):
+    client = _make_client(tmp_path)
+    session_id = _create_and_wait(client, tmp_path)
+
+    resp = client.get(f"/sessions/{session_id}/..%2f..%2fescape.png")
+    assert resp.status_code == 404
+
+
 def test_session_page_shows_doc_preview_iframe(tmp_path):
     client = _make_client(tmp_path)
     session_id = _create_and_wait(client, tmp_path)
