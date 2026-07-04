@@ -1,7 +1,10 @@
 """sopforge-server: FastAPI app consuming manifests + screenshot PNGs,
-running the Phase 2/3 template-mode pipeline (render.py + sidecar.py +
-export_*.py) in the background (jobs.py), and exposing session status,
-the sidecar report, generated docs, and a plain-HTML review page.
+running the LLM-backed generation pipeline (render.py's render_steps_llm_mode
++ sidecar.py + export_*.py) in the background (jobs.py), and exposing
+session status, the sidecar report, generated docs, and a plain-HTML review
+page. Step text comes from the LLM configured in config/models.toml (Ollama
+or Anthropic), round-trip-gated with a per-step template fallback — never a
+retry loop.
 
 Generation is queued on a background worker thread (task-05) — POST
 /sessions returns as soon as the upload is validated and saved, never
@@ -157,10 +160,10 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
     @app.post("/sessions/{session_id}/rerender")
     def rerender(session_id: str):
         """Re-runs generation + all exports for an already-uploaded session
-        against the current config/models.toml (a no-op on template-mode
-        output today, since no LLM call reads it yet — the hook exists so
-        LLM-backed generation can be re-triggered after a config change
-        without re-uploading the manifest/screenshots)."""
+        against the current config/models.toml -- genuinely meaningful now
+        that step generation is LLM-backed: e.g. after editing the config to
+        point at a different model/endpoint, or setting up Anthropic
+        routing, without re-uploading the manifest/screenshots."""
         _require_known_session(session_id)
         jobs.submit(session_id, lambda: _generate(session_id))
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}

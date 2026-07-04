@@ -1,6 +1,8 @@
 """sopforge-server FastAPI app: POST /sessions (manifest + PNGs), GET
-status/report, doc downloads, and the plain-HTML review page — all running
-template mode (task-12) end-to-end through a real TestClient.
+status/report, doc downloads, and the plain-HTML review page — end to end
+through a real TestClient, with the shared stub LLM client
+(tests/pipeline/_stub_llm.py) injected via create_app's llm_client_factory
+so step generation never makes a real network call here.
 
 Generation runs on a background job (task-05), so POST /sessions returns
 "queued"/"processing" immediately — tests poll /status until "done" (or a
@@ -116,8 +118,8 @@ def test_review_page_renders_sidecar_report(tmp_path):
 def test_report_and_doc_endpoints_409_while_not_done(tmp_path, monkeypatch):
     """Requesting a doc before the background job finishes must be a clear
     409, never a crash or a silently-empty/partial response. Forced
-    deterministic via a gated stub (not a timing race against the real,
-    fast template-mode pipeline) — mirrors test_jobs.py's Event pattern."""
+    deterministic via a gated stub (not a timing race against the real
+    pipeline) — mirrors test_jobs.py's Event pattern."""
     import threading
 
     import pipeline.server as server_module
