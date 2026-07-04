@@ -148,7 +148,16 @@ def test_specific_routes_are_not_shadowed_by_the_image_catch_all_route(tmp_path)
     client = _make_client(tmp_path)
     session_id = _create_and_wait(client, tmp_path)
 
-    for path in ("doc.md", "doc.pdf", "doc.docx", "doc.single.html", "report", "review", "status"):
+    for path in (
+        "doc.md",
+        "doc.pdf",
+        "doc.docx",
+        "doc.single.html",
+        "export.md.zip",
+        "report",
+        "review",
+        "status",
+    ):
         resp = client.get(f"/sessions/{session_id}/{path}")
         assert resp.status_code == 200, path
 
@@ -157,8 +166,9 @@ def test_image_route_rejects_path_traversal(tmp_path):
     client = _make_client(tmp_path)
     session_id = _create_and_wait(client, tmp_path)
 
-    resp = client.get(f"/sessions/{session_id}/..%2f..%2fescape.png")
-    assert resp.status_code == 404
+    for attempt in ("..%2f..%2fescape.png", "..%5cescape.png", "escape.png%00.png"):
+        resp = client.get(f"/sessions/{session_id}/{attempt}")
+        assert resp.status_code == 404, attempt
 
 
 def test_session_page_shows_doc_preview_iframe(tmp_path):

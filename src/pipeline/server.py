@@ -250,8 +250,14 @@ def create_app(sessions_root: Path) -> FastAPI:
         never shadows the specific routes above (doc.md, doc.pdf, etc.)."""
         _require_known_session(session_id)
         annotated_dir = sessions[session_id][2]
-        name = Path(filename).name
-        dest = (annotated_dir / name).resolve()
+        try:
+            name = Path(filename).name
+            dest = (annotated_dir / name).resolve()
+        except (ValueError, OSError) as exc:
+            # e.g. a URL-encoded null byte reaching Path(...).resolve() as
+            # "embedded null character in path" — a malformed request, not
+            # a server error.
+            raise HTTPException(status_code=404, detail="file not found") from exc
         if annotated_dir.resolve() not in dest.parents or not dest.is_file():
             raise HTTPException(status_code=404, detail="file not found")
         mime, _ = mimetypes.guess_type(str(dest))
