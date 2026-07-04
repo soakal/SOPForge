@@ -1,11 +1,19 @@
 """Screenshot-on-event: one mss grab per event, written as sequential
 NNN.png in the session's output directory, tagged with the monitor index
-the event's screen coordinates fall on."""
+the event's screen coordinates fall on. If real GDI screen capture fails
+(some virtualized/remoted sessions block BitBlt entirely — see
+.claude/skills/uia-notes.md), a placeholder image is written instead of
+crashing the whole capture session over one screenshot."""
 
+import logging
 from pathlib import Path
 
 import mss
+import mss.exception
 import mss.tools
+from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 
 class ScreenshotWriter:
@@ -34,6 +42,17 @@ class ScreenshotWriter:
         monitor_idx = self.monitor_for_point(x, y)
         with mss.mss() as sct:
             monitor = sct.monitors[monitor_idx]
-            shot = sct.grab(monitor)
-            mss.tools.to_png(shot.rgb, shot.size, output=str(path))
+            try:
+                shot = sct.grab(monitor)
+                mss.tools.to_png(shot.rgb, shot.size, output=str(path))
+            except mss.exception.ScreenShotError:
+                logger.warning(
+                    "GDI screen capture failed; writing placeholder image for %s",
+                    filename,
+                )
+                self._write_placeholder(path, monitor["width"], monitor["height"])
         return filename, monitor_idx
+
+    @staticmethod
+    def _write_placeholder(path, width, height):
+        Image.new("RGB", (max(width, 1), max(height, 1)), (64, 64, 64)).save(path)

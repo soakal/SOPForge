@@ -13,6 +13,7 @@ here; it needs a normal desktop session to confirm."""
 
 from pynput import keyboard, mouse
 
+import mss.exception
 import capture.shots as shots_module
 from capture.hooks import TYPE_SUMMARY, InputRecorder
 from capture.shots import ScreenshotWriter
@@ -91,6 +92,41 @@ def test_typing_burst_summarized_without_capturing_content():
     assert type_event["text_summary"] == TYPE_SUMMARY
     assert set(type_event) == {"action", "text_summary", "x", "y", "ts"}
     assert (type_event["x"], type_event["y"]) == (50, 60)
+
+
+def test_capture_falls_back_to_placeholder_when_gdi_fails_for_real(tmp_path):
+    """No monkeypatching here: real mss.grab() genuinely fails with
+    ScreenShotError (BitBlt) on this build VM — see uia-notes.md. Proves the
+    production fallback works against the actual failure, not a simulation
+    of it."""
+    writer = ScreenshotWriter(tmp_path)
+    filename, monitor_idx = writer.capture(100, 100)
+    path = tmp_path / filename
+    assert path.exists()
+    assert path.stat().st_size > 0
+    assert monitor_idx >= 1
+
+
+def test_capture_falls_back_to_placeholder_on_mocked_grab_failure(tmp_path, monkeypatch):
+    """Deterministic version of the above, independent of this VM's specific
+    GDI restriction — proves the fallback triggers on the exact exception
+    type mss raises, sized to the target monitor."""
+
+    class RaisingSct(_FakeSct):
+        def grab(self, monitor):
+            raise mss.exception.ScreenShotError("simulated BitBlt failure")
+
+    monkeypatch.setattr(shots_module.mss, "mss", lambda: RaisingSct())
+
+    writer = ScreenshotWriter(tmp_path)
+    filename, _ = writer.capture(100, 100)
+    path = tmp_path / filename
+    assert path.exists()
+
+    from PIL import Image
+
+    with Image.open(path) as img:
+        assert img.size == (824, 1560)
 
 
 def test_screenshots_are_numbered_sequentially_and_match_click_coords(tmp_path, monkeypatch):

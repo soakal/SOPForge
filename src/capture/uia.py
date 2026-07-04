@@ -95,10 +95,19 @@ def _resolve_at_uncapped(x, y):
     return element, window
 
 
-def resolve_at(x, y, timeout=2.0):
+def resolve_at(x, y, timeout=5.0):
     """Resolve the UIA element at a screen point. Always returns
     (element_dict, window_dict); degrades to the all-empty shape on any error
     or if resolution takes longer than `timeout` seconds.
+
+    Default raised from 2.0s to 5.0s (see .claude/skills/uia-notes.md): some
+    controls — observed with Notepad++'s toolbar buttons — genuinely take
+    ~4s to resolve via UIA. A capture tool isn't latency-sensitive the way an
+    input handler is (a few seconds of background processing lag per click
+    is an acceptable trade-off), so timing out at 2s was silently discarding
+    metadata UIA could have supplied correctly one heartbeat later — directly
+    undermining the tool's reason to exist. Never raise this back down
+    without re-checking that finding.
 
     Uses shutdown(wait=False) rather than the executor as a context manager:
     __exit__ would block until the worker thread finishes, which defeats the

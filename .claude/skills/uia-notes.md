@@ -99,3 +99,19 @@ monkeypatch the `mss.mss()` construction to a fake session object returning
 synthetic pixel data, so the sequential-naming/file-write logic is still exercised
 for real — but actual GDI capture success is unverified here and needs a normal
 desktop session (a real target machine, not this build VM) to confirm.
+
+### Some UIA controls are genuinely slow to resolve (task-11 self-test harness)
+
+Building the Phase 1 self-test harness (scripted interaction points against
+Notepad++/Chrome/VS Code) surfaced that `resolve_at()`'s original 2.0s default
+timeout (task-05) was too aggressive: **Notepad++'s toolbar buttons took ~4s to
+resolve via UIA** (measured directly, bypassing the timeout wrapper), while
+resolving a point inside the Scintilla text area took <0.5s. At 2.0s, every
+toolbar-button interaction point silently degraded to the empty-metadata
+fallback — not a bug, exactly the designed behavior, but a bad trade-off: a
+capture tool isn't latency-sensitive the way an input handler is (delayed
+background processing per click is fine; missing metadata for a real user
+click is not), so `resolve_at()`'s default timeout was raised to 5.0s.
+If this ever needs retuning, measure per-control-type resolution time first —
+don't just raise the number blindly, and don't lower it back toward 2s without
+re-confirming this finding no longer holds.
