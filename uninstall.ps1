@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Removes an install.ps1 installation: the scheduled task (if any), the
+    Removes an install.ps1 installation: the scheduled task(s) (if any), the
     capture/ and server/ EXE folders, and install-config.json.
 
 .DESCRIPTION
@@ -23,10 +23,16 @@ $ErrorActionPreference = "Stop"
 $ConfigPath = Join-Path $InstallPath "install-config.json"
 if (Test-Path $ConfigPath) {
     $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
-    $TaskName = $Config.TaskName
-    if ($TaskName -and (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)) {
-        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-        Write-Output "Removed scheduled task '$TaskName'."
+    # Both the current (ServerTaskName + CaptureTaskName) and the older
+    # single-TaskName install-config.json schema are handled, so
+    # uninstalling an install created by a previous SOPForge version still
+    # cleans up correctly.
+    $TaskNames = @($Config.ServerTaskName, $Config.CaptureTaskName, $Config.TaskName) | Where-Object { $_ }
+    foreach ($TaskName in ($TaskNames | Select-Object -Unique)) {
+        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+            Write-Output "Removed scheduled task '$TaskName'."
+        }
     }
 }
 

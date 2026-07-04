@@ -32,7 +32,14 @@ def build_release_folder():
 
     shutil.copytree(CAPTURE_DIST, RELEASE_DIR / "dist" / "sopforge")
     shutil.copytree(SERVER_DIST, RELEASE_DIR / "dist" / "sopforge-server")
-    for name in ("install.ps1", "uninstall.ps1", "USER_MANUAL.md", "LICENSE"):
+    for name in (
+        "install.ps1",
+        "install.bat",
+        "uninstall.ps1",
+        "uninstall.bat",
+        "USER_MANUAL.md",
+        "LICENSE",
+    ):
         shutil.copy2(REPO_ROOT / name, RELEASE_DIR / name)
 
     return RELEASE_DIR

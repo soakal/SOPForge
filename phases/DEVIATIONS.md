@@ -248,3 +248,24 @@ one opt-in `exe`-marked test against the real subprocess; every in-process
 test (test_server.py, test_webui_pages.py, etc.) injects a fast, deterministic
 stub LLM client (tests/pipeline/_stub_llm.py) via `create_app`'s new
 `llm_client_factory` parameter and never touches the network at all.
+
+## scripts/test_install.ps1 leaked a persistent env var onto this machine
+
+Adding dual autostart tasks (server + capture agent, see the "no manual
+upload step" and "-Autostart both EXEs" work) made `install.ps1` set a
+**persistent per-user** `SOPFORGE_SERVER_URL` environment variable
+(`[Environment]::SetEnvironmentVariable(..., "User")`) whenever a
+non-default `-Port` is used with `-Autostart` — so the capture agent's
+auto-upload targets the right port regardless of how `sopforge.exe` is
+launched. `scripts/test_install.ps1`'s round trip 2 uses a non-default
+port specifically to test this, and its first run after this change left
+`SOPFORGE_SERVER_URL=http://127.0.0.1:28421` set on this real machine —
+a genuine, confirmed side effect discovered by checking
+`[Environment]::GetEnvironmentVariable(...)` after a run, not something
+theoretical. Fixed by snapshotting the original value before round trip 2
+and restoring it in a `finally` block that covers every exit path
+(including the early SKIP `exit 0`) — verified PowerShell's `exit` inside
+a top-level `try` still runs `finally` before terminating, then reran the
+test and confirmed the env var returns to its pre-test state (unset)
+afterward. The one-time leaked value from before this fix was manually
+cleared on this machine.

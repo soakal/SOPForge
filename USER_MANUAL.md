@@ -48,41 +48,62 @@ If `dist/sopforge/` and `dist/sopforge-server/` are already built:
 .\install.ps1 -InstallPath "D:\SOPForge" -Port 8420 -Autostart
 ```
 
-This copies both EXEs, creates a `sessions/` folder, and (with `-Autostart`)
-registers a per-user scheduled task that launches the server at logon.
-`-Autostart` is **best-effort** — some machines/accounts restrict
-`AtLogOn`-triggered scheduled task registration even without elevation; if
-that happens you'll see a warning, but SOPForge itself still installs and
-works fine either way.
+If PowerShell's default execution policy blocks running `.ps1` files
+(double-clicking one often just opens it in a text editor, or errors
+"running scripts is disabled on this system" — a Windows 11 default-policy
+thing, not specific to this script), just **double-click `install.bat`
+instead** — it runs `install.ps1` with the execution-policy bypass for you.
+Same arguments work: `install.bat -Port 9000 -Autostart`.
 
-#### If `-Autostart` fails: two manual ways to start the server automatically
+This copies both EXEs, creates a `sessions/` folder, and — with
+`-Autostart` — registers **two** per-user scheduled tasks: one that
+launches the server at logon, and one that launches the capture agent
+(tray icon) at logon too, so after signing in, recording is just a hotkey
+away and the doc-generation server is already running — genuinely nothing
+to manually start. `-Autostart` is **best-effort** — some machines/accounts
+restrict `AtLogOn`-triggered scheduled task registration even without
+elevation; if that happens you'll see a warning for each task it couldn't
+register, but SOPForge itself still installs and works fine either way
+(just launch the EXEs yourself, or see the manual fallback below).
 
-**Option 1 — Startup folder shortcut (simplest, usually works even when the
-scheduled task doesn't, since it isn't subject to the same Task Scheduler
-restriction):**
+#### If `-Autostart` fails: two manual ways to autostart instead
+
+**Option 1 — Startup folder shortcuts (simplest, usually works even when
+the scheduled task doesn't, since it isn't subject to the same Task
+Scheduler restriction).** Repeat for both EXEs:
 ```powershell
 $startup = [Environment]::GetFolderPath("Startup")
-$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut("$startup\SOPForge-Server.lnk")
-$shortcut.TargetPath = "$env:LOCALAPPDATA\SOPForge\server\sopforge-server.exe"
-$shortcut.Arguments = "--port 8420 --sessions-root `"$env:LOCALAPPDATA\SOPForge\sessions`""
-$shortcut.Save()
-```
-This runs the server whenever you log in. To remove it later, just delete
-`SOPForge-Server.lnk` from that Startup folder (or open it with
-`explorer (Get-Item $startup).FullName`).
 
-**Option 2 — register the scheduled task yourself** through the Task
+$server = (New-Object -ComObject WScript.Shell).CreateShortcut("$startup\SOPForge-Server.lnk")
+$server.TargetPath = "$env:LOCALAPPDATA\SOPForge\server\sopforge-server.exe"
+$server.Arguments = "--port 8420 --sessions-root `"$env:LOCALAPPDATA\SOPForge\sessions`""
+$server.Save()
+
+$capture = (New-Object -ComObject WScript.Shell).CreateShortcut("$startup\SOPForge-Capture.lnk")
+$capture.TargetPath = "$env:LOCALAPPDATA\SOPForge\capture\sopforge.exe"
+$capture.Save()
+```
+These run at every login. To remove them later, delete the two `.lnk`
+files from that Startup folder (or open it with `explorer (Get-Item
+$startup).FullName`).
+
+**Option 2 — register the scheduled task(s) yourself** through the Task
 Scheduler GUI (`taskschd.msc`), if your account's restriction only blocks
-the *unattended*/scripted registration path and not an interactive one:
+the *unattended*/scripted registration path and not an interactive one.
+Repeat for each EXE (name the tasks "SOPForge-Server" /
+"SOPForge-Capture" respectively so `uninstall.ps1` can find and remove
+them automatically):
 1. Task Scheduler → Create Task (not "Create Basic Task").
-2. General tab: name it "SOPForge-Server"; under "Security options" choose
-   "Run only when user is logged on."
+2. General tab: name it; under "Security options" choose "Run only when
+   user is logged on."
 3. Triggers tab → New → "At log on" → your user account.
-4. Actions tab → New → Program/script: the full path to
-   `sopforge-server.exe` (e.g. `%LOCALAPPDATA%\SOPForge\server\sopforge-server.exe`);
-   Add arguments: `--port 8420 --sessions-root "%LOCALAPPDATA%\SOPForge\sessions"`.
-5. OK, then right-click the new task → Run, to confirm it starts the server
-   (check `http://127.0.0.1:8420/` in a browser).
+4. Actions tab → New → Program/script: the full path to the EXE (e.g.
+   `%LOCALAPPDATA%\SOPForge\server\sopforge-server.exe` or `...\capture\sopforge.exe`);
+   for the server, add arguments: `--port 8420 --sessions-root "%LOCALAPPDATA%\SOPForge\sessions"`
+   (the capture agent needs no arguments).
+5. OK, then right-click the new task → Run, to confirm it starts (check
+   `http://127.0.0.1:8420/` in a browser for the server; the tray icon
+   appearing for the capture agent).
 
 Either way, this only needs doing once per machine.
 
@@ -90,9 +111,10 @@ Either way, this only needs doing once per machine.
 .\uninstall.ps1                                  # removes what install.ps1 created
 .\uninstall.ps1 -RemoveData                      # also deletes sessions/ (your generated SOPs)
 ```
-
-By default, `uninstall.ps1` preserves `sessions/` if it has any real content
-in it — uninstalling the app doesn't delete your generated documents unless
+(or double-click `uninstall.bat`, same execution-policy-bypass wrapper as
+`install.bat`.) `uninstall.ps1` removes both scheduled tasks it created (if
+any), and by default preserves `sessions/` if it has any real content in
+it — uninstalling the app doesn't delete your generated documents unless
 you explicitly ask it to.
 
 Building the EXEs from source (once per machine/rebuild):
@@ -115,8 +137,9 @@ zip) with:
 ```
 
 This produces `release\SOPForge\` (and `release\SOPForge.zip`) containing
-both built EXEs, `install.ps1`/`uninstall.ps1`, `USER_MANUAL.md`, and
-`LICENSE` — the recipient just unzips it and runs `install.ps1` from inside,
+both built EXEs, `install.ps1`/`install.bat`/`uninstall.ps1`/`uninstall.bat`,
+`USER_MANUAL.md`, and `LICENSE` — the recipient just unzips it and
+double-clicks `install.bat` (or runs `install.ps1` directly) from inside,
 exactly as described above. `release/` is gitignored; rerun this after every
 rebuild you want to hand off.
 

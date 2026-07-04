@@ -3,8 +3,9 @@
     Automated install/uninstall round-trip (AC4): snapshots directory
     state, installs to a temp path on a non-default port, polls the
     health endpoint, uninstalls, and asserts before/after directory state
-    matches. Separately probes the -Autostart branch: creates the
-    scheduled task, confirms it via Get-ScheduledTask, then removes it.
+    matches. Separately probes the -Autostart branch: creates both
+    scheduled tasks (server + capture agent), confirms each via
+    Get-ScheduledTask, then removes them.
 
 .DESCRIPTION
     This was originally going to treat scheduled-task creation failure as
@@ -97,22 +98,31 @@ if (Test-Path $TestRoot) {
 }
 Write-Output "PASS: install/uninstall round trip -- directory state matches pre-install baseline (absent)."
 
-# --- Round trip 2: -Autostart branch ---
+# --- Round trip 2: -Autostart branch (both the server AND capture agent tasks) ---
 # Best-effort by design (install.ps1's .DESCRIPTION and
 # phases/DEVIATIONS.md's "task-12 -Autostart scheduled task" entry):
 # Task Scheduler permission policy can block ONLOGON-triggered task
 # registration on some machines/accounts even without elevation. When
-# that happens here, install.ps1 itself still succeeds (the scheduled
-# task step catches its own failure) -- this round trip verifies the
-# scheduled task WHEN it can be created, and treats "could not be
-# created on this machine" as a documented, known limitation rather than
-# a test failure, per the user's explicit decision to accept -Autostart
-# as best-effort rather than block the release on it.
+# that happens here, install.ps1 itself still succeeds (each scheduled
+# task step catches its own failure independently) -- this round trip
+# verifies both scheduled tasks WHEN they can be created, and treats
+# "neither could be created on this machine" as a documented, known
+# limitation rather than a test failure, per the user's explicit decision
+# to accept -Autostart as best-effort rather than block the release on it.
 Write-Output ""
-Write-Output "=== Round trip 2: -Autostart scheduled task (best-effort) ==="
+Write-Output "=== Round trip 2: -Autostart scheduled tasks (best-effort) ==="
 $TestRoot2 = Join-Path $env:TEMP "sopforge-install-test-autostart-$(Get-Random)"
-$TaskName = "SOPForge-Server"
+$TaskNames = @("SOPForge-Server", "SOPForge-Capture")
 $Port2 = $Port + 1
+
+# Port2 is non-default, so install.ps1 will set a persistent per-user
+# SOPFORGE_SERVER_URL env var -- this is a real, permanent side effect on
+# whatever machine runs this test, not just a temp-directory one. Snapshot
+# the original value now and restore it in `finally`, on every exit path
+# (including the early SKIP `exit 0` below), so running this test never
+# permanently pollutes a real user environment with a throwaway test port.
+$OriginalServerUrlEnv = [Environment]::GetEnvironmentVariable("SOPFORGE_SERVER_URL", "User")
+try {
 
 & $InstallScript -InstallPath $TestRoot2 -Port $Port2 -Autostart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Autostart failed (exit $LASTEXITCODE)" }
@@ -120,10 +130,13 @@ if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Autostart failed (exit $LASTEXITC
 if (-not (Test-Path (Join-Path $TestRoot2 "server\sopforge-server.exe"))) {
     throw "FAIL: base install (files) did not succeed even though -Autostart is best-effort"
 }
+if (-not (Test-Path (Join-Path $TestRoot2 "capture\sopforge.exe"))) {
+    throw "FAIL: base install (files) did not succeed even though -Autostart is best-effort"
+}
 
-$Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if (-not $Task) {
-    Write-Output "SKIP: scheduled task '$TaskName' could not be created on this machine/account"
+$RegisteredTasks = $TaskNames | Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
+if ($RegisteredTasks.Count -eq 0) {
+    Write-Output "SKIP: scheduled tasks could not be created on this machine/account"
     Write-Output "(Task Scheduler permission restriction, documented in phases/DEVIATIONS.md)."
     Write-Output "install.ps1 itself still succeeded -- this is the accepted best-effort behavior."
 
@@ -137,20 +150,32 @@ if (-not $Task) {
     Write-Output "ALL PASS (autostart round trip skipped: known environment limitation)"
     exit 0
 }
-Write-Output "Autostart scheduled task confirmed via Get-ScheduledTask."
+Write-Output "Autostart scheduled task(s) confirmed via Get-ScheduledTask: $($RegisteredTasks -join ', ')"
+if ($RegisteredTasks.Count -lt $TaskNames.Count) {
+    $Missing = $TaskNames | Where-Object { $_ -notin $RegisteredTasks }
+    Write-Warning "Only $($RegisteredTasks.Count) of $($TaskNames.Count) autostart tasks registered (missing: $($Missing -join ', ')) -- partial best-effort result, not a test failure."
+}
 
 & $UninstallScript -InstallPath $TestRoot2 -RemoveData
 if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 (autostart) failed (exit $LASTEXITCODE)" }
 
-$TaskAfter = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-if ($TaskAfter) {
-    throw "FAIL: scheduled task '$TaskName' still exists after uninstall"
+$TasksAfter = $TaskNames | Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
+if ($TasksAfter.Count -gt 0) {
+    throw "FAIL: scheduled task(s) still exist after uninstall: $($TasksAfter -join ', ')"
 }
 if (Test-Path $TestRoot2) {
     throw "FAIL: $TestRoot2 still exists after uninstall"
 }
 
-Write-Output "PASS: -Autostart round trip -- scheduled task removed; directory state matches baseline."
+Write-Output "PASS: -Autostart round trip -- scheduled task(s) removed; directory state matches baseline."
 Write-Output ""
 Write-Output "ALL PASS"
 exit 0
+
+} finally {
+    # Restore whatever this machine's real SOPFORGE_SERVER_URL was before
+    # this test ran (installing to $TestRoot2's non-default $Port2 sets a
+    # persistent per-user value) -- this test must never leave a permanent
+    # side effect on the machine it runs on.
+    [Environment]::SetEnvironmentVariable("SOPFORGE_SERVER_URL", $OriginalServerUrlEnv, "User")
+}
