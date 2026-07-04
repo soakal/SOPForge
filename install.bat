@@ -9,3 +9,8 @@ REM
 REM Any arguments passed to this .bat are forwarded to install.ps1, e.g.:
 REM   install.bat -Port 9000 -Autostart
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
+REM Double-clicking closes this window the instant powershell.exe exits --
+REM without pausing, a failure (or even the success message) would flash
+REM by unseen. Pressing a key dismisses this; running from an existing
+REM terminal, just check the exit code as usual.
+pause

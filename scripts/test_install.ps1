@@ -31,6 +31,23 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $InstallScript = Join-Path $RepoRoot "install.ps1"
 $UninstallScript = Join-Path $RepoRoot "uninstall.ps1"
 
+# Both round trips below install to a non-default port, so install.ps1 sets
+# a persistent per-user SOPFORGE_SERVER_URL regardless of -Autostart --
+# snapshotted once here and restored in the outer `finally` at the bottom
+# of this script as a safety net. The real assertion, though, is inline
+# after each uninstall call below: uninstall.ps1 itself must restore this
+# to $OriginalServerUrlEnv -- if the outer finally were the only thing
+# putting it back, a real product-level cleanup bug (uninstall.ps1 never
+# removing it) would go completely unnoticed.
+$OriginalServerUrlEnv = [Environment]::GetEnvironmentVariable("SOPFORGE_SERVER_URL", "User")
+
+function Assert-ServerUrlEnvRestored($Context) {
+    $Current = [Environment]::GetEnvironmentVariable("SOPFORGE_SERVER_URL", "User")
+    if ($Current -ne $OriginalServerUrlEnv) {
+        throw "FAIL ($Context): SOPFORGE_SERVER_URL is '$Current' after uninstall, expected '$OriginalServerUrlEnv' -- uninstall.ps1 did not clean up the environment variable install.ps1 set."
+    }
+}
+
 function Wait-ForHealthy($Port, $TimeoutSeconds = 15) {
     $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $Deadline) {
@@ -52,6 +69,8 @@ function Stop-ServerCleanly($Proc, $Port) {
         Stop-Process -Id $Proc.Id -Force -ErrorAction SilentlyContinue
     }
 }
+
+try {
 
 # --- Round trip 1: plain install, no autostart ---
 $TestRoot = Join-Path $env:TEMP "sopforge-install-test-$(Get-Random)"
@@ -96,6 +115,7 @@ if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 failed (exit $LASTEXITCODE)" }
 if (Test-Path $TestRoot) {
     throw "FAIL: $TestRoot still exists after uninstall (directory state does not match pre-install baseline)"
 }
+Assert-ServerUrlEnvRestored "round trip 1"
 Write-Output "PASS: install/uninstall round trip -- directory state matches pre-install baseline (absent)."
 
 # --- Round trip 2: -Autostart branch (both the server AND capture agent tasks) ---
@@ -114,15 +134,6 @@ Write-Output "=== Round trip 2: -Autostart scheduled tasks (best-effort) ==="
 $TestRoot2 = Join-Path $env:TEMP "sopforge-install-test-autostart-$(Get-Random)"
 $TaskNames = @("SOPForge-Server", "SOPForge-Capture")
 $Port2 = $Port + 1
-
-# Port2 is non-default, so install.ps1 will set a persistent per-user
-# SOPFORGE_SERVER_URL env var -- this is a real, permanent side effect on
-# whatever machine runs this test, not just a temp-directory one. Snapshot
-# the original value now and restore it in `finally`, on every exit path
-# (including the early SKIP `exit 0` below), so running this test never
-# permanently pollutes a real user environment with a throwaway test port.
-$OriginalServerUrlEnv = [Environment]::GetEnvironmentVariable("SOPFORGE_SERVER_URL", "User")
-try {
 
 & $InstallScript -InstallPath $TestRoot2 -Port $Port2 -Autostart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Autostart failed (exit $LASTEXITCODE)" }
@@ -145,6 +156,7 @@ if ($RegisteredTasks.Count -eq 0) {
     if (Test-Path $TestRoot2) {
         throw "FAIL: $TestRoot2 still exists after uninstall (cleanup of the skipped autostart test did not complete)"
     }
+    Assert-ServerUrlEnvRestored "round trip 2 (skipped)"
 
     Write-Output ""
     Write-Output "ALL PASS (autostart round trip skipped: known environment limitation)"
@@ -166,6 +178,7 @@ if ($TasksAfter.Count -gt 0) {
 if (Test-Path $TestRoot2) {
     throw "FAIL: $TestRoot2 still exists after uninstall"
 }
+Assert-ServerUrlEnvRestored "round trip 2"
 
 Write-Output "PASS: -Autostart round trip -- scheduled task(s) removed; directory state matches baseline."
 Write-Output ""
@@ -173,9 +186,11 @@ Write-Output "ALL PASS"
 exit 0
 
 } finally {
-    # Restore whatever this machine's real SOPFORGE_SERVER_URL was before
-    # this test ran (installing to $TestRoot2's non-default $Port2 sets a
-    # persistent per-user value) -- this test must never leave a permanent
-    # side effect on the machine it runs on.
+    # Safety net, not the primary mechanism -- Assert-ServerUrlEnvRestored
+    # above is what actually verifies uninstall.ps1 cleans up
+    # SOPFORGE_SERVER_URL correctly (both round trips install to a
+    # non-default port, so both set it). This just guarantees the real
+    # machine running this test is never left in a different state than it
+    # started in, even if something throws before an assertion runs.
     [Environment]::SetEnvironmentVariable("SOPFORGE_SERVER_URL", $OriginalServerUrlEnv, "User")
 }

@@ -269,3 +269,39 @@ a top-level `try` still runs `finally` before terminating, then reran the
 test and confirmed the env var returns to its pre-test state (unset)
 afterward. The one-time leaked value from before this fix was manually
 cleared on this machine.
+
+## fable audit found the product itself still leaked the env var (uninstall.ps1 never removed it)
+
+A follow-up fable-model audit of the dual-autostart + `.bat` wrapper commit
+found that the fix above only patched the *test's* leak — `uninstall.ps1`
+itself never removed `SOPFORGE_SERVER_URL` at all, so a real
+`install.ps1 -Port 9500` followed by `uninstall.ps1` left the variable
+behind permanently, contradicting `install.ps1`'s own stated contract
+("uninstall.ps1 removes exactly what this script created"). Reproduced
+directly: installed to port 9500, confirmed the env var was set, ran
+`uninstall.ps1 -RemoveData`, confirmed the env var was *still* set
+afterward.
+
+The audit also found the env var was only ever set inside the
+`-Autostart` branch, even though its actual purpose (telling
+`capture.upload` where the server is) applies to any non-default port
+regardless of `-Autostart` — `install.ps1 -Port 9000` with no
+`-Autostart` silently left the capture agent's auto-upload pointed at the
+wrong port with no warning.
+
+**Fixed:** the env-var-setting logic moved out of the `-Autostart` gate
+(now runs whenever `-Port` isn't 8420); the value actually written (or
+`null`) is now recorded in `install-config.json` as `ServerUrlEnvValue`;
+`uninstall.ps1` now removes the env var only if its *current* value still
+exactly matches what that install wrote — never a value the user set
+themselves, or one a different, later install now depends on. Verified
+live: default-port install/uninstall leaves the env var untouched (JSON
+records `null`); non-default-port install without `-Autostart` sets it,
+uninstall removes it; `scripts/test_install.ps1`'s round trips now assert
+(not just restore) that `uninstall.ps1` itself performs this cleanup,
+catching exactly the class of bug this entry describes should it regress.
+
+The same audit flagged that `install.bat`/`uninstall.bat`'s console
+window closes the instant `powershell.exe` exits, so a double-clicking
+user would never see an error (or even the success message) — fixed by
+adding `pause` after the `powershell.exe` call in both files.

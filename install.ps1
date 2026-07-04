@@ -18,10 +18,16 @@
     sopforge.exe, the tray capture agent) -- so after a reboot or logon,
     both the server and the always-on recording hotkey are already running
     with zero manual steps, matching capture.upload's auto-upload feature
-    (which only helps if the server is actually running). If a non-default
-    -Port is chosen, a persistent per-user SOPFORGE_SERVER_URL environment
-    variable is set so the capture agent's auto-upload targets the right
-    port regardless of how it's launched.
+    (which only helps if the server is actually running).
+
+    Independent of -Autostart: if a non-default -Port is chosen, a
+    persistent per-user SOPFORGE_SERVER_URL environment variable is set so
+    the capture agent's auto-upload targets the right port regardless of
+    how sopforge.exe is eventually launched (this install's own autostart
+    task, a manual shortcut, or by hand). uninstall.ps1 removes this
+    variable again, but only if its current value still matches what this
+    install wrote (recorded in install-config.json) -- never a value the
+    user or a different install set.
 
     Each task is registered independently (one failing doesn't block the
     other) and is best-effort: registering an AtLogOn-triggered scheduled
@@ -73,6 +79,21 @@ New-Item -ItemType Directory -Force -Path $SessionsRoot | Out-Null
 Copy-Item -Path (Join-Path $CaptureDist "*") -Destination $CaptureInstallPath -Recurse -Force
 Copy-Item -Path (Join-Path $ServerDist "*") -Destination $ServerInstallPath -Recurse -Force
 
+# A non-default port means the capture agent's auto-upload (which defaults
+# to http://127.0.0.1:8420) needs to be told where the server actually is,
+# regardless of -Autostart -- sopforge.exe might be launched by hand, via a
+# shortcut, or later autostart setup, not just by this run. A persistent
+# per-user environment variable covers all of those. Recorded in
+# install-config.json (the value actually written, if any) so uninstall.ps1
+# can remove exactly this and nothing else -- it must never blow away some
+# unrelated value the user set themselves, or one from an install at a
+# different port that this install didn't create.
+$ServerUrlEnvValue = $null
+if ($Port -ne 8420) {
+    $ServerUrlEnvValue = "http://127.0.0.1:$Port"
+    [Environment]::SetEnvironmentVariable("SOPFORGE_SERVER_URL", $ServerUrlEnvValue, "User")
+}
+
 $ServerTaskName = "SOPForge-Server"
 $CaptureTaskName = "SOPForge-Capture"
 $InstallConfig = [ordered]@{
@@ -82,20 +103,11 @@ $InstallConfig = [ordered]@{
     Autostart        = [bool]$Autostart
     ServerTaskName   = $ServerTaskName
     CaptureTaskName  = $CaptureTaskName
+    ServerUrlEnvValue = $ServerUrlEnvValue
 }
 $InstallConfig | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath "install-config.json") -Encoding utf8
 
 if ($Autostart) {
-    # A non-default port means the capture agent's auto-upload (which
-    # defaults to http://127.0.0.1:8420) needs to be told where the server
-    # actually is. A persistent per-user environment variable means this
-    # works no matter how sopforge.exe ends up launched (this scheduled
-    # task, a shortcut, or by hand) -- set once, not just for this task's
-    # own process.
-    if ($Port -ne 8420) {
-        [Environment]::SetEnvironmentVariable("SOPFORGE_SERVER_URL", "http://127.0.0.1:$Port", "User")
-    }
-
     # Each task is registered independently -- the base install (files +
     # config, above) already succeeded regardless of what happens here, and
     # one task's Task Scheduler permission restriction must not block the
