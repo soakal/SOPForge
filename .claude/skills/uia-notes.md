@@ -42,3 +42,57 @@
 - Cold launch-to-window-ready timing observed: Notepad++ <1s, Chrome ~2-3s, VS Code
   ~4-6s. The resolver/self-test harness should poll with a generous timeout
   (used 10s/15s/20s here) rather than a fixed sleep.
+
+### Environment limitation: synthetic input is invisible to global hooks (task-06)
+
+**Confirmed on this build VM: neither pynput's `mouse.Controller`/`keyboard.Controller`
+nor a raw `SendInput` call via ctypes (bypassing pynput entirely) is observed by a
+`WH_MOUSE_LL`/`WH_KEYBOARD_LL` listener** (`pynput.mouse.Listener` /
+`keyboard.Listener`), even with the listener confirmed running and the injecting
+process at the same (non-admin) integrity level as the hook. Repro: install a
+listener, call `l.wait()` to confirm it's live, inject one click/keypress via each
+of pynput's Controller and a hand-rolled ctypes `SendInput`, and in both cases zero
+events arrive. This is very likely specific to however this remote/automated VM
+session delivers input (whatever mechanism gives the agent "hands" on this machine
+does not appear to be indistinguishable hardware-level input from the hook's point
+of view) — it should not reflect how `src/capture/hooks.py`'s `InputRecorder` behaves
+for a real physical user, since hardware-generated input is exactly what
+`WH_MOUSE_LL`/`WH_KEYBOARD_LL` exist to see.
+
+**Consequence for testing:** any test in this environment that relies on injected
+synthetic input reaching a global low-level hook cannot pass, regardless of which
+API does the injecting (pynput, raw SendInput, or pywinauto's `click_input()`, which
+is SendInput-based too). `InputRecorder`'s callback *logic* (coordinate/button
+handling, typing-burst summarization) is still fully testable by invoking
+`_on_click`/`_on_press` directly, which is what `tests/test_hooks_shots.py` does —
+but true end-to-end verification that the OS hook fires on real input is out of
+scope for this autonomous build and would need a human at the keyboard.
+
+**Consequence for task-11 (self-test harness) / acceptance criterion 1:** the ≥90%
+non-empty-element-metadata measurement should be driven by calling
+`src/capture/uia.py`'s `resolve_at(x, y)` directly at each scripted interaction
+point (pywinauto can still drive the apps via its message-based `click()`, which
+doesn't depend on the global hook at all) rather than by routing scripted clicks
+through `InputRecorder` and hoping the hook sees them.
+
+### Environment limitation: GDI screen capture (BitBlt) also fails here (task-06)
+
+**`mss.grab()` and `PIL.ImageGrab.grab()` both fail on this build VM** —
+`mss.exception.ScreenShotError: Windows graphics function failed (no error
+provided): BitBlt` / PIL's `OSError: screen grab failed` — even capturing the
+primary monitor's full rect (`sct.monitors[1]`, `{0,0,824,1560}`, a real value
+from `sct.monitors`, not an out-of-range one). `SetProcessDPIAware()` first makes
+no difference. Two independent GDI-capture libraries failing identically points to
+the remoting/virtual-display layer under this VM session, not a library bug — this
+is the same class of restriction as the input-injection finding above (this
+session's virtual display apparently isn't a real GDI-BitBlt-capturable surface).
+The 824x1560 portrait resolution also suggests this build session itself is being
+viewed through a phone-form-factor remote client, which may have its own capture
+path that doesn't go through classic Win32 GDI at all.
+
+**Consequence for testing:** `ScreenshotWriter` (`src/capture/shots.py`) cannot be
+verified against a real `mss.grab()` call in this environment. Tests instead
+monkeypatch the `mss.mss()` construction to a fake session object returning
+synthetic pixel data, so the sequential-naming/file-write logic is still exercised
+for real — but actual GDI capture success is unverified here and needs a normal
+desktop session (a real target machine, not this build VM) to confirm.
