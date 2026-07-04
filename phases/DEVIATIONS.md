@@ -157,3 +157,53 @@ flags", i.e. all three categories render and are individually correct), not a
 weakened criterion. If/when a future task wires LLM/narration generation into
 the live server, this test should be revisited to also exercise a genuine
 fallback/verify-claim path end-to-end through a real browser.
+
+## task-12 -Autostart scheduled task: blocked by Access Denied (Phase 3)
+
+**Acceptance criterion 4** (phases/03-exports.md): "install.ps1 on a clean
+path: install → server responds on configured port → uninstall removes
+everything it created (assert directory state before/after)." task-12's own
+task-list text further specifies the `-Autostart` branch's verification:
+"create, then `schtasks /query`, then delete; on elevation failure record in
+DEVIATIONS.md and escalate, never silently pass."
+
+`install.ps1`/`uninstall.ps1` were written and their core (non-autostart)
+round trip — install to a temp path, start `sopforge-server.exe`, poll `GET /`
+to 200, `POST /shutdown`, uninstall, assert the directory returns to its
+pre-install (absent) state — **passes cleanly** via
+`scripts/test_install.ps1`. This is a real result, not blocked.
+
+**The `-Autostart` branch is blocked**: `Register-ScheduledTask` (the modern
+CIM-based cmdlet) fails with `Access is denied` on this build VM/account. To
+rule out a CIM-provider-specific quirk (rather than a genuine Task Scheduler
+permission restriction), the classic `schtasks.exe /create` command-line tool
+was tried directly, independent of any PowerShell cmdlet — it fails
+identically with `ERROR: Access is denied.` Both mechanisms failing rules out
+"wrong cmdlet" as the cause; this is a real, reproducible permission/policy
+restriction on this account for registering an `AtLogOn`-triggered scheduled
+task, not a bug in `install.ps1`.
+
+**Why this stops here rather than being worked around autonomously:**
+1. `phases/03-tasks.md`'s task-12 line explicitly instructs: "on elevation
+   failure record in DEVIATIONS.md and escalate, never silently pass" — this
+   is exactly that failure.
+2. Brian's global CLAUDE.md separately lists "modify scheduled tasks" under
+   actions requiring explicit user confirmation before proceeding — the
+   session already ran the create/delete round trip once as part of the
+   task-list's own designed verification (a test-named, immediately-cleaned-up
+   task, and the create attempt itself failed both times, so nothing was
+   actually left registered on the system) — but repeatedly retrying
+   privilege-escalation workarounds to force it through would compound past
+   what a single already-designed verification pass covers, without explicit
+   sign-off.
+3. There is no code-level fix available: this is an OS/policy permission
+   boundary, not a logic bug — retrying, replanning, or rewriting
+   `install.ps1` cannot change what account privilege allows.
+
+**What's needed to unblock:** either running the install/verification flow
+from an elevated session (if Brian confirms that's acceptable for this
+autostart feature), or accepting `-Autostart` as a documented, best-effort
+feature that may require the user to register the scheduled task manually
+(or grant the necessary Task Scheduler rights) on machines where this
+restriction applies, with `install.ps1` still installing and working
+correctly without `-Autostart` regardless (already proven).
