@@ -252,6 +252,15 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         _require_known_session(session_id)
         session_dir = sessions[session_id][3]
         del sessions[session_id]
+        # report.json's absence is what _restore_sessions_from_disk actually
+        # checks for -- delete it first (best-effort, ignoring a Windows
+        # file-lock PermissionError) so a partially-locked rmtree below can
+        # never leave enough behind to resurrect this session on the next
+        # server restart.
+        try:
+            (session_dir / "report.json").unlink(missing_ok=True)
+        except OSError:
+            pass
         shutil.rmtree(session_dir, ignore_errors=True)
         remove_entry(sessions_root, session_id)
         return RedirectResponse("/ui", status_code=303)

@@ -174,3 +174,34 @@ def test_ui_delete_unknown_session_returns_404(tmp_path):
     client = _make_client(tmp_path / "sessions")
     resp = client.post("/ui/sessions/does-not-exist/delete")
     assert resp.status_code == 404
+
+
+def test_ui_delete_removes_report_json_even_if_rmtree_fails(tmp_path, monkeypatch):
+    """report.json's absence is what _restore_sessions_from_disk actually
+    checks for -- if a locked file makes the full directory removal fail
+    (a real, documented Windows AV-lock scenario elsewhere in this
+    project), the session must not resurrect on the next restart. Delete
+    must remove report.json regardless of whether rmtree succeeds."""
+    sessions_root = tmp_path / "sessions"
+    client = _make_client(sessions_root)
+    session_id = _create_and_wait(client, tmp_path)
+    session_dir = sessions_root / session_id
+    assert (session_dir / "report.json").exists()
+
+    import pipeline.server as server_module
+
+    # shutil.rmtree(..., ignore_errors=True) never raises to the caller even
+    # when a file is locked -- it just silently leaves things behind. A
+    # no-op is what that looks like from the outside; that's the scenario
+    # this guards against, not rmtree raising (which ignore_errors=True
+    # already prevents).
+    monkeypatch.setattr(server_module.shutil, "rmtree", lambda *a, **k: None)
+
+    resp = client.post(f"/ui/sessions/{session_id}/delete", follow_redirects=False)
+    assert resp.status_code == 303
+    assert not (session_dir / "report.json").exists()
+
+    # Even with the directory otherwise still present (rmtree "failed"), a
+    # fresh app instance must not resurrect this session.
+    client2 = _make_client(sessions_root)
+    assert client2.get(f"/sessions/{session_id}/status").status_code == 404
