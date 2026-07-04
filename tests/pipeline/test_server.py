@@ -103,3 +103,32 @@ def test_manifest_missing_required_field_returns_400(tmp_path):
     client = _make_client(tmp_path)
     resp = client.post("/sessions", data={"manifest_json": "{}"}, files=[])
     assert resp.status_code == 400
+
+
+def test_path_traversal_in_uploaded_filename_cannot_escape_the_session_directory(tmp_path):
+    """A malicious/malformed upload filename must never be used as a raw
+    path — it must be reduced to its basename and rejected (or written)
+    only inside this session's own screenshots directory, never above it."""
+    import io
+
+    client = _make_client(tmp_path)
+    manifest_json, _real_files = _manifest_and_files(tmp_path)
+
+    buf = io.BytesIO()
+    Image.new("RGB", (10, 10)).save(buf, format="PNG")
+    buf.seek(0)
+
+    resp = client.post(
+        "/sessions",
+        data={"manifest_json": manifest_json},
+        files=[("files", ("../../escape.png", buf, "image/png"))],
+    )
+    # The manifest's real screenshots are still missing (only the
+    # traversal filename was uploaded), so generation fails loudly...
+    assert resp.status_code in (400, 500)
+    # ...and, critically, nothing was ever written outside sessions_root.
+    sessions_root = tmp_path / "sessions"
+    escaped = sessions_root / "escape.png"
+    assert not escaped.exists()
+    for path in sessions_root.rglob("escape.png"):
+        assert path.parent.name == "screenshots"

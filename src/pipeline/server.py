@@ -29,9 +29,7 @@ def create_app(sessions_root: Path) -> FastAPI:
     sessions = {}
 
     @app.post("/sessions")
-    async def create_session(
-        manifest_json: str = Form(...), files: list[UploadFile] = File(default=[])
-    ):
+    def create_session(manifest_json: str = Form(...), files: list[UploadFile] = File(default=[])):
         try:
             manifest = load_manifest(json.loads(manifest_json))
         except Exception as exc:
@@ -43,10 +41,24 @@ def create_app(sessions_root: Path) -> FastAPI:
         annotated_dir = session_dir / "annotated"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-        for upload in files:
-            dest = screenshots_dir / upload.filename
-            with dest.open("wb") as out:
-                shutil.copyfileobj(upload.file, out)
+        try:
+            for upload in files:
+                # Wire-supplied filename must never be trusted as a path —
+                # Path(...).name strips any directory components (including
+                # "../" traversal), and resolving under screenshots_dir with
+                # a containment check catches anything that survives that.
+                name = Path(upload.filename or "").name
+                if not name:
+                    raise HTTPException(status_code=400, detail="uploaded file has no filename")
+                dest = (screenshots_dir / name).resolve()
+                if screenshots_dir.resolve() not in dest.parents:
+                    raise HTTPException(status_code=400, detail=f"invalid filename: {name!r}")
+                with dest.open("wb") as out:
+                    shutil.copyfileobj(upload.file, out)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid upload: {exc}") from exc
 
         try:
             step_results, annotated_paths = render_steps_template_mode(
