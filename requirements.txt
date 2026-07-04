@@ -1,0 +1,9 @@
+mss==10.2.0
+pynput==1.8.2
+pywin32==312
+comtypes==1.4.16
+pywinauto==0.6.9
+Pillow==12.3.0
+numpy==2.5.0
+pystray==0.19.5
+pyinstaller==6.21.0
