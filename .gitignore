@@ -6,8 +6,8 @@ dist/
 build/
 *.egg-info/
 captures/
-!fixtures/**
 *.wav
+!fixtures/**
 loop-*.log
 STOP
 ESCALATION.md
