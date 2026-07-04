@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "session": {
+    "id": "20260101-000000-empty",
+    "title": "",
+    "started_utc": "2026-01-01T00:00:00Z",
+    "ended_utc": "2026-01-01T00:00:05Z",
+    "machine": "WS-EMPTY",
+    "os_build": "26100",
+    "narration_wav": null
+  },
+  "steps": [
+    {
+      "id": "step-001",
+      "ts_utc": "2026-01-01T00:00:00Z",
+      "action": "click",
+      "screen": {
+        "x": 0,
+        "y": 0,
+        "monitor": 1
+      },
+      "screenshot": "001.png",
+      "window": {
+        "title": "Test Window",
+        "process": "test.exe",
+        "class": ""
+      },
+      "element": {
+        "name": "",
+        "control_type": "",
+        "automation_id": "",
+        "framework": "",
+        "bounding_rect": null
+      },
+      "redactions": [],
+      "button": "left"
+    },
+    {
+      "id": "step-002",
+      "ts_utc": "2026-01-01T00:00:01Z",
+      "action": "click",
+      "screen": {
+        "x": 10,
+        "y": 10,
+        "monitor": 1
+      },
+      "screenshot": "002.png",
+      "window": {
+        "title": "Test Window",
+        "process": "test.exe",
+        "class": ""
+      },
+      "element": {
+        "name": "",
+        "control_type": "",
+        "automation_id": "",
+        "framework": "",
+        "bounding_rect": null
+      },
+      "redactions": [],
+      "button": "left"
+    },
+    {
+      "id": "step-003",
+      "ts_utc": "2026-01-01T00:00:02Z",
+      "action": "click",
+      "screen": {
+        "x": 20,
+        "y": 20,
+        "monitor": 1
+      },
+      "screenshot": "003.png",
+      "window": {
+        "title": "Test Window",
+        "process": "test.exe",
+        "class": ""
+      },
+      "element": {
+        "name": "",
+        "control_type": "",
+        "automation_id": "",
+        "framework": "",
+        "bounding_rect": null
+      },
+      "redactions": [],
+      "button": "left"
+    }
+  ]
+}
