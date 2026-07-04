@@ -94,7 +94,13 @@ class Recorder:
             event = self._queue.get()
             if event is _STOP_SENTINEL:
                 return
-            self._process_event(event)
+            try:
+                self._process_event(event)
+            except Exception:  # noqa: BLE001
+                # One bad event must not kill the worker thread — that would
+                # silently stop processing every subsequent real click/type
+                # for the rest of the session.
+                logger.exception("failed to process capture event %r", event)
 
     def _redact(self, screenshot_path, element):
         """Returns the manifest `redactions` list (region+reason) for the
