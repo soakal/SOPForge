@@ -6,16 +6,18 @@ heuristic on the manifest step's element — control_type "Edit" plus a
 password-ish name/automation_id — which blurs the whole element bounding box.
 """
 
-import asyncio
 import re
 import sys
 import tomllib
 from pathlib import Path
 
 from PIL import Image, ImageFilter
-from winsdk.windows.graphics.imaging import BitmapDecoder
-from winsdk.windows.media.ocr import OcrEngine
-from winsdk.windows.storage import StorageFile
+
+# winsdk's WinRT projection modules are deferred (imported inside _ocr_words,
+# not here) — importing winsdk.windows.storage alone drags in most of the
+# WinRT metadata tree (applicationmodel, background, contacts, ui.text, ...)
+# and cost ~500ms at cold start, which is otherwise unused until the first
+# screenshot is actually redacted. See scripts/verify_exe.py (criterion 4).
 
 
 def _app_root():
@@ -70,6 +72,10 @@ async def _ocr_words(image_path):
     image at image_path. Reads via WinRT's BitmapDecoder (a real file
     on disk) rather than hand-building a SoftwareBitmap from raw pixel
     bytes — the latter silently produced empty OCR results in testing."""
+    from winsdk.windows.graphics.imaging import BitmapDecoder
+    from winsdk.windows.media.ocr import OcrEngine
+    from winsdk.windows.storage import StorageFile
+
     file = await StorageFile.get_file_from_path_async(str(image_path))
     stream = await file.open_async(0)  # FileAccessMode.READ
     try:
@@ -97,6 +103,8 @@ async def _ocr_words(image_path):
 
 
 def ocr_words(image_path):
+    import asyncio  # deferred alongside winsdk — see _ocr_words's imports
+
     return asyncio.run(_ocr_words(image_path))
 
 

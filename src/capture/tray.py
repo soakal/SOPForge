@@ -90,12 +90,22 @@ class TrayApp:
         finally:
             self._icon.stop()
 
-    def run(self):
-        """Blocking: runs the tray icon's event loop until Exit is chosen."""
+    def run(self, on_ready=None):
+        """Blocking: runs the tray icon's event loop until Exit is chosen.
+        on_ready(), if given, fires once the icon is actually visible —
+        used by scripts/verify_exe.py to measure cold-start-to-tray-visible
+        timing (Phase 1 acceptance criterion 4) without needing to
+        UI-automate the real system tray, which is unreliable in general."""
         self._hotkey_listener.start()
         self._hotkey_listener.wait()
         try:
-            self._icon.run()
+
+            def _setup(icon):
+                icon.visible = True
+                if on_ready is not None:
+                    on_ready()
+
+            self._icon.run(setup=_setup)
         finally:
             self._hotkey_listener.stop()
             self._hotkey_listener.join()

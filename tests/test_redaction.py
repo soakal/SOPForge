@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
-import capture.redact as redact_module
 from capture.redact import (
     OcrUnavailableError,
     compile_patterns,
@@ -70,10 +69,14 @@ def test_matched_regions_blurred_others_untouched(tmp_path):
 def test_ocr_unavailable_raises_rather_than_silently_skipping(tmp_path, monkeypatch):
     png = tmp_path / "shot.png"
     _render(png, ["Contact: test@example.com"])
+    # OcrEngine is imported lazily inside _ocr_words (deferred to keep it out
+    # of cold-start import cost — see scripts/verify_exe.py criterion 4), so
+    # patch the real winsdk class rather than a (no-longer-existing)
+    # module-level redact_module.OcrEngine attribute.
+    from winsdk.windows.media.ocr import OcrEngine
+
     monkeypatch.setattr(
-        redact_module.OcrEngine,
-        "try_create_from_user_profile_languages",
-        staticmethod(lambda: None),
+        OcrEngine, "try_create_from_user_profile_languages", staticmethod(lambda: None)
     )
     with pytest.raises(OcrUnavailableError):
         redact_screenshot(png, out_path=tmp_path / "out.png")

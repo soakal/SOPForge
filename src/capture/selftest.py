@@ -253,8 +253,19 @@ def write_results(per_app, threshold=0.9, results_path=None):
 
     path = results_path or RESULTS_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Guard against gluing this section's heading onto the previous line if
+    # the file doesn't already end in a blank line (same bug class fixed in
+    # scripts/check_elevated_hotkey.py's ensure_uipi_section).
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if not existing or existing.endswith("\n\n"):
+        prefix = ""
+    elif existing.endswith("\n"):
+        prefix = "\n"
+    else:
+        prefix = "\n\n"
+
     with path.open("a", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        f.write(prefix + "\n".join(lines) + "\n")
     return overall
 
 
