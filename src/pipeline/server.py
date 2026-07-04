@@ -9,18 +9,34 @@ server-side yet. Sessions are processed synchronously and kept in an
 in-memory dict; a session id is only ever handed back once processing
 actually succeeded, so there's nothing orphaned or unreachable to track."""
 
+import io
 import json
 import shutil
 import uuid
+import zipfile
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 
+from pipeline.docx_assembler import assemble_docx
+from pipeline.export_html import render_single_file_html
+from pipeline.export_md import export_markdown_bundle
+from pipeline.export_pdf import render_pdf
 from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_template_mode
 from pipeline.sidecar import build_sidecar_report
 from pipeline.webui.review import render_review_page
+
+
+def _zip_directory(directory):
+    directory = Path(directory)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(directory.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(directory))
+    return buf.getvalue()
 
 
 def create_app(sessions_root: Path) -> FastAPI:
@@ -71,10 +87,33 @@ def create_app(sessions_root: Path) -> FastAPI:
             report = build_sidecar_report(manifest, report_step_results, [], {})
             md = render_markdown(manifest, step_results, annotated_paths, base_dir=annotated_dir)
             html_doc = render_html(manifest, step_results, annotated_paths, base_dir=annotated_dir)
+
+            docx_path = session_dir / "doc.docx"
+            assemble_docx(manifest, step_results, annotated_dir, docx_path)
+            docx_bytes = docx_path.read_bytes()
+
+            pdf_path = session_dir / "doc.pdf"
+            render_pdf(manifest, step_results, annotated_paths, pdf_path)
+            pdf_bytes = pdf_path.read_bytes()
+
+            single_html = render_single_file_html(manifest, step_results, annotated_paths)
+
+            md_bundle_dir = session_dir / "md_bundle"
+            export_markdown_bundle(manifest, step_results, annotated_paths, md_bundle_dir)
+            md_zip_bytes = _zip_directory(md_bundle_dir)
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"generation failed: {exc}") from exc
 
-        sessions[session_id] = {"status": "done", "report": report, "md": md, "html": html_doc}
+        sessions[session_id] = {
+            "status": "done",
+            "report": report,
+            "md": md,
+            "html": html_doc,
+            "docx": docx_bytes,
+            "pdf": pdf_bytes,
+            "single_html": single_html,
+            "md_zip": md_zip_bytes,
+        }
         return {"session_id": session_id, "status": "done"}
 
     def _session_or_404(session_id):
@@ -102,5 +141,37 @@ def create_app(sessions_root: Path) -> FastAPI:
     @app.get("/sessions/{session_id}/review")
     async def get_review(session_id: str):
         return HTMLResponse(render_review_page(_session_or_404(session_id)["report"]))
+
+    @app.get("/sessions/{session_id}/doc.docx")
+    async def get_doc_docx(session_id: str):
+        return Response(
+            _session_or_404(session_id)["docx"],
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": 'attachment; filename="doc.docx"'},
+        )
+
+    @app.get("/sessions/{session_id}/doc.pdf")
+    async def get_doc_pdf(session_id: str):
+        return Response(
+            _session_or_404(session_id)["pdf"],
+            media_type="application/pdf",
+            headers={"Content-Disposition": 'attachment; filename="doc.pdf"'},
+        )
+
+    @app.get("/sessions/{session_id}/doc.single.html")
+    async def get_doc_single_html(session_id: str):
+        return Response(
+            _session_or_404(session_id)["single_html"],
+            media_type="text/html",
+            headers={"Content-Disposition": 'attachment; filename="doc.single.html"'},
+        )
+
+    @app.get("/sessions/{session_id}/export.md.zip")
+    async def get_export_md_zip(session_id: str):
+        return Response(
+            _session_or_404(session_id)["md_zip"],
+            media_type="application/zip",
+            headers={"Content-Disposition": 'attachment; filename="export.md.zip"'},
+        )
 
     return app
