@@ -4,7 +4,7 @@ name, window title) — checked deterministically, not by another model."""
 
 from pathlib import Path
 
-from pipeline.manifest import load_manifest
+from pipeline.manifest import Step, load_manifest
 from pipeline.roundtrip import round_trip_ok
 from pipeline.template import render_step_template
 
@@ -68,3 +68,55 @@ def test_correct_text_with_all_facts_present_passes():
     )
     assert ok
     assert mismatches == []
+
+
+def test_template_output_round_trips_for_a_window_title_with_backslashes():
+    """Regression: the template used to render window titles via Python's
+    !r (repr), which backslash-escapes strings — a real elevated-window
+    title like "Administrator: C:\\Windows\\system32\\cmd.exe" would then
+    fail its own round-trip, since the rendered text no longer contained the
+    manifest's raw title as a literal substring."""
+    step = Step.model_validate(
+        {
+            "id": "step-001",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "action": "click",
+            "button": "left",
+            "screen": {"x": 5, "y": 5, "monitor": 1},
+            "screenshot": "001.png",
+            "window": {
+                "title": r"Administrator: C:\Windows\system32\cmd.exe",
+                "process": "cmd.exe",
+                "class": "win32",
+            },
+            "element": {
+                "name": "",
+                "control_type": "",
+                "automation_id": "",
+                "framework": "",
+                "bounding_rect": None,
+            },
+            "redactions": [],
+        }
+    )
+    text = render_step_template(step)
+    ok, mismatches = round_trip_ok(text, step)
+    assert ok, (mismatches, text)
+
+
+def test_expanded_click_verbs_recognized():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]  # click, Save button, SmartDeploy Console
+    for verb in ("Choose", "Open", "Check", "Expand", "Toggle", "Tap"):
+        text = f"{verb} the {step.element.name} in {step.window.title}."
+        ok, mismatches = round_trip_ok(text, step)
+        assert ok, (verb, mismatches, text)
+
+
+def test_expanded_type_verbs_recognized():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[1]  # type, Computer name, Answer File Editor
+    for verb in ("Fill in", "Provide", "Paste", "Set"):
+        text = f"{verb} {step.element.name} in {step.window.title}."
+        ok, mismatches = round_trip_ok(text, step)
+        assert ok, (verb, mismatches, text)

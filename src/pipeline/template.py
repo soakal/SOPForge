@@ -7,15 +7,20 @@ known (screen coordinates, window title) rather than inventing anything."""
 
 
 def _location_phrase(step):
+    # Manual single-quoting, not !r/repr(): repr backslash-escapes strings
+    # like a Windows title ("Administrator: C:\Windows\..."), which would
+    # make the rendered text no longer contain the manifest's raw window
+    # title as a literal substring — breaking round_trip_ok's own check
+    # against this template's output (invariant L2 must hold for L3's text).
     if step.window.title:
-        return f"the {step.window.title!r} window"
+        return f"the '{step.window.title}' window"
     return "the current window"
 
 
 def _target_phrase(step):
     if step.element.name:
         control = step.element.control_type or "element"
-        return f"the {step.element.name!r} {control}"
+        return f"the '{step.element.name}' {control}"
     if step.element.control_type:
         return f"the {step.element.control_type}"
     return f"the position ({step.screen.x}, {step.screen.y})"

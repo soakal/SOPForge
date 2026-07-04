@@ -13,9 +13,16 @@ absence of facts nobody had.
 import re
 
 _CLICK_VERBS = re.compile(
-    r"\b(click|clicked|clicks|select|selected|selects|press|pressed|presses)\b", re.IGNORECASE
+    r"\b(click|clicked|clicks|select|selected|selects|press|pressed|presses|"
+    r"choose|chose|chosen|chooses|open|opened|opens|check|checked|checks|"
+    r"expand|expanded|expands|toggle|toggled|toggles|tap|tapped|taps)\b",
+    re.IGNORECASE,
 )
-_TYPE_VERBS = re.compile(r"\b(enter|entered|enters|type|typed|types|input|inputs)\b", re.IGNORECASE)
+_TYPE_VERBS = re.compile(
+    r"\b(enter|entered|enters|type|typed|types|input|inputs|fill|filled|fills|"
+    r"provide|provided|provides|paste|pasted|pastes|set)\b",
+    re.IGNORECASE,
+)
 
 
 def round_trip_ok(text, step):

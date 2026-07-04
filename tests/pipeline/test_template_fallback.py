@@ -76,6 +76,39 @@ def test_empty_window_title_falls_back_to_generic_phrase():
     assert "5" in text
 
 
+def test_window_title_with_backslashes_appears_literally_not_repr_escaped():
+    """Regression: rendering used to build phrases with !r (Python repr),
+    which backslash-escapes strings — an ordinary elevated-window title like
+    "Administrator: C:\\Windows\\system32\\cmd.exe" would render as
+    "Administrator: C:\\\\Windows\\\\system32\\\\cmd.exe", no longer
+    containing the manifest's raw title as a literal substring."""
+    step = Step.model_validate(
+        {
+            "id": "step-001",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "action": "click",
+            "button": "left",
+            "screen": {"x": 5, "y": 5, "monitor": 1},
+            "screenshot": "001.png",
+            "window": {
+                "title": r"Administrator: C:\Windows\system32\cmd.exe",
+                "process": "cmd.exe",
+                "class": "win32",
+            },
+            "element": {
+                "name": "",
+                "control_type": "",
+                "automation_id": "",
+                "framework": "",
+                "bounding_rect": None,
+            },
+            "redactions": [],
+        }
+    )
+    text = render_step_template(step)
+    assert step.window.title in text
+
+
 def test_unknown_action_raises():
     step = Step.model_validate(
         {
