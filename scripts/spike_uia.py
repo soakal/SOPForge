@@ -150,7 +150,9 @@ def spike_notepadpp():
 def spike_chrome():
     pids_before = running_pids("chrome.exe")
     before = snapshot()
-    with tempfile.TemporaryDirectory(prefix="sopforge-spike-chrome-") as profile_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="sopforge-spike-chrome-", ignore_cleanup_errors=True
+    ) as profile_dir:
         subprocess.Popen(
             [
                 CHROME_PATH,
@@ -163,9 +165,7 @@ def spike_chrome():
         )
         win = None
         try:
-            win = wait_new_window(
-                before, lambda t: "Chrome" in t or t == "New Tab", timeout=15
-            )
+            win = wait_new_window(before, lambda t: "Chrome" in t or t == "New Tab", timeout=15)
             bring_to_foreground(win)
             rect = win.rectangle()
             x, y = rect.left + 120, rect.top + 45  # tab strip / address bar band
@@ -179,7 +179,9 @@ def spike_chrome():
 def spike_vscode():
     pids_before = running_pids("Code.exe")
     before = snapshot()
-    with tempfile.TemporaryDirectory(prefix="sopforge-spike-vscode-") as data_dir:
+    with tempfile.TemporaryDirectory(
+        prefix="sopforge-spike-vscode-", ignore_cleanup_errors=True
+    ) as data_dir:
         extensions_dir = str(Path(data_dir) / "extensions")
         subprocess.Popen(
             [
@@ -191,9 +193,7 @@ def spike_vscode():
         )
         win = None
         try:
-            win = wait_new_window(
-                before, lambda t: "Visual Studio Code" in t, timeout=20
-            )
+            win = wait_new_window(before, lambda t: "Visual Studio Code" in t, timeout=20)
             bring_to_foreground(win)
             rect = win.rectangle()
             x, y = rect.left + 150, rect.top + 40  # title/menu band
