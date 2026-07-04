@@ -73,3 +73,36 @@ def test_empty_claims_list_always_passes():
     ok, missing = validate_claim_coverage("any text at all", [])
     assert ok is True
     assert missing == []
+
+
+def test_flagged_marker_alone_satisfies_validation_without_content_coverage():
+    """The marker (`[verify] (claim-id)`) must be sufficient on its own —
+    without this test, deleting the flagged-branch check entirely would
+    still pass every other test in this file, since ensure_claim_coverage's
+    own blockquotes always embed the claim's full text too (making content
+    coverage true regardless of the flagged check)."""
+    claim = _CLAIMS[2]
+    # Marker present, but the claim's own text is deliberately NOT included —
+    # so _claim_covered(claim, text) is False and only the flagged branch
+    # can make this pass.
+    text_with_marker_but_no_content = (
+        f"Some narrative.\n\n> [verify] ({claim['claim_id']}): [redacted]\n"
+    )
+    ok, missing = validate_claim_coverage(text_with_marker_but_no_content, [claim])
+    assert ok is True
+    assert missing == []
+
+
+def test_whitespace_only_claim_text_is_never_treated_as_covered():
+    """An empty/whitespace claim text must not trivially "cover" itself via
+    `"" in text` always being True — that would silently satisfy invariant
+    L4 for a claim whose presence was never actually verifiable, and it
+    would never get flagged either. It must always land in verify_ids."""
+    blank_claim = {"claim_id": "claim-999", "text": "   ", "ts": 0.0}
+    final_text, covered, verify_ids = ensure_claim_coverage("Some narrative text.", [blank_claim])
+    assert covered == []
+    assert verify_ids == ["claim-999"]
+
+    ok, missing = validate_claim_coverage("Some narrative text with no marker.", [blank_claim])
+    assert ok is False
+    assert missing == ["claim-999"]

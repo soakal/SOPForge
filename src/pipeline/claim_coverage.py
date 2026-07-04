@@ -12,11 +12,26 @@ no model judgment involved in deciding what counts as "covered"."""
 
 
 def _claim_covered(claim, text):
-    return claim["text"].strip().lower() in text.lower()
+    stripped = claim["text"].strip()
+    if not stripped:
+        # An empty/whitespace claim (e.g. a whisper segment that stripped to
+        # nothing) can never be "covered" by content — "" is a substring of
+        # everything, which would otherwise silently satisfy the invariant
+        # without the claim's presence being verifiable at all. Force it to
+        # the [verify] path instead.
+        return False
+    return stripped.lower() in text.lower()
+
+
+def _verify_marker(claim_id):
+    """The one place that defines what a flagged claim looks like in
+    rendered text — render_verify_blockquote and validate_claim_coverage
+    both go through this, so they can't drift out of sync with each other."""
+    return f"[verify] ({claim_id})"
 
 
 def render_verify_blockquote(claim):
-    return f"> [verify] ({claim['claim_id']}): {claim['text']}"
+    return f"> {_verify_marker(claim['claim_id'])}: {claim['text']}"
 
 
 def ensure_claim_coverage(narrative_text, claims):
@@ -48,7 +63,7 @@ def validate_claim_coverage(final_text, claims):
     missing = []
     for claim in claims:
         covered = _claim_covered(claim, final_text)
-        flagged = f"[verify] ({claim['claim_id']})" in final_text
+        flagged = _verify_marker(claim["claim_id"]) in final_text
         if not covered and not flagged:
             missing.append(claim["claim_id"])
     return (len(missing) == 0, missing)
