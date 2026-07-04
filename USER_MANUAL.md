@@ -10,20 +10,27 @@ the review web UI, and packaged installers all work as described below.
 ## 1. What SOPForge does
 
 SOPForge turns a recorded Windows workflow into a polished Standard Operating
-Procedure document, entirely on your own machine:
+Procedure document, entirely on your own machine — **the whole point is that
+you record and stop, and the doc just appears; no manual steps in between:**
 
 1. A **capture agent** (system tray app) records mouse clicks, keystrokes-as-typed-
    field summaries, screenshots, and UI Automation metadata (what window, what
    control, what element name) while you perform a task.
-2. A **generation pipeline** turns that recording into step-by-step instructions,
-   optionally phrased by a local LLM (via Ollama) with a guaranteed factual
-   fallback if the LLM is unavailable or produces something inaccurate.
-3. The result is assembled into **docx** (using the SOP Factory 2 / VRSI
+2. The instant you stop recording, it's **automatically sent to the pipeline
+   server** (if one's running) — no browser, no file picker, nothing to
+   upload by hand.
+3. A **generation pipeline** turns that recording into step-by-step instructions,
+   optionally phrased by a local LLM (via Ollama or Anthropic) with a guaranteed
+   factual fallback if the LLM is unavailable or produces something inaccurate.
+4. The result is assembled into **docx** (using the SOP Factory 2 / VRSI
    formatting engine), **PDF**, a **self-contained single-file HTML**, and an
    **Obsidian-compatible Markdown bundle** (`.md` + `images/`).
-4. A **review web UI** lets you search past sessions, preview the generated
-   doc, see a red/yellow/green sidecar report, re-render, and download every
-   format.
+5. **Your browser opens automatically** to the finished doc's review page —
+   preview it, check the sidecar report, download whatever format you need.
+
+If the server isn't running when you stop recording, nothing is lost — the
+capture stays safely on disk and you can upload it manually later through the
+review web UI's upload form (§5), or via the API (§4).
 
 Nothing is sent to the cloud by default. An Anthropic API routing option exists
 per config section but is off unless you turn it on.
@@ -141,6 +148,10 @@ See §9 below.
 
 ## 3. Recording a session (capture agent)
 
+Have the pipeline server running first (§4) if you want the "record, stop,
+doc appears" experience — it isn't required to record, just to get the
+automatic hand-off.
+
 Run the tray app (`dist\sopforge\sopforge.exe`, or from source: `.\.venv\Scripts\python.exe -m capture`):
 
 - A gray circular tray icon appears once the app is ready.
@@ -150,16 +161,32 @@ Run the tray app (`dist\sopforge\sopforge.exe`, or from source: `.\.venv\Scripts
   fields (SOPForge records *that* you typed and a redacted summary, never your
   actual keystrokes' content), switch windows as needed.
 - Press **Ctrl+Alt+R** again (or the tray menu) to stop. The icon returns to gray.
+- **That's it.** If a pipeline server is running (default: `http://127.0.0.1:8420`),
+  the capture is uploaded automatically and your browser opens straight to the
+  finished doc's review page once it's done. Nothing to click, nothing to upload.
 - Right-click → **Exit** closes the tray app.
 
-Each session is written to `%USERPROFILE%\SOPForge\captures\<timestamp>\`:
+If no server was running, or the upload failed for any reason, nothing is
+lost — each session is also always written to
+`%USERPROFILE%\SOPForge\captures\<timestamp>\`:
 - `manifest.json` — the ordered list of recorded steps (this is ground truth;
   nothing downstream can add, drop, or reorder a step from this file).
 - Numbered screenshots, one per step.
 
+Upload it later through the review web UI's upload form (§5) once the server
+is running, or via the API (§4).
+
+By default the capture agent looks for the server at `http://127.0.0.1:8420`.
+To point it elsewhere (a different port, or a server on another machine), set
+the `SOPFORGE_SERVER_URL` environment variable before launching
+`sopforge.exe`, e.g. `$env:SOPFORGE_SERVER_URL = "http://127.0.0.1:9000"`.
+
 ---
 
 ## 4. Running the pipeline server
+
+This is the piece that makes recording fully hands-off (§3) — set it up with
+`-Autostart` (§2) so it's always running and you never think about it again.
 
 If installed via `install.ps1`:
 ```powershell
@@ -239,10 +266,11 @@ empty for now.
 Open **http://127.0.0.1:<port>/** (or `/ui`):
 
 - **Library page**: every past session, searchable by title/date substring,
-  plus an **upload form** — pick a captured session's `manifest.json` and its
-  screenshots, hit Upload, and it lands you on that session's processing
-  page. This is the easiest way to generate a doc; no `curl`/API calls
-  needed (§4's API walkthrough still works too, e.g. for scripting).
+  plus an **upload form** for the fallback path — if the server wasn't
+  running when you stopped a recording (§3), pick that capture's
+  `manifest.json` and its screenshots here, hit Upload, and it lands you on
+  that session's processing page. No `curl`/API calls needed (§4's API
+  walkthrough still works too, e.g. for scripting).
 - **Session page**: a back-to-library link, the session's real title and
   date, an iframe preview of the generated doc, the sidecar report as three
   color-coded sections (see §6), a **Re-render** button, a **Delete**
@@ -361,6 +389,10 @@ anthropic = true
   server always works fine launched manually regardless.
 - `POST /sessions` processes each session on a single background worker
   thread — sessions queue and run one at a time, not in parallel.
+- Auto-upload (§3) only fires if the server is reachable at the moment you
+  stop recording — it doesn't retry later or queue for when the server comes
+  back up. If it fails, use the library page's upload form (§5) once the
+  server is running.
 
 ---
 

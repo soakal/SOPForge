@@ -1,8 +1,18 @@
 """Tray application: pystray icon with a recording indicator, a global
-start/stop hotkey, and an Exit menu item, wired to a Recorder session."""
+start/stop hotkey, and an Exit menu item, wired to a Recorder session.
 
+When a recording stops, its manifest + screenshots are auto-uploaded to a
+running sopforge-server (best-effort, on a background thread) and the
+browser opens straight to that session's review page on success -- zero
+manual steps between "stop recording" and seeing the generated doc. If the
+server isn't running, the capture is already safe on disk and can be
+uploaded later through the library page's upload form; nothing here ever
+blocks the tray or raises on a failed upload (see capture/upload.py)."""
+
+import logging
 import tempfile
 import threading
+import webbrowser
 from pathlib import Path
 
 import pystray
@@ -10,6 +20,9 @@ from PIL import Image, ImageDraw
 from pynput import keyboard
 
 from capture.recorder import Recorder
+from capture.upload import server_url_from_env, upload_session
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CAPTURES_ROOT = Path.home() / "SOPForge" / "captures"
 DEFAULT_HOTKEY = "<ctrl>+<alt>+r"
@@ -33,8 +46,18 @@ class TrayApp:
     one lock — otherwise a menu click racing the hotkey could start two
     Recorders (one leaked) or crash on a None recorder."""
 
-    def __init__(self, captures_root=DEFAULT_CAPTURES_ROOT, hotkey=DEFAULT_HOTKEY):
+    def __init__(
+        self,
+        captures_root=DEFAULT_CAPTURES_ROOT,
+        hotkey=DEFAULT_HOTKEY,
+        server_url=None,
+        upload_fn=upload_session,
+        open_browser_fn=webbrowser.open,
+    ):
         self.captures_root = Path(captures_root)
+        self.server_url = server_url or server_url_from_env()
+        self._upload_fn = upload_fn
+        self._open_browser_fn = open_browser_fn
         self._recorder = None
         self._lock = threading.Lock()
         self._icon = pystray.Icon(
@@ -82,6 +105,24 @@ class TrayApp:
         finally:
             self._icon.icon = IDLE_ICON
             self._icon.title = "SOPForge (idle)"
+        # Off the lock, on a background thread: uploading can take a few
+        # seconds (screenshot transfer + queuing), and "stop recording"
+        # must feel instant regardless of whether a server is even running.
+        threading.Thread(target=self._auto_upload, args=(recorder.output_dir,), daemon=True).start()
+
+    def _auto_upload(self, output_dir):
+        """Best-effort: uploads to self.server_url and opens the browser
+        straight to the review page on success. Never raises -- a failed
+        upload just means the user opens the browser and uses the library
+        page's upload form manually later; the capture is already safe on
+        disk regardless."""
+        session_id = self._upload_fn(output_dir, server_url=self.server_url)
+        if not session_id:
+            return
+        try:
+            self._open_browser_fn(f"{self.server_url}/ui/sessions/{session_id}")
+        except Exception:  # noqa: BLE001 - the doc is generated either way; opening a tab is a convenience
+            logger.warning("could not open browser to session %s", session_id, exc_info=True)
 
     def exit(self):
         try:
@@ -117,14 +158,18 @@ class TrayApp:
         `python -m capture --self-check`. Records into a throwaway temp
         directory rather than captures_root, so running the check never
         leaves a real (empty) session behind under the user's real capture
-        location."""
+        location. Auto-upload is disabled for the duration too — a
+        self-check must never make a real network attempt or (worse) hand
+        a throwaway diagnostic session to a genuinely running server."""
         self._hotkey_listener.start()
         self._hotkey_listener.wait()
         real_captures_root = self.captures_root
+        real_upload_fn = self._upload_fn
         setup_error = []
         try:
             with tempfile.TemporaryDirectory(prefix="sopforge-selfcheck-") as tmp:
                 self.captures_root = Path(tmp)
+                self._upload_fn = lambda *args, **kwargs: None
 
                 def _setup(icon):
                     # pystray runs setup on its own thread with no exception
@@ -145,6 +190,7 @@ class TrayApp:
                 self._icon.run(setup=_setup)
         finally:
             self.captures_root = real_captures_root
+            self._upload_fn = real_upload_fn
             self._hotkey_listener.stop()
             self._hotkey_listener.join()
         if setup_error:
