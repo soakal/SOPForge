@@ -96,3 +96,48 @@ def test_upsert_with_real_loaded_manifest(tmp_path):
 
     on_disk = json.loads((tmp_path / "library.json").read_text(encoding="utf-8"))
     assert on_disk == [entry]
+
+
+def test_concurrent_reads_never_see_a_partial_or_empty_file_during_writes(tmp_path):
+    """Regression: _save_index used to write_text() directly, which
+    truncates the file before writing new content — a reader racing a
+    writer could observe an empty or partially-written library.json and
+    raise JSONDecodeError. The temp-file + os.replace() write must make
+    every read see either the old complete content or the new complete
+    content, never something in between."""
+    import threading
+    import time
+
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    upsert_entry(tmp_path, "session-0", manifest, _REPORT)  # seed a non-empty starting file
+
+    stop = threading.Event()
+    errors = []
+
+    def writer():
+        i = 0
+        while not stop.is_set():
+            upsert_entry(tmp_path, f"session-{i % 5}", manifest, _REPORT)
+            i += 1
+            time.sleep(0.005)  # a real job completion, not an artificial busy-loop worst case
+
+    def reader():
+        while not stop.is_set():
+            try:
+                result = load_index(tmp_path)
+                if not result:
+                    errors.append("read an empty index mid-write")
+            except Exception as exc:  # noqa: BLE001 - any read failure is the bug under test
+                errors.append(repr(exc))
+            time.sleep(0.002)
+
+    threads = [threading.Thread(target=writer), threading.Thread(target=reader)]
+    threads.append(threading.Thread(target=reader))
+    for t in threads:
+        t.start()
+    time.sleep(0.5)
+    stop.set()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert errors == []
