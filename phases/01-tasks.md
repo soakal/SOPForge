@@ -1,12 +1,16 @@
 # Phase 1 — Task list
 
+Note: no git remote is configured for this repo (never had one; not a transient
+auth/network issue). Per CLAUDE.md push discipline, continuing locally — every commit
+below is local-only until a remote is added.
+
 Rationale: UIA element resolution across Win32/Chromium/Electron is the phase's stated
 kill-risk, so the spike lands immediately after deps exist; everything else builds
 outward from manifest schema (ground truth) to modules to harness, with packaging and
 measurement last. Redaction OCR is the second unknown, so it precedes tray/orchestration
 polish; all verify commands run from `C:\Users\Brian\Documents\SOPForge` with the repo venv.
 
-- [ ] task-01: Pin and install Phase 1 deps into `requirements.txt` (mss, pynput, pywin32, comtypes, pywinauto, Pillow, numpy, pystray, pyinstaller) plus `pyproject.toml` with src-layout `capture` package installed editable (`.venv\Scripts\pip.exe install -e .`) — verify: `.venv\Scripts\python.exe -c "import mss, pynput, comtypes, win32api, pywinauto, pystray, PIL, numpy, PyInstaller, capture; print('ok')"`
+- [x] task-01: Pin and install Phase 1 deps into `requirements.txt` (mss, pynput, pywin32, comtypes, pywinauto, Pillow, numpy, pystray, pyinstaller) plus `pyproject.toml` with src-layout `capture` package installed editable (`.venv\Scripts\pip.exe install -e .`) — verify: `.venv\Scripts\python.exe -c "import mss, pynput, comtypes, win32api, pywinauto, pystray, PIL, numpy, PyInstaller, capture; print('ok')"`
 - [ ] task-02: UIA spike `scripts/spike_uia.py` — launch Notepad, Chrome, and VS Code via pywinauto, resolve the UIA element at a known click point in each (element-from-point, name/control_type/automation_id/framework/bounding_rect), print per-app JSON, exit 0 only if all three apps return non-empty `name` or `control_type` AND findings (Chrome accessibility activation, Electron quirks, timing) were appended to `.claude/skills/uia-notes.md` — verify: `.venv\Scripts\python.exe scripts\spike_uia.py`
 - [ ] task-03: Author `fixtures/manifest.schema.json` (JSON Schema draft 2020-12) matching `fixtures/sample-manifest.json` shape incl. click/type variants, empty-element records, and redactions array; test asserts sample validates and three mutated-invalid variants fail — verify: `.venv\Scripts\python.exe -m pytest -x -q tests/test_manifest_schema.py`
 - [ ] task-04: `src/capture/manifest.py` — session builder, ordered step append with `step-NNN` IDs, atomic write; tests cover round-trip schema validation, order preservation, and the all-empty-elements worst case (criterion 5), emitting `fixtures/empty-elements-manifest.json` as a Phase 2 fixture — verify: `.venv\Scripts\python.exe -m pytest -x -q tests/test_manifest_writer.py`
