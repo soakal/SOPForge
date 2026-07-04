@@ -4,6 +4,7 @@ one opt-in real-model test skips (never fails) unless SOPFORGE_WHISPER_MODEL
 is set and the model actually loads — no weights are downloaded here."""
 
 import os
+import wave
 from types import SimpleNamespace
 
 import pytest
@@ -44,12 +45,33 @@ def test_empty_segments_produce_empty_result():
     assert transcriber.transcribe("fake.wav") == []
 
 
-def test_real_model_integration_opt_in():
+def _write_silent_wav(path, duration_seconds=1.0, sample_rate=16000):
+    n_frames = int(duration_seconds * sample_rate)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"\x00\x00" * n_frames)
+
+
+def test_real_model_integration_opt_in(tmp_path):
     model_size = os.environ.get("SOPFORGE_WHISPER_MODEL")
     if not model_size:
         pytest.skip("SOPFORGE_WHISPER_MODEL not set; opt-in real-model test skipped")
+
     transcriber = Transcriber(model_size=model_size)
     try:
         transcriber._get_model()
-    except Exception as exc:  # noqa: BLE001 - any load failure means skip, not fail
+    except (OSError, RuntimeError, ValueError) as exc:
+        # Model/weights unavailable (no network, bad model name/cache, etc.)
+        # — skip, don't fail. A TypeError/AttributeError here would be a
+        # real bug in Transcriber itself and must propagate, not be hidden
+        # behind this opt-in test's skip.
         pytest.skip(f"faster-whisper model unavailable: {exc}")
+
+    wav_path = tmp_path / "silence.wav"
+    _write_silent_wav(wav_path)
+    result = transcriber.transcribe(wav_path)
+    assert isinstance(result, list)
+    for segment in result:
+        assert set(segment) == {"text", "start", "end"}
