@@ -203,6 +203,10 @@ By default the capture agent looks for the server at `http://127.0.0.1:8420`.
 To point it elsewhere (a different port, or a server on another machine), set
 the `SOPFORGE_SERVER_URL` environment variable before launching
 `sopforge.exe`, e.g. `$env:SOPFORGE_SERVER_URL = "http://127.0.0.1:9000"`.
+If you installed via `install.ps1 -Port 9000` (§2), this is already handled
+for you — it sets this as a persistent variable automatically, so you never
+need to do this by hand unless you're running the capture agent from source
+or a different install.
 
 ---
 
