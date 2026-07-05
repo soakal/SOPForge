@@ -3,6 +3,7 @@ runs the FastAPI app via uvicorn. Session data is written under a
 configurable --sessions-root (defaults to ~/SOPForge/sessions)."""
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -14,6 +15,18 @@ DEFAULT_SESSIONS_ROOT = Path.home() / "SOPForge" / "sessions"
 
 
 def main(argv=None):
+    # The server ships as a console=False (windowed) PyInstaller EXE so no
+    # console window flashes up when the tray/autostart launches it. Such a
+    # process has sys.stdout / sys.stderr == None unless the launcher
+    # redirected them, and uvicorn's default log formatter calls
+    # sys.stdout.isatty() at startup -> AttributeError on None. Give it a
+    # sink so logging configures cleanly however the EXE was launched
+    # (Start-Process, double-click, autostart shortcut, or a console).
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w")
+
     parser = argparse.ArgumentParser(prog="sopforge-server")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8420)
