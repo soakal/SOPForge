@@ -150,7 +150,11 @@ function Register-Autostart {
         $Action = if ($Arguments) { New-ScheduledTaskAction -Execute $Exe -Argument $Arguments } else { New-ScheduledTaskAction -Execute $Exe }
         $Trigger = New-ScheduledTaskTrigger -AtLogOn
         Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Force -ErrorAction Stop | Out-Null
-        Write-Output "Registered autostart scheduled task '$TaskName'."
+        # Write-Host (host stream), NOT Write-Output: this function's return
+        # value IS its success-stream output, so a Write-Output here would be
+        # returned to the caller alongside the real return value and land in
+        # install-config.json's StartupShortcuts.
+        Write-Host "Registered autostart scheduled task '$TaskName'."
         return $null
     } catch {
         Write-Warning "Could not register the '$TaskName' autostart scheduled task: $_"
@@ -165,7 +169,9 @@ function Register-Autostart {
             $Shortcut.TargetPath = $Exe
             if ($Arguments) { $Shortcut.Arguments = $Arguments }
             $Shortcut.Save()
-            Write-Output "Created Startup-folder shortcut '$ShortcutName' instead."
+            # Write-Host, not Write-Output -- see the note above; only
+            # $ShortcutName must reach the caller as this function's return.
+            Write-Host "Created Startup-folder shortcut '$ShortcutName' instead."
             return $ShortcutName
         } catch {
             Write-Warning "Could not create a Startup-folder shortcut either: $_"
