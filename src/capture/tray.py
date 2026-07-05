@@ -15,6 +15,7 @@ import threading
 import webbrowser
 from pathlib import Path
 
+import httpx
 import pystray
 from PIL import Image, ImageDraw
 from pynput import keyboard
@@ -26,6 +27,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CAPTURES_ROOT = Path.home() / "SOPForge" / "captures"
 DEFAULT_HOTKEY = "<ctrl>+<alt>+r"
+
+
+def _request_server_shutdown(server_url, timeout=2.0):
+    """POST /shutdown to the running sopforge-server, best-effort. The server
+    is headless (no window/icon of its own), so the tray's Exit is the one
+    place a user can stop it -- but a failed call (server not running, already
+    stopping, unreachable) must never keep the tray from closing, so this
+    swallows everything and just logs."""
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            client.post(f"{server_url.rstrip('/')}/shutdown")
+    except Exception:  # noqa: BLE001 - best-effort; Exit must not depend on the server
+        logger.info("no running server to stop at %s (or it was already stopping)", server_url)
 
 
 def _make_icon(color):
@@ -53,11 +67,13 @@ class TrayApp:
         server_url=None,
         upload_fn=upload_session,
         open_browser_fn=webbrowser.open,
+        shutdown_fn=_request_server_shutdown,
     ):
         self.captures_root = Path(captures_root)
         self.server_url = server_url or server_url_from_env()
         self._upload_fn = upload_fn
         self._open_browser_fn = open_browser_fn
+        self._shutdown_fn = shutdown_fn
         self._recorder = None
         self._lock = threading.Lock()
         self._icon = pystray.Icon(
@@ -66,6 +82,7 @@ class TrayApp:
             "SOPForge (idle)",
             menu=pystray.Menu(
                 pystray.MenuItem("Start/Stop recording", self.toggle_recording),
+                pystray.MenuItem("Open SOPForge library", self.open_library),
                 pystray.MenuItem("Exit", self.exit),
             ),
         )
@@ -132,10 +149,26 @@ class TrayApp:
         except Exception:  # noqa: BLE001 - the doc is generated either way; opening a tab is a convenience
             logger.warning("could not open browser to session %s", session_id, exc_info=True)
 
+    def open_library(self):
+        """Open the review UI / session library in the browser. The server's
+        root and /ui both render the library, so opening server_url lands
+        there. Best-effort: a failed open is logged, never raised into
+        pystray's menu thread (an uncaught error there would kill it
+        silently)."""
+        try:
+            self._open_browser_fn(self.server_url)
+        except Exception:  # noqa: BLE001 - opening a browser tab is a convenience, not critical
+            logger.warning("could not open library at %s", self.server_url, exc_info=True)
+
     def exit(self):
+        """Stops the recording (if any), then the headless server, then the
+        tray icon -- so a single Exit closes both processes. The server stop
+        is best-effort (see _request_server_shutdown); the icon always stops
+        regardless."""
         try:
             with self._lock:
                 self._stop_recording()
+            self._shutdown_fn(self.server_url)
         finally:
             self._icon.stop()
 

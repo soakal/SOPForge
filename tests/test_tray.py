@@ -183,3 +183,78 @@ def test_default_server_url_comes_from_env(monkeypatch):
     monkeypatch.setenv("SOPFORGE_SERVER_URL", "http://from-env:1234")
     app = TrayApp(hotkey="<ctrl>+<alt>+<shift>+r")
     assert app.server_url == "http://from-env:1234"
+
+
+class _FakeIcon:
+    """Stand-in for the pystray icon so exit() can be exercised without a real
+    system-tray icon (pystray's own .stop() on a never-run icon is unreliable)."""
+
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_open_library_opens_the_server_url(tmp_path):
+    opened = []
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+l",
+        server_url="http://example-server",
+        upload_fn=_noop_upload,
+        open_browser_fn=lambda url: opened.append(url),
+    )
+    app.open_library()
+    assert opened == ["http://example-server"]
+
+
+def test_open_library_swallows_browser_errors(tmp_path):
+    def boom(url):
+        raise RuntimeError("no browser available")
+
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+o",
+        upload_fn=_noop_upload,
+        open_browser_fn=boom,
+    )
+    app.open_library()  # must not raise into pystray's menu thread
+
+
+def test_exit_stops_server_then_icon(tmp_path):
+    calls = []
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+e",
+        server_url="http://example-server",
+        upload_fn=_noop_upload,
+        shutdown_fn=lambda url: calls.append(("shutdown", url)),
+    )
+    app._icon = _FakeIcon()
+    app.exit()
+    assert calls == [("shutdown", "http://example-server")]
+    assert app._icon.stopped
+    assert not app.is_recording
+
+
+def test_exit_stops_icon_even_if_recording_was_active(tmp_path):
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+q",
+        upload_fn=_noop_upload,
+        shutdown_fn=lambda url: None,
+    )
+    app._icon = _FakeIcon()
+    with app._lock:
+        app._start_recording()
+    app.exit()
+    assert app._icon.stopped
+    assert not app.is_recording  # exit stopped the active recording
+
+
+def test_request_server_shutdown_is_best_effort_when_server_unreachable():
+    from capture.tray import _request_server_shutdown
+
+    # Nothing is listening on this port -> connection refused, must be swallowed.
+    _request_server_shutdown("http://127.0.0.1:59999", timeout=0.5)  # must not raise
