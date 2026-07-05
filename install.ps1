@@ -29,17 +29,26 @@
     install wrote (recorded in install-config.json) -- never a value the
     user or a different install set.
 
-    Each task is registered independently (one failing doesn't block the
-    other) and is best-effort: registering an AtLogOn-triggered scheduled
-    task can be blocked by Task Scheduler permission policy on some
-    machines/accounts even without elevation (confirmed via both
-    Register-ScheduledTask and schtasks.exe on this build's own VM — see
-    phases/DEVIATIONS.md's "task-12 -Autostart scheduled task" entry).
-    Installing and running SOPForge WITHOUT -Autostart never depends on
-    this and always works; if -Autostart fails here, register the
-    scheduled task(s) manually (or grant the needed Task Scheduler rights)
-    and re-run, or just launch the EXEs yourself / via a shortcut instead
-    (see USER_MANUAL.md's manual-autostart walkthrough).
+    Each entry is registered independently (one failing doesn't block the
+    other): registering an AtLogOn-triggered scheduled task can be blocked
+    by Task Scheduler permission policy on some machines/accounts even
+    without elevation (confirmed via both Register-ScheduledTask and
+    schtasks.exe on this build's own VM — see phases/DEVIATIONS.md's
+    "task-12 -Autostart scheduled task" entry). When that happens, -Autostart
+    automatically falls back to a Startup-folder shortcut for that EXE
+    instead (Register-Autostart, below) -- a plain per-user shortcut in
+    shell:startup isn't subject to the same Task Scheduler restriction, so
+    this makes -Autostart self-healing on machines where scheduled tasks are
+    blocked, with no manual step required (this codifies what was previously
+    USER_MANUAL.md's manual-autostart walkthrough). Any Startup-folder
+    shortcuts actually created are recorded in install-config.json's
+    StartupShortcuts so uninstall.ps1 removes exactly those and nothing the
+    user added themselves; re-running install.ps1 at the same -InstallPath
+    also uses that record to safely refresh a shortcut it made before (never
+    a pre-existing file it didn't create) and to clean up a shortcut a
+    previous run needed but this run no longer does (e.g. Task Scheduler
+    access was restored in between). Installing and running SOPForge
+    WITHOUT -Autostart never depends on any of this and always works.
 
 .NOTES
     If PowerShell's execution policy blocks double-clicking this script
@@ -96,48 +105,117 @@ if ($Port -ne 8420) {
 
 $ServerTaskName = "SOPForge-Server"
 $CaptureTaskName = "SOPForge-Capture"
+
+# If this -InstallPath was installed before, its previous install-config.json
+# (about to be overwritten below) records which Startup-folder shortcuts, if
+# any, THAT run created. Read it before overwriting so Register-Autostart can
+# tell "a shortcut we made ourselves last time, safe to refresh" apart from
+# "some other file that happens to have this name, do not touch" -- and so
+# leftover shortcuts from a run that no longer needs them (this run's
+# scheduled task registered fine) get removed instead of orphaned.
+$PriorConfigPath = Join-Path $InstallPath "install-config.json"
+$PriorStartupShortcuts = @()
+if (Test-Path $PriorConfigPath) {
+    try {
+        $PriorStartupShortcuts = @((Get-Content $PriorConfigPath -Raw | ConvertFrom-Json).StartupShortcuts)
+    } catch {
+        $PriorStartupShortcuts = @()
+    }
+}
+
+function Register-Autostart {
+    <#
+    Tries Register-ScheduledTask first; if that's blocked (confirmed on some
+    machines/accounts even without elevation -- see phases/DEVIATIONS.md's
+    "task-12 -Autostart scheduled task" entry, and USER_MANUAL.md Sec 2's
+    "Option 1" manual workaround this codifies), falls back to a Startup-folder
+    shortcut instead, since that isn't subject to the same Task Scheduler
+    restriction. Returns the Startup-folder shortcut filename if that fallback
+    was used, or $null if the scheduled task succeeded (or both failed).
+
+    The shortcut filename is derived from $TaskName, not a separately
+    hand-typed literal, so it can't drift out of sync with it. Before
+    creating it, checks for a pre-existing file at that path: overwriting is
+    only safe when $PriorStartupShortcuts (this same -InstallPath's last run)
+    already recorded creating it -- anything else there is left untouched
+    since SOPForge didn't create it.
+    #>
+    param(
+        [string]$TaskName,
+        [string]$Exe,
+        [string]$Arguments
+    )
+    $ShortcutName = "$TaskName.lnk"
+    try {
+        $Action = if ($Arguments) { New-ScheduledTaskAction -Execute $Exe -Argument $Arguments } else { New-ScheduledTaskAction -Execute $Exe }
+        $Trigger = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Force -ErrorAction Stop | Out-Null
+        Write-Output "Registered autostart scheduled task '$TaskName'."
+        return $null
+    } catch {
+        Write-Warning "Could not register the '$TaskName' autostart scheduled task: $_"
+        Write-Warning "Falling back to a Startup-folder shortcut instead."
+        try {
+            $StartupDir = [Environment]::GetFolderPath("Startup")
+            $ShortcutPath = Join-Path $StartupDir $ShortcutName
+            if ((Test-Path $ShortcutPath) -and ($PriorStartupShortcuts -notcontains $ShortcutName)) {
+                throw "A file already exists at '$ShortcutPath' that this install didn't create -- refusing to overwrite it."
+            }
+            $Shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($ShortcutPath)
+            $Shortcut.TargetPath = $Exe
+            if ($Arguments) { $Shortcut.Arguments = $Arguments }
+            $Shortcut.Save()
+            Write-Output "Created Startup-folder shortcut '$ShortcutName' instead."
+            return $ShortcutName
+        } catch {
+            Write-Warning "Could not create a Startup-folder shortcut either: $_"
+            Write-Warning "SOPForge is installed and works without autostart -- launch $Exe manually,"
+            Write-Warning "or register the '$TaskName' scheduled task yourself (see USER_MANUAL.md Sec 2)."
+            return $null
+        }
+    }
+}
+
+$StartupShortcuts = @()
+if ($Autostart) {
+    # Each entry is attempted independently -- the base install (files +
+    # config, above) already succeeded regardless of what happens here, and
+    # one entry's Task Scheduler permission restriction must not block the
+    # other from being attempted.
+    $ServerExe = Join-Path $ServerInstallPath "sopforge-server.exe"
+    $ServerShortcut = Register-Autostart -TaskName $ServerTaskName -Exe $ServerExe `
+        -Arguments "--port $Port --sessions-root `"$SessionsRoot`""
+    if ($ServerShortcut) { $StartupShortcuts += $ServerShortcut }
+
+    $CaptureExe = Join-Path $CaptureInstallPath "sopforge.exe"
+    $CaptureShortcut = Register-Autostart -TaskName $CaptureTaskName -Exe $CaptureExe -Arguments $null
+    if ($CaptureShortcut) { $StartupShortcuts += $CaptureShortcut }
+}
+
+# Any shortcut a PREVIOUS run at this -InstallPath created that this run no
+# longer needs (its scheduled task registered fine this time) is now
+# orphaned -- remove it here rather than leaving it to autostart forever
+# with no install-config.json record for a future uninstall.ps1 to find.
+$StartupDirForCleanup = [Environment]::GetFolderPath("Startup")
+foreach ($StaleName in ($PriorStartupShortcuts | Where-Object { $_ -and $StartupShortcuts -notcontains $_ })) {
+    $StalePath = Join-Path $StartupDirForCleanup $StaleName
+    if (Test-Path $StalePath) {
+        Remove-Item -Path $StalePath -Force
+        Write-Output "Removed now-unneeded Startup-folder shortcut '$StaleName' from a previous install."
+    }
+}
+
 $InstallConfig = [ordered]@{
-    InstallPath      = $InstallPath
-    Port             = $Port
-    SessionsRoot     = $SessionsRoot
-    Autostart        = [bool]$Autostart
-    ServerTaskName   = $ServerTaskName
-    CaptureTaskName  = $CaptureTaskName
+    InstallPath       = $InstallPath
+    Port              = $Port
+    SessionsRoot      = $SessionsRoot
+    Autostart         = [bool]$Autostart
+    ServerTaskName    = $ServerTaskName
+    CaptureTaskName   = $CaptureTaskName
     ServerUrlEnvValue = $ServerUrlEnvValue
+    StartupShortcuts  = $StartupShortcuts
 }
 $InstallConfig | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath "install-config.json") -Encoding utf8
-
-if ($Autostart) {
-    # Each task is registered independently -- the base install (files +
-    # config, above) already succeeded regardless of what happens here, and
-    # one task's Task Scheduler permission restriction must not block the
-    # other from being attempted. See this script's .DESCRIPTION and
-    # phases/DEVIATIONS.md's "task-12 -Autostart scheduled task" entry.
-    try {
-        $ServerExe = Join-Path $ServerInstallPath "sopforge-server.exe"
-        $ServerAction = New-ScheduledTaskAction -Execute $ServerExe `
-            -Argument "--port $Port --sessions-root `"$SessionsRoot`""
-        $ServerTrigger = New-ScheduledTaskTrigger -AtLogOn
-        Register-ScheduledTask -TaskName $ServerTaskName -Action $ServerAction -Trigger $ServerTrigger -Force -ErrorAction Stop | Out-Null
-        Write-Output "Registered autostart scheduled task '$ServerTaskName'."
-    } catch {
-        Write-Warning "Could not register the '$ServerTaskName' autostart scheduled task: $_"
-        Write-Warning "SOPForge is installed and works without autostart -- launch sopforge-server.exe"
-        Write-Warning "directly, or register the scheduled task manually / with elevated rights."
-    }
-
-    try {
-        $CaptureExe = Join-Path $CaptureInstallPath "sopforge.exe"
-        $CaptureAction = New-ScheduledTaskAction -Execute $CaptureExe
-        $CaptureTrigger = New-ScheduledTaskTrigger -AtLogOn
-        Register-ScheduledTask -TaskName $CaptureTaskName -Action $CaptureAction -Trigger $CaptureTrigger -Force -ErrorAction Stop | Out-Null
-        Write-Output "Registered autostart scheduled task '$CaptureTaskName'."
-    } catch {
-        Write-Warning "Could not register the '$CaptureTaskName' autostart scheduled task: $_"
-        Write-Warning "SOPForge is installed and works without autostart -- launch sopforge.exe"
-        Write-Warning "directly, or register the scheduled task manually / with elevated rights."
-    }
-}
 
 Write-Output "Installed SOPForge to $InstallPath (port $Port)."
 exit 0

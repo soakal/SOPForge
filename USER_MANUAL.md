@@ -60,39 +60,28 @@ This copies both EXEs, creates a `sessions/` folder, and — with
 launches the server at logon, and one that launches the capture agent
 (tray icon) at logon too, so after signing in, recording is just a hotkey
 away and the doc-generation server is already running — genuinely nothing
-to manually start. `-Autostart` is **best-effort** — some machines/accounts
+to manually start. `-Autostart` is **self-healing**: some machines/accounts
 restrict `AtLogOn`-triggered scheduled task registration even without
-elevation; if that happens you'll see a warning for each task it couldn't
-register, but SOPForge itself still installs and works fine either way
-(just launch the EXEs yourself, or see the manual fallback below).
+elevation, and when that happens, `install.ps1` automatically falls back to
+creating a Startup-folder shortcut (`shell:startup\SOPForge-Server.lnk` /
+`SOPForge-Capture.lnk`) for that EXE instead — no manual step needed either
+way. Re-running `install.ps1 -Autostart` later (e.g. after Task Scheduler
+access is fixed) safely refreshes or removes that shortcut as needed.
+`install-config.json`'s `StartupShortcuts` field records which shortcuts
+(if any) this install created, so `uninstall.ps1` removes exactly those.
 
-#### If `-Autostart` fails: two manual ways to autostart instead
+#### If both the scheduled task AND the Startup-folder shortcut fail
 
-**Option 1 — Startup folder shortcuts (simplest, usually works even when
-the scheduled task doesn't, since it isn't subject to the same Task
-Scheduler restriction).** Repeat for both EXEs:
-```powershell
-$startup = [Environment]::GetFolderPath("Startup")
+This is rare — it means Task Scheduler registration *and* `WScript.Shell`
+COM automation are both blocked on this account. `install.ps1` still
+installs the base files and prints a warning naming the exe to launch by
+hand. One remaining manual option:
 
-$server = (New-Object -ComObject WScript.Shell).CreateShortcut("$startup\SOPForge-Server.lnk")
-$server.TargetPath = "$env:LOCALAPPDATA\SOPForge\server\sopforge-server.exe"
-$server.Arguments = "--port 8420 --sessions-root `"$env:LOCALAPPDATA\SOPForge\sessions`""
-$server.Save()
-
-$capture = (New-Object -ComObject WScript.Shell).CreateShortcut("$startup\SOPForge-Capture.lnk")
-$capture.TargetPath = "$env:LOCALAPPDATA\SOPForge\capture\sopforge.exe"
-$capture.Save()
-```
-These run at every login. To remove them later, delete the two `.lnk`
-files from that Startup folder (or open it with `explorer (Get-Item
-$startup).FullName`).
-
-**Option 2 — register the scheduled task(s) yourself** through the Task
-Scheduler GUI (`taskschd.msc`), if your account's restriction only blocks
-the *unattended*/scripted registration path and not an interactive one.
-Repeat for each EXE (name the tasks "SOPForge-Server" /
-"SOPForge-Capture" respectively so `uninstall.ps1` can find and remove
-them automatically):
+**Register the scheduled task yourself** through the Task Scheduler GUI
+(`taskschd.msc`), if your account's restriction only blocks the
+*unattended*/scripted registration path and not an interactive one. Repeat
+for each EXE (name the tasks "SOPForge-Server" / "SOPForge-Capture"
+respectively so `uninstall.ps1` can find and remove them automatically):
 1. Task Scheduler → Create Task (not "Create Basic Task").
 2. General tab: name it; under "Security options" choose "Run only when
    user is logged on."
@@ -105,17 +94,17 @@ them automatically):
    `http://127.0.0.1:8420/` in a browser for the server; the tray icon
    appearing for the capture agent).
 
-Either way, this only needs doing once per machine.
+This only needs doing once per machine.
 
 ```powershell
 .\uninstall.ps1                                  # removes what install.ps1 created
 .\uninstall.ps1 -RemoveData                      # also deletes sessions/ (your generated SOPs)
 ```
 (or double-click `uninstall.bat`, same execution-policy-bypass wrapper as
-`install.bat`.) `uninstall.ps1` removes both scheduled tasks it created (if
-any), and by default preserves `sessions/` if it has any real content in
-it — uninstalling the app doesn't delete your generated documents unless
-you explicitly ask it to.
+`install.bat`.) `uninstall.ps1` removes both scheduled tasks and any
+Startup-folder shortcuts this install created (if any), and by default
+preserves `sessions/` if it has any real content in it — uninstalling the
+app doesn't delete your generated documents unless you explicitly ask it to.
 
 Building the EXEs from source (once per machine/rebuild):
 ```powershell
@@ -411,9 +400,10 @@ anthropic = true
   (a short connect-timeout wait before falling back), not just an instant
   fallback — a misconfigured/down endpoint will make generation slower, not
   incorrect.
-- `-Autostart` scheduled-task registration is best-effort; some
-  machines/accounts restrict it (see §2 and `phases/DEVIATIONS.md`). The
-  server always works fine launched manually regardless.
+- `-Autostart` scheduled-task registration falls back to a Startup-folder
+  shortcut when Task Scheduler restricts it (see §2 and
+  `phases/DEVIATIONS.md`); only the rare case of both being blocked needs a
+  manual step. The server always works fine launched manually regardless.
 - `POST /sessions` processes each session on a single background worker
   thread — sessions queue and run one at a time, not in parallel.
 - Auto-upload (§3) only fires if the server is reachable at the moment you

@@ -54,6 +54,19 @@ if (Test-Path $ConfigPath) {
             Write-Output "Removed SOPFORGE_SERVER_URL environment variable ($CurrentValue)."
         }
     }
+
+    # install.ps1 -Autostart falls back to a Startup-folder shortcut per EXE
+    # when Register-ScheduledTask is blocked (see its Register-Autostart
+    # function) -- remove exactly the ones it recorded creating, never any
+    # other shortcut the user might have in that folder.
+    foreach ($ShortcutName in @($Config.StartupShortcuts)) {
+        if (-not $ShortcutName) { continue }
+        $ShortcutPath = Join-Path ([Environment]::GetFolderPath("Startup")) $ShortcutName
+        if (Test-Path $ShortcutPath) {
+            Remove-Item -Path $ShortcutPath -Force
+            Write-Output "Removed Startup-folder shortcut '$ShortcutName'."
+        }
+    }
 }
 
 if (-not (Test-Path $InstallPath)) {

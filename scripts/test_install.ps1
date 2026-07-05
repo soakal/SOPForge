@@ -5,25 +5,32 @@
     health endpoint, uninstalls, and asserts before/after directory state
     matches. Separately probes the -Autostart branch: creates both
     scheduled tasks (server + capture agent), confirms each via
-    Get-ScheduledTask, then removes them.
+    Get-ScheduledTask, then removes them -- and for any that couldn't be
+    registered, confirms install.ps1's Startup-folder-shortcut fallback
+    fired instead, and that uninstall.ps1 removes those too.
 
 .DESCRIPTION
-    This was originally going to treat scheduled-task creation failure as
-    an escalation-worthy blocker (exit non-zero, per CLAUDE.md prime
-    directive 1), and did exactly that the first time it ran here: both
-    Register-ScheduledTask and schtasks.exe /create failed with "Access is
-    denied" on this build's own VM/account, a genuine Task Scheduler
-    permission restriction rather than a bug. That finding was escalated
-    to the user, who decided -Autostart should be a documented best-effort
-    feature rather than a release blocker (see phases/DEVIATIONS.md's
-    "task-12 -Autostart scheduled task" entry for the full history).
+    Register-ScheduledTask (and schtasks.exe /create) failing with "Access
+    is denied" is a genuine Task Scheduler permission restriction on this
+    build's own VM/account, not a bug (see phases/DEVIATIONS.md's "task-12
+    -Autostart scheduled task" entry for the full history) -- confirmed by
+    trying both mechanisms directly. Rather than treat that as an
+    escalation-worthy blocker, install.ps1's Register-Autostart function
+    now falls back to a per-EXE Startup-folder shortcut when the scheduled
+    task can't be registered, making -Autostart self-healing instead of
+    merely best-effort. Round trip 2 below asserts whichever mechanism
+    actually took effect for each entry (scheduled task via
+    Get-ScheduledTask, or shortcut via install-config.json's
+    StartupShortcuts + the actual file in the Startup folder), and that
+    uninstall.ps1 removes exactly that. Round trip 1 (the core AC4
+    requirement: install -> health check -> uninstall -> directory state
+    matches) is unconditional and always asserted.
 
-    Per that decision, round trip 2 below now treats "the scheduled task
-    could not be created on this machine" as a documented SKIP (exit 0),
-    not a failure -- while still fully exercising create -> confirm ->
-    remove on a machine/account where the restriction is absent. Round
-    trip 1 (the core AC4 requirement: install -> health check -> uninstall
-    -> directory state matches) is unconditional and always asserted.
+    The Startup folder is real and shared with any live install on this
+    machine (unlike the temp -InstallPath, shortcuts there aren't
+    namespaced per test run) -- this script backs up and restores
+    SOPForge-Server.lnk/SOPForge-Capture.lnk around round trip 2 so running
+    it can never clobber or delete a real install's autostart shortcuts.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -40,6 +47,26 @@ $UninstallScript = Join-Path $RepoRoot "uninstall.ps1"
 # putting it back, a real product-level cleanup bug (uninstall.ps1 never
 # removing it) would go completely unnoticed.
 $OriginalServerUrlEnv = [Environment]::GetEnvironmentVariable("SOPFORGE_SERVER_URL", "User")
+
+# Round trip 2 below exercises install.ps1's Register-Autostart fallback,
+# which creates Startup-folder shortcuts under fixed, well-known names
+# (SOPForge-Server.lnk / SOPForge-Capture.lnk) -- the SAME names a real
+# -Autostart install on this machine uses (Startup-folder shortcuts aren't
+# namespaced per -InstallPath the way the temp test root is). Back up
+# whatever's already there under those names before the test runs, and
+# restore it in the outer `finally`, so running this test can never clobber
+# or delete a real install's autostart shortcuts.
+$StartupDir = [Environment]::GetFolderPath("Startup")
+$ShortcutNames = @("SOPForge-Server.lnk", "SOPForge-Capture.lnk")
+$ShortcutBackups = @{}
+foreach ($Name in $ShortcutNames) {
+    $Path = Join-Path $StartupDir $Name
+    if (Test-Path $Path) {
+        $Backup = Join-Path $env:TEMP "sopforge-test-shortcut-backup-$Name-$(Get-Random)"
+        Copy-Item -Path $Path -Destination $Backup -Force
+        $ShortcutBackups[$Name] = $Backup
+    }
+}
 
 function Assert-ServerUrlEnvRestored($Context) {
     $Current = [Environment]::GetEnvironmentVariable("SOPFORGE_SERVER_URL", "User")
@@ -146,41 +173,73 @@ if (-not (Test-Path (Join-Path $TestRoot2 "capture\sopforge.exe"))) {
 }
 
 $RegisteredTasks = $TaskNames | Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
-if ($RegisteredTasks.Count -eq 0) {
-    Write-Output "SKIP: scheduled tasks could not be created on this machine/account"
-    Write-Output "(Task Scheduler permission restriction, documented in phases/DEVIATIONS.md)."
-    Write-Output "install.ps1 itself still succeeded -- this is the accepted best-effort behavior."
-
-    & $UninstallScript -InstallPath $TestRoot2 -RemoveData
-    if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 failed while cleaning up the skipped autostart test (exit $LASTEXITCODE)" }
-    if (Test-Path $TestRoot2) {
-        throw "FAIL: $TestRoot2 still exists after uninstall (cleanup of the skipped autostart test did not complete)"
-    }
-    Assert-ServerUrlEnvRestored "round trip 2 (skipped)"
-
-    Write-Output ""
-    Write-Output "ALL PASS (autostart round trip skipped: known environment limitation)"
-    exit 0
+if ($RegisteredTasks.Count -gt 0) {
+    Write-Output "Autostart scheduled task(s) confirmed via Get-ScheduledTask: $($RegisteredTasks -join ', ')"
 }
-Write-Output "Autostart scheduled task(s) confirmed via Get-ScheduledTask: $($RegisteredTasks -join ', ')"
 if ($RegisteredTasks.Count -lt $TaskNames.Count) {
     $Missing = $TaskNames | Where-Object { $_ -notin $RegisteredTasks }
-    Write-Warning "Only $($RegisteredTasks.Count) of $($TaskNames.Count) autostart tasks registered (missing: $($Missing -join ', ')) -- partial best-effort result, not a test failure."
+    Write-Warning "Only $($RegisteredTasks.Count) of $($TaskNames.Count) autostart tasks registered (missing: $($Missing -join ', ')) -- Register-Autostart's Startup-folder-shortcut fallback is expected for each, verified below."
+}
+
+# For each entry whose scheduled task didn't register, install.ps1's
+# Register-Autostart fallback should have created a Startup-folder shortcut
+# instead. install-config.json's own StartupShortcuts is the expected set
+# directly (it's what install.ps1 itself recorded creating) -- re-deriving
+# it here from a second hardcoded task-name-to-filename mapping would just
+# be a second place that has to stay in sync with install.ps1's naming.
+# $RegisteredTasks is only used for the narrower cross-check that a shortcut
+# was recorded only for a task that didn't register.
+$Config2 = Get-Content (Join-Path $TestRoot2 "install-config.json") -Raw | ConvertFrom-Json
+$ExpectedShortcuts = @($Config2.StartupShortcuts)
+
+foreach ($Name in $ExpectedShortcuts) {
+    $CorrespondingTask = $TaskNames | Where-Object { $Name -eq "$_.lnk" }
+    if ($CorrespondingTask -and ($RegisteredTasks -contains $CorrespondingTask)) {
+        throw "FAIL: fallback shortcut '$Name' recorded even though its scheduled task '$CorrespondingTask' registered successfully"
+    }
+}
+
+# The Startup-folder-shortcut existence check (and the earlier scheduled-task
+# checks) must never prevent uninstall.ps1 from running -- otherwise a bug
+# in the fallback leaves $TestRoot2 and any successfully-registered
+# scheduled task orphaned on the real machine. Any assertion failure here is
+# captured and rethrown AFTER cleanup runs, not instead of it.
+$PreUninstallError = $null
+try {
+    foreach ($Name in $ExpectedShortcuts) {
+        if (-not (Test-Path (Join-Path $StartupDir $Name))) {
+            throw "FAIL: expected fallback shortcut '$Name' not found in the Startup folder"
+        }
+    }
+    if ($ExpectedShortcuts.Count -gt 0) {
+        Write-Output "Fallback Startup-folder shortcut(s) confirmed: $($ExpectedShortcuts -join ', ')"
+    }
+} catch {
+    $PreUninstallError = $_
 }
 
 & $UninstallScript -InstallPath $TestRoot2 -RemoveData
-if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 (autostart) failed (exit $LASTEXITCODE)" }
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "uninstall.ps1 (autostart) failed (exit $LASTEXITCODE) while cleaning up"
+}
+
+if ($PreUninstallError) { throw $PreUninstallError }
 
 $TasksAfter = $TaskNames | Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
 if ($TasksAfter.Count -gt 0) {
     throw "FAIL: scheduled task(s) still exist after uninstall: $($TasksAfter -join ', ')"
+}
+foreach ($Name in $ExpectedShortcuts) {
+    if (Test-Path (Join-Path $StartupDir $Name)) {
+        throw "FAIL: fallback shortcut '$Name' still exists after uninstall"
+    }
 }
 if (Test-Path $TestRoot2) {
     throw "FAIL: $TestRoot2 still exists after uninstall"
 }
 Assert-ServerUrlEnvRestored "round trip 2"
 
-Write-Output "PASS: -Autostart round trip -- scheduled task(s) removed; directory state matches baseline."
+Write-Output "PASS: -Autostart round trip -- scheduled task(s)/fallback shortcut(s) removed; directory state matches baseline."
 Write-Output ""
 Write-Output "ALL PASS"
 exit 0
@@ -193,4 +252,17 @@ exit 0
     # machine running this test is never left in a different state than it
     # started in, even if something throws before an assertion runs.
     [Environment]::SetEnvironmentVariable("SOPFORGE_SERVER_URL", $OriginalServerUrlEnv, "User")
+
+    # Same safety-net role for the Startup-folder shortcuts backed up above:
+    # restore whatever a real install had there, and remove anything this
+    # test run left behind that didn't exist before it.
+    foreach ($Name in $ShortcutNames) {
+        $Path = Join-Path $StartupDir $Name
+        if ($ShortcutBackups.ContainsKey($Name)) {
+            Copy-Item -Path $ShortcutBackups[$Name] -Destination $Path -Force
+            Remove-Item -Path $ShortcutBackups[$Name] -Force -ErrorAction SilentlyContinue
+        } elseif (Test-Path $Path) {
+            Remove-Item -Path $Path -Force
+        }
+    }
 }
