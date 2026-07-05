@@ -57,17 +57,40 @@ if (Test-Path $ConfigPath) {
 
     # install.ps1 -Autostart falls back to a Startup-folder shortcut per EXE
     # when Register-ScheduledTask is blocked (see its Register-Autostart
-    # function) -- remove exactly the ones it recorded creating, never any
-    # other shortcut the user might have in that folder.
-    foreach ($ShortcutName in @($Config.StartupShortcuts)) {
-        if (-not $ShortcutName) { continue }
-        $ShortcutPath = Join-Path ([Environment]::GetFolderPath("Startup")) $ShortcutName
-        if (Test-Path $ShortcutPath) {
+    # function). Prefer the names it recorded in StartupShortcuts, but older
+    # install-config.json versions didn't record them -- so also try the
+    # deterministic "<TaskName>.lnk" names install.ps1 always uses. Guard
+    # every candidate by checking the shortcut's target actually points inside
+    # this InstallPath, so an unrelated .lnk the user happens to have under the
+    # same name is never removed.
+    $StartupDir = [Environment]::GetFolderPath("Startup")
+    $ShortcutNames = @(@($Config.StartupShortcuts) + ($TaskNames | ForEach-Object { "$_.lnk" }) |
+        Where-Object { $_ } | Select-Object -Unique)
+    $WShell = New-Object -ComObject WScript.Shell
+    foreach ($ShortcutName in $ShortcutNames) {
+        $ShortcutPath = Join-Path $StartupDir $ShortcutName
+        if (-not (Test-Path $ShortcutPath)) { continue }
+        $Target = $WShell.CreateShortcut($ShortcutPath).TargetPath
+        if ($Target -and $Target.StartsWith($InstallPath, [StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -Path $ShortcutPath -Force
             Write-Output "Removed Startup-folder shortcut '$ShortcutName'."
         }
     }
 }
+
+# Stop any SOPForge EXE still running from this InstallPath before deleting the
+# folder -- a running process holds a lock on its own .exe, which would make the
+# Remove-Item below silently fail (it uses -ErrorAction SilentlyContinue) and
+# leave server/ or capture/ behind. Match on executable path so a sopforge
+# process launched from somewhere else (e.g. a dev build under the repo's dist/)
+# is never touched.
+Get-CimInstance Win32_Process -Filter "Name='sopforge-server.exe' OR Name='sopforge.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallPath, [StringComparison]::OrdinalIgnoreCase) } |
+    ForEach-Object {
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+        Write-Output "Stopped running '$($_.Name)' (PID $($_.ProcessId))."
+    }
+Start-Sleep -Milliseconds 500
 
 if (-not (Test-Path $InstallPath)) {
     Write-Output "$InstallPath does not exist; nothing to remove."
