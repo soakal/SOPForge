@@ -64,6 +64,13 @@ def build():
     if upx_dir:
         cmd += ["--upx-dir", upx_dir]
     subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+    # Self-signs both dist/ EXEs -- see scripts/sign_dist.ps1's docstring for
+    # why a self-signed cert is enough for this local-only tool.
+    subprocess.run(
+        ["powershell", "-File", str(REPO_ROOT / "scripts" / "sign_dist.ps1")],
+        cwd=REPO_ROOT,
+        check=True,
+    )
 
 
 def dir_size_mb(path):
