@@ -32,8 +32,18 @@ $Targets = @(
     (Join-Path $RepoRoot "dist\sopforge-server\sopforge-server.exe")
 )
 
-$cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
-    Where-Object { $_.Subject -eq $Subject -and $_.NotAfter -gt (Get-Date) } |
+# Filter on the Code Signing EKU (OID 1.3.6.1.5.5.7.3.3) directly rather than
+# Get-ChildItem's -CodeSigningCert switch: that switch is a Windows PowerShell
+# 5.1-only dynamic parameter of the certificate provider and does not exist in
+# PowerShell 7 (fails with "A parameter cannot be found that matches parameter
+# name 'CodeSigningCert'"), so the build's `powershell -File` call breaks
+# wherever `powershell` resolves to pwsh 7. EnhancedKeyUsageList works in both.
+$CodeSigningOid = "1.3.6.1.5.5.7.3.3"
+$cert = Get-ChildItem Cert:\CurrentUser\My |
+    Where-Object {
+        $_.Subject -eq $Subject -and $_.NotAfter -gt (Get-Date) -and
+        ($_.EnhancedKeyUsageList | Where-Object { $_.ObjectId -eq $CodeSigningOid })
+    } |
     Sort-Object NotAfter -Descending | Select-Object -First 1
 
 if (-not $cert) {
