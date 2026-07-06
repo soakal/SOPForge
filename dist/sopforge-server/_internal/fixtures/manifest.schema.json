@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sopforge.local/schemas/manifest.schema.json",
+  "title": "SOPForge capture manifest",
+  "type": "object",
+  "required": ["schema_version", "session", "steps"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string" },
+    "session": {
+      "type": "object",
+      "required": [
+        "id", "title", "started_utc", "ended_utc", "machine", "os_build",
+        "narration_wav"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "started_utc": { "type": "string", "format": "date-time" },
+        "ended_utc": { "type": "string", "format": "date-time" },
+        "machine": { "type": "string" },
+        "os_build": { "type": "string" },
+        "narration_wav": { "type": ["string", "null"] }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "required": [
+        "id", "ts_utc", "action", "screen", "screenshot", "window", "element",
+        "redactions"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^step-[0-9]+$" },
+        "ts_utc": { "type": "string", "format": "date-time" },
+        "action": { "type": "string", "enum": ["click", "type"] },
+        "button": { "type": "string", "enum": ["left", "right", "middle"] },
+        "text_summary": { "type": "string" },
+        "screen": {
+          "type": "object",
+          "required": ["x", "y", "monitor"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "integer" },
+            "y": { "type": "integer" },
+            "monitor": { "type": "integer" }
+          }
+        },
+        "screenshot": { "type": "string", "pattern": "^[^/\\\\]+\\.png$" },
+        "screenshot_placeholder": { "type": "boolean" },
+        "window": {
+          "type": "object",
+          "required": ["title", "process", "class"],
+          "additionalProperties": false,
+          "properties": {
+            "title": { "type": "string" },
+            "process": { "type": "string" },
+            "class": { "type": "string", "enum": ["win32", "chromium", "electron", ""] }
+          }
+        },
+        "element": {
+          "type": "object",
+          "required": [
+            "name", "control_type", "automation_id", "framework", "bounding_rect"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "control_type": { "type": "string" },
+            "automation_id": { "type": "string" },
+            "framework": { "type": "string" },
+            "bounding_rect": {
+              "type": ["array", "null"],
+              "items": { "type": "integer" },
+              "minItems": 4,
+              "maxItems": 4
+            }
+          }
+        },
+        "redactions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["region", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "region": {
+                "type": "array",
+                "items": { "type": "integer" },
+                "minItems": 4,
+                "maxItems": 4
+              },
+              "reason": { "type": "string" }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "action": { "const": "click" } } },
+          "then": { "required": ["button"] }
+        },
+        {
+          "if": { "properties": { "action": { "const": "type" } } },
+          "then": { "required": ["text_summary"] }
+        }
+      ]
+    }
+  }
+}
