@@ -9,6 +9,7 @@ pystray==0.19.5
 pyinstaller==6.21.0
 winsdk==1.0.0b10
 pydantic==2.13.4
+jsonschema==4.26.0
 fastapi==0.139.0
 httpx==0.28.1
 uvicorn==0.50.0
