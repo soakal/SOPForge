@@ -29,8 +29,20 @@
     The Startup folder is real and shared with any live install on this
     machine (unlike the temp -InstallPath, shortcuts there aren't
     namespaced per test run) -- this script backs up and restores
-    SOPForge-Server.lnk/SOPForge-Capture.lnk around round trip 2 so running
-    it can never clobber or delete a real install's autostart shortcuts.
+    SOPForge-Server.lnk/SOPForge-Capture.lnk around both round trips so
+    running it can never clobber or delete a real install's autostart
+    shortcuts.
+
+    Autostart now defaults to ON in install.ps1, so round trip 1 (which
+    passes no -NoAutostart) also exercises autostart registration, not just
+    round trip 2 -- on a machine with a real SOPForge install already
+    registered under the same task names, install.ps1's ownership check
+    (see its Register-Autostart) makes round trip 1 fall back to a
+    Startup-folder shortcut rather than reuse round trip 2's names, and
+    Test-TaskOwnedByPath (below) is what makes round trip 2's own
+    assertions path-aware rather than merely name-aware, so a real
+    install's identically-named task never registers as a false pass/fail
+    for either round trip.
 #>
 
 $ErrorActionPreference = "Stop"
@@ -99,7 +111,10 @@ function Stop-ServerCleanly($Proc, $Port) {
 
 try {
 
-# --- Round trip 1: plain install, no autostart ---
+# --- Round trip 1: plain install / health check / uninstall (autostart is
+# on by default now, so this also incidentally exercises the fallback path
+# -- see the .DESCRIPTION note above -- but that's not this round trip's
+# focus; round trip 2 is where autostart itself is actually asserted) ---
 $TestRoot = Join-Path $env:TEMP "sopforge-install-test-$(Get-Random)"
 if (Test-Path $TestRoot) { throw "test root already exists: $TestRoot" }
 
@@ -172,7 +187,24 @@ if (-not (Test-Path (Join-Path $TestRoot2 "capture\sopforge.exe"))) {
     throw "FAIL: base install (files) did not succeed even though -Autostart is best-effort"
 }
 
-$RegisteredTasks = $TaskNames | Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
+# A task named e.g. "SOPForge-Server" existing is not enough -- task names
+# aren't namespaced per -InstallPath, so a REAL install elsewhere on this
+# machine can already own that name (install.ps1's Register-Autostart
+# refuses to clobber it and falls back to a shortcut instead, see its
+# collision check). Only count a task as "registered by this round trip" if
+# its action actually points inside $TestRoot2.
+function Test-TaskOwnedByPath($TaskName, $Path) {
+    $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $Task) { return $false }
+    $Exe = ($Task.Actions | Select-Object -First 1).Execute
+    # Trailing separator required -- a raw StartsWith would treat a sibling
+    # path like "...SOPForge-dev\..." as "inside" "...SOPForge" (see the
+    # matching fix/comment in install.ps1's ConvertTo-PathPrefix).
+    $Prefix = $Path.TrimEnd('\') + '\'
+    return [bool]($Exe -and $Exe.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase))
+}
+
+$RegisteredTasks = $TaskNames | Where-Object { Test-TaskOwnedByPath $_ $TestRoot2 }
 if ($RegisteredTasks.Count -gt 0) {
     Write-Output "Autostart scheduled task(s) confirmed via Get-ScheduledTask: $($RegisteredTasks -join ', ')"
 }
@@ -225,7 +257,7 @@ if ($LASTEXITCODE -ne 0) {
 
 if ($PreUninstallError) { throw $PreUninstallError }
 
-$TasksAfter = $TaskNames | Where-Object { Get-ScheduledTask -TaskName $_ -ErrorAction SilentlyContinue }
+$TasksAfter = $TaskNames | Where-Object { Test-TaskOwnedByPath $_ $TestRoot2 }
 if ($TasksAfter.Count -gt 0) {
     throw "FAIL: scheduled task(s) still exist after uninstall: $($TasksAfter -join ', ')"
 }

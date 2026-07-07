@@ -19,13 +19,62 @@
     (install-config.json's ServerUrlEnvValue) -- never a value the user
     set themselves, or one a different install (e.g. at another port,
     installed afterward) now depends on.
+
+.NOTES
+    -InstallPath defaults to Program Files (matching install.ps1's default),
+    which is machine-wide and requires administrator rights to modify. If
+    this process isn't already elevated and $InstallPath actually needs it,
+    this relaunches itself elevated (triggering a UAC prompt) -- an
+    -InstallPath the current user can already write to (e.g. under
+    %LOCALAPPDATA%) skips that prompt entirely.
 #>
 param(
-    [string]$InstallPath = "$env:LOCALAPPDATA\SOPForge",
+    [string]$InstallPath = "$env:ProgramFiles\SOPForge",
     [switch]$RemoveData
 )
 
 $ErrorActionPreference = "Stop"
+
+function Test-IsElevated {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    (New-Object Security.Principal.WindowsPrincipal($Identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# A raw StartsWith($InstallPath) is not enough to prove a path is INSIDE
+# $InstallPath -- "C:\Program Files\SOPForge-dev\..." starts with the string
+# "C:\Program Files\SOPForge" even though it belongs to a sibling install.
+# Appending a trailing separator before comparing closes that gap: a real
+# child path is always "$InstallPath\something", never a same-prefix sibling.
+# Applied everywhere below that decides whether to touch a task/shortcut/
+# process based on its path being "ours" (scheduled tasks, Startup-folder
+# shortcuts, running processes) -- all three shared the same bug.
+function ConvertTo-PathPrefix([string]$Path) {
+    return $Path.TrimEnd('\') + '\'
+}
+
+# Nothing to elevate for if there's nothing installed at this path yet.
+if ((Test-Path $InstallPath) -and -not (Test-IsElevated)) {
+    $ProbeFile = Join-Path $InstallPath ".sopforge-write-test"
+    $NeedsElevation = $false
+    try {
+        New-Item -ItemType File -Path $ProbeFile -Force -ErrorAction Stop | Out-Null
+        Remove-Item -Path $ProbeFile -Force -ErrorAction SilentlyContinue
+    } catch {
+        $NeedsElevation = $true
+    }
+    if ($NeedsElevation) {
+        Write-Output "'$InstallPath' requires administrator rights -- relaunching elevated (a UAC prompt will appear)..."
+        $ElevatedArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-InstallPath", "`"$InstallPath`"")
+        if ($RemoveData) { $ElevatedArgs += "-RemoveData" }
+        try {
+            $ElevatedProc = Start-Process -FilePath "powershell.exe" -ArgumentList $ElevatedArgs -Verb RunAs -Wait -PassThru -ErrorAction Stop
+            exit $ElevatedProc.ExitCode
+        } catch {
+            Write-Warning "Elevation was declined or failed to start: $_"
+            exit 1
+        }
+    }
+}
 
 $ConfigPath = Join-Path $InstallPath "install-config.json"
 if (Test-Path $ConfigPath) {
@@ -35,11 +84,23 @@ if (Test-Path $ConfigPath) {
     # uninstalling an install created by a previous SOPForge version still
     # cleans up correctly.
     $TaskNames = @($Config.ServerTaskName, $Config.CaptureTaskName, $Config.TaskName) | Where-Object { $_ }
+    # Task names ("SOPForge-Server"/"SOPForge-Capture") are fixed, not
+    # namespaced per -InstallPath -- a task by this name could belong to a
+    # DIFFERENT SOPForge install (e.g. this -InstallPath is stale/a test
+    # path, but a real install elsewhere registered the same task name).
+    # Only remove it if its action actually points inside THIS -InstallPath,
+    # mirroring the ownership check already applied to Startup-folder
+    # shortcuts below.
     foreach ($TaskName in ($TaskNames | Select-Object -Unique)) {
-        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
-            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
-            Write-Output "Removed scheduled task '$TaskName'."
+        $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if (-not $Task) { continue }
+        $TaskExe = ($Task.Actions | Select-Object -First 1).Execute
+        if ($TaskExe -and -not $TaskExe.StartsWith((ConvertTo-PathPrefix $InstallPath), [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Output "Skipping scheduled task '$TaskName' -- it belongs to a different install ($TaskExe), not $InstallPath."
+            continue
         }
+        Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+        Write-Output "Removed scheduled task '$TaskName'."
     }
 
     # install.ps1 sets a persistent per-user SOPFORGE_SERVER_URL when a
@@ -71,7 +132,7 @@ if (Test-Path $ConfigPath) {
         $ShortcutPath = Join-Path $StartupDir $ShortcutName
         if (-not (Test-Path $ShortcutPath)) { continue }
         $Target = $WShell.CreateShortcut($ShortcutPath).TargetPath
-        if ($Target -and $Target.StartsWith($InstallPath, [StringComparison]::OrdinalIgnoreCase)) {
+        if ($Target -and $Target.StartsWith((ConvertTo-PathPrefix $InstallPath), [StringComparison]::OrdinalIgnoreCase)) {
             Remove-Item -Path $ShortcutPath -Force
             Write-Output "Removed Startup-folder shortcut '$ShortcutName'."
         }
@@ -85,7 +146,7 @@ if (Test-Path $ConfigPath) {
 # process launched from somewhere else (e.g. a dev build under the repo's dist/)
 # is never touched.
 Get-CimInstance Win32_Process -Filter "Name='sopforge-server.exe' OR Name='sopforge.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallPath, [StringComparison]::OrdinalIgnoreCase) } |
+    Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith((ConvertTo-PathPrefix $InstallPath), [StringComparison]::OrdinalIgnoreCase) } |
     ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         Write-Output "Stopped running '$($_.Name)' (PID $($_.ProcessId))."

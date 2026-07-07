@@ -44,8 +44,8 @@ per config section but is off unless you turn it on.
 If `dist/sopforge/` and `dist/sopforge-server/` are already built:
 
 ```powershell
-.\install.ps1                                    # installs to %LOCALAPPDATA%\SOPForge
-.\install.ps1 -InstallPath "D:\SOPForge" -Port 8420 -Autostart
+.\install.ps1                                    # installs to %ProgramFiles%\SOPForge, autostart ON by default
+.\install.ps1 -InstallPath "D:\SOPForge" -Port 8420 -NoAutostart
 ```
 
 If PowerShell's default execution policy blocks running `.ps1` files
@@ -53,22 +53,30 @@ If PowerShell's default execution policy blocks running `.ps1` files
 "running scripts is disabled on this system" — a Windows 11 default-policy
 thing, not specific to this script), just **double-click `install.bat`
 instead** — it runs `install.ps1` with the execution-policy bypass for you.
-Same arguments work: `install.bat -Port 9000 -Autostart`.
+Same arguments work: `install.bat -Port 9000 -NoAutostart`.
 
-This copies both EXEs, creates a `sessions/` folder, and — with
-`-Autostart` — registers **two** per-user scheduled tasks: one that
+The default install path, Program Files, is machine-wide and needs
+administrator rights. If `install.ps1`/`install.bat` isn't already running
+elevated, it relaunches itself elevated automatically — **a UAC prompt will
+appear; accept it** to continue. Pass an `-InstallPath` you already own
+(e.g. `-InstallPath "$env:LOCALAPPDATA\SOPForge"`) to install without
+needing administrator rights at all — no UAC prompt appears in that case.
+
+This copies both EXEs, creates a `sessions/` folder, and — autostart being
+on by default — registers **two** per-user scheduled tasks: one that
 launches the server at logon, and one that launches the capture agent
 (tray icon) at logon too, so after signing in, recording is just a hotkey
 away and the doc-generation server is already running — genuinely nothing
-to manually start. `-Autostart` is **self-healing**: some machines/accounts
-restrict `AtLogOn`-triggered scheduled task registration even without
-elevation, and when that happens, `install.ps1` automatically falls back to
-creating a Startup-folder shortcut (`shell:startup\SOPForge-Server.lnk` /
-`SOPForge-Capture.lnk`) for that EXE instead — no manual step needed either
-way. Re-running `install.ps1 -Autostart` later (e.g. after Task Scheduler
-access is fixed) safely refreshes or removes that shortcut as needed.
-`install-config.json`'s `StartupShortcuts` field records which shortcuts
-(if any) this install created, so `uninstall.ps1` removes exactly those.
+to manually start. Pass `-NoAutostart` to skip this. Autostart is
+**self-healing**: some machines/accounts restrict `AtLogOn`-triggered
+scheduled task registration even without elevation, and when that happens,
+`install.ps1` automatically falls back to creating a Startup-folder shortcut
+(`shell:startup\SOPForge-Server.lnk` / `SOPForge-Capture.lnk`) for that EXE
+instead — no manual step needed either way. Re-running `install.ps1` later
+(e.g. after Task Scheduler access is fixed) safely refreshes or removes
+that shortcut as needed. `install-config.json`'s `StartupShortcuts` field
+records which shortcuts (if any) this install created, so `uninstall.ps1`
+removes exactly those.
 
 #### If both the scheduled task AND the Startup-folder shortcut fail
 
@@ -87,8 +95,9 @@ respectively so `uninstall.ps1` can find and remove them automatically):
    user is logged on."
 3. Triggers tab → New → "At log on" → your user account.
 4. Actions tab → New → Program/script: the full path to the EXE (e.g.
-   `%LOCALAPPDATA%\SOPForge\server\sopforge-server.exe` or `...\capture\sopforge.exe`);
-   for the server, add arguments: `--port 8420 --sessions-root "%LOCALAPPDATA%\SOPForge\sessions"`
+   `%ProgramFiles%\SOPForge\server\sopforge-server.exe` or `...\capture\sopforge.exe` --
+   substitute your actual `-InstallPath` if you chose a different one);
+   for the server, add arguments: `--port 8420 --sessions-root "%ProgramFiles%\SOPForge\sessions"`
    (the capture agent needs no arguments).
 5. OK, then right-click the new task → Run, to confirm it starts (check
    `http://127.0.0.1:8420/` in a browser for the server; the tray icon
@@ -201,13 +210,16 @@ or a different install.
 
 ## 4. Running the pipeline server
 
-This is the piece that makes recording fully hands-off (§3) — set it up with
-`-Autostart` (§2) so it's always running and you never think about it again.
+This is the piece that makes recording fully hands-off (§3) — autostart is on
+by default (§2) so it's always running and you never think about it again
+(unless you installed with `-NoAutostart`).
 
 If installed via `install.ps1`:
 ```powershell
-& "$env:LOCALAPPDATA\SOPForge\server\sopforge-server.exe" --port 8420 --sessions-root "$env:LOCALAPPDATA\SOPForge\sessions"
+& "$env:ProgramFiles\SOPForge\server\sopforge-server.exe" --port 8420 --sessions-root "$env:ProgramFiles\SOPForge\sessions"
 ```
+(substitute your actual `-InstallPath` if you chose a different one, e.g.
+`%LOCALAPPDATA%\SOPForge`.)
 (or just launch it directly — `--port`/`--sessions-root` default to `8420` and
 `~/SOPForge/sessions` if omitted.) Then open **http://127.0.0.1:8420/** in a
 browser — that's the review web UI (§5).

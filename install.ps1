@@ -50,20 +50,50 @@
     access was restored in between). Installing and running SOPForge
     WITHOUT -Autostart never depends on any of this and always works.
 
+    Autostart defaults to ON (both scheduled tasks registered/attempted) --
+    pass -NoAutostart to install without it. The plain -Autostart switch is
+    still accepted for backward compatibility but is a no-op (autostart is
+    already the default); it does not need to be combined with anything.
+
 .NOTES
     If PowerShell's execution policy blocks double-clicking this script
     directly, use install.bat instead (wraps this with
     -ExecutionPolicy Bypass) -- a common Windows 11 default-policy issue,
     not specific to this script.
+
+    The default -InstallPath (Program Files) is machine-wide and requires
+    administrator rights to write to. If this process isn't already
+    elevated, it relaunches itself elevated (triggering a UAC prompt) --
+    see the elevation check below. Passing an -InstallPath the current user
+    can already write to (e.g. under %LOCALAPPDATA%) skips that prompt
+    entirely, since no elevation is actually needed for it.
 #>
 param(
-    [string]$InstallPath = "$env:LOCALAPPDATA\SOPForge",
+    [string]$InstallPath = "$env:ProgramFiles\SOPForge",
     [int]$Port = 8420,
-    [switch]$Autostart
+    [switch]$Autostart,
+    [switch]$NoAutostart
 )
 
 $ErrorActionPreference = "Stop"
 
+function Test-IsElevated {
+    $Identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    (New-Object Security.Principal.WindowsPrincipal($Identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+# A raw StartsWith($InstallPath) is not enough to prove a path is INSIDE
+# $InstallPath -- "C:\Program Files\SOPForge-dev\..." starts with the string
+# "C:\Program Files\SOPForge" even though it belongs to a sibling install.
+# Appending a trailing separator before comparing closes that gap: a real
+# child path is always "$InstallPath\something", never a same-prefix sibling.
+function ConvertTo-PathPrefix([string]$Path) {
+    return $Path.TrimEnd('\') + '\'
+}
+
+# Checked before the elevation prompt below so a not-yet-built dist/ fails
+# fast with a clear message instead of making the user click through a UAC
+# prompt for an install that was going to fail anyway.
 $RepoRoot = $PSScriptRoot
 $CaptureDist = Join-Path $RepoRoot "dist\sopforge"
 $ServerDist = Join-Path $RepoRoot "dist\sopforge-server"
@@ -74,6 +104,38 @@ if (-not (Test-Path $CaptureDist)) {
 if (-not (Test-Path $ServerDist)) {
     throw "Not built: $ServerDist -- run 'python scripts/build_server_exe.py' first."
 }
+
+# Only elevate if actually needed: probe write access to the target
+# -InstallPath rather than assuming Program Files always requires it, so an
+# explicit user-writable -InstallPath (e.g. %LOCALAPPDATA%\SOPForge, as
+# before this default changed) never triggers an unnecessary UAC prompt.
+if (-not (Test-IsElevated)) {
+    $NeedsElevation = $false
+    try {
+        New-Item -ItemType Directory -Force -Path $InstallPath -ErrorAction Stop | Out-Null
+        $ProbeFile = Join-Path $InstallPath ".sopforge-write-test"
+        New-Item -ItemType File -Path $ProbeFile -Force -ErrorAction Stop | Out-Null
+        Remove-Item -Path $ProbeFile -Force -ErrorAction SilentlyContinue
+    } catch {
+        $NeedsElevation = $true
+    }
+    if ($NeedsElevation) {
+        Write-Output "'$InstallPath' requires administrator rights -- relaunching elevated (a UAC prompt will appear)..."
+        $ElevatedArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-InstallPath", "`"$InstallPath`"", "-Port", "$Port")
+        if ($NoAutostart) { $ElevatedArgs += "-NoAutostart" }
+        try {
+            $ElevatedProc = Start-Process -FilePath "powershell.exe" -ArgumentList $ElevatedArgs -Verb RunAs -Wait -PassThru -ErrorAction Stop
+            exit $ElevatedProc.ExitCode
+        } catch {
+            Write-Warning "Elevation was declined or failed to start: $_"
+            exit 1
+        }
+    }
+}
+
+# Autostart is on by default; -NoAutostart opts out. -Autostart is accepted
+# for backward compatibility but is a no-op since it's already the default.
+$AutostartEffective = -not $NoAutostart
 
 New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 
@@ -139,26 +201,27 @@ function Register-Autostart {
     only safe when $PriorStartupShortcuts (this same -InstallPath's last run)
     already recorded creating it -- anything else there is left untouched
     since SOPForge didn't create it.
+
+    Task names ("SOPForge-Server"/"SOPForge-Capture") are fixed, not
+    namespaced per -InstallPath, so a second SOPForge install at a
+    different location (or this same one, at a different path) could
+    otherwise silently overwrite (Register-ScheduledTask -Force) or later
+    delete a DIFFERENT install's autostart task. Before registering, this
+    checks whether a task by this name already exists and points at an EXE
+    outside this run's -InstallPath -- if so, it's a different install's
+    task, so this run falls back to a Startup-folder shortcut instead of
+    clobbering it (uninstall.ps1 applies the same ownership check before
+    ever unregistering a task).
     #>
     param(
         [string]$TaskName,
         [string]$Exe,
-        [string]$Arguments
+        [string]$Arguments,
+        [string]$OwnInstallPath
     )
     $ShortcutName = "$TaskName.lnk"
-    try {
-        $Action = if ($Arguments) { New-ScheduledTaskAction -Execute $Exe -Argument $Arguments } else { New-ScheduledTaskAction -Execute $Exe }
-        $Trigger = New-ScheduledTaskTrigger -AtLogOn
-        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Force -ErrorAction Stop | Out-Null
-        # Write-Host (host stream), NOT Write-Output: this function's return
-        # value IS its success-stream output, so a Write-Output here would be
-        # returned to the caller alongside the real return value and land in
-        # install-config.json's StartupShortcuts.
-        Write-Host "Registered autostart scheduled task '$TaskName'."
-        return $null
-    } catch {
-        Write-Warning "Could not register the '$TaskName' autostart scheduled task: $_"
-        Write-Warning "Falling back to a Startup-folder shortcut instead."
+
+    function New-StartupShortcutFallback {
         try {
             $StartupDir = [Environment]::GetFolderPath("Startup")
             $ShortcutPath = Join-Path $StartupDir $ShortcutName
@@ -180,21 +243,47 @@ function Register-Autostart {
             return $null
         }
     }
+
+    $ExistingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($ExistingTask) {
+        $ExistingExe = ($ExistingTask.Actions | Select-Object -First 1).Execute
+        if ($ExistingExe -and -not $ExistingExe.StartsWith((ConvertTo-PathPrefix $OwnInstallPath), [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Warning "A scheduled task named '$TaskName' already exists for a different SOPForge install ($ExistingExe) -- not overwriting it."
+            Write-Warning "Falling back to a Startup-folder shortcut instead."
+            return New-StartupShortcutFallback
+        }
+    }
+
+    try {
+        $Action = if ($Arguments) { New-ScheduledTaskAction -Execute $Exe -Argument $Arguments } else { New-ScheduledTaskAction -Execute $Exe }
+        $Trigger = New-ScheduledTaskTrigger -AtLogOn
+        Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Force -ErrorAction Stop | Out-Null
+        # Write-Host (host stream), NOT Write-Output: this function's return
+        # value IS its success-stream output, so a Write-Output here would be
+        # returned to the caller alongside the real return value and land in
+        # install-config.json's StartupShortcuts.
+        Write-Host "Registered autostart scheduled task '$TaskName'."
+        return $null
+    } catch {
+        Write-Warning "Could not register the '$TaskName' autostart scheduled task: $_"
+        Write-Warning "Falling back to a Startup-folder shortcut instead."
+        return New-StartupShortcutFallback
+    }
 }
 
 $StartupShortcuts = @()
-if ($Autostart) {
+if ($AutostartEffective) {
     # Each entry is attempted independently -- the base install (files +
     # config, above) already succeeded regardless of what happens here, and
     # one entry's Task Scheduler permission restriction must not block the
     # other from being attempted.
     $ServerExe = Join-Path $ServerInstallPath "sopforge-server.exe"
     $ServerShortcut = Register-Autostart -TaskName $ServerTaskName -Exe $ServerExe `
-        -Arguments "--port $Port --sessions-root `"$SessionsRoot`""
+        -Arguments "--port $Port --sessions-root `"$SessionsRoot`"" -OwnInstallPath $InstallPath
     if ($ServerShortcut) { $StartupShortcuts += $ServerShortcut }
 
     $CaptureExe = Join-Path $CaptureInstallPath "sopforge.exe"
-    $CaptureShortcut = Register-Autostart -TaskName $CaptureTaskName -Exe $CaptureExe -Arguments $null
+    $CaptureShortcut = Register-Autostart -TaskName $CaptureTaskName -Exe $CaptureExe -Arguments $null -OwnInstallPath $InstallPath
     if ($CaptureShortcut) { $StartupShortcuts += $CaptureShortcut }
 }
 
@@ -215,7 +304,7 @@ $InstallConfig = [ordered]@{
     InstallPath       = $InstallPath
     Port              = $Port
     SessionsRoot      = $SessionsRoot
-    Autostart         = [bool]$Autostart
+    Autostart         = [bool]$AutostartEffective
     ServerTaskName    = $ServerTaskName
     CaptureTaskName   = $CaptureTaskName
     ServerUrlEnvValue = $ServerUrlEnvValue
