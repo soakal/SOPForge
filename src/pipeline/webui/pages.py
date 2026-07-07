@@ -62,12 +62,26 @@ def render_library_page(entries, query=None):
 
 
 def render_session_processing_page(session_id, status):
+    # While the background job is still running, auto-refresh every few seconds
+    # so the page turns into the finished review page on its own the moment
+    # generation completes -- without this the user is left staring at a stale
+    # "processing" snapshot forever (the page never updates itself). A terminal
+    # "error" status stops refreshing: there's nothing more to wait for.
+    is_pending = status["status"] in ("queued", "processing")
+    refresh_meta = '<meta http-equiv="refresh" content="3">' if is_pending else ""
+    pending_note = (
+        "<p>Generating your SOP&hellip; this page updates automatically when it's ready.</p>"
+        if is_pending
+        else ""
+    )
     return (
         "<!doctype html>"
-        '<html><head><meta charset="utf-8"><title>SOPForge Review</title></head><body>'
+        '<html><head><meta charset="utf-8"><title>SOPForge Review</title>'
+        f"{refresh_meta}</head><body>"
         '<p><a href="/ui">&larr; Back to library</a></p>'
         f"<h1>Session {html.escape(session_id)}</h1>"
         f'<p data-status="{html.escape(status["status"])}">Status: {html.escape(status["status"])}</p>'
+        + pending_note
         + (f"<p>{html.escape(status.get('error', ''))}</p>" if status["status"] == "error" else "")
         + "</body></html>"
     )
@@ -116,6 +130,11 @@ def render_session_page(session_id, title, date, report, config):
         f"<p>{html.escape(date)} &mdash; {sid}</p>"
         f'<iframe src="/sessions/{sid}/doc.html" '
         'style="width:100%;height:400px;border:1px solid #ccc;"></iframe>'
+        "<p>Every recorded step is included &mdash; the document has one step per "
+        "captured action, nothing skipped. The report below only flags steps worth "
+        "a second look: <em>template-fallback</em> steps are still complete and "
+        "factually correct, just written from the captured data rather than the "
+        "language model.</p>"
         f"{sections}"
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'

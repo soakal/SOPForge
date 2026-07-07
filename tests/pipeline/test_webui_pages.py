@@ -137,9 +137,32 @@ def test_session_page_shows_processing_state_before_done(tmp_path, monkeypatch):
     page = client.get(f"/ui/sessions/{session_id}")
     assert page.status_code == 200
     assert 'data-status="processing"' in page.text or 'data-status="queued"' in page.text
+    # While still processing, the page must auto-refresh so it turns into the
+    # finished review page on its own -- otherwise the user is stuck on a stale
+    # "processing" snapshot forever.
+    assert 'http-equiv="refresh"' in page.text
 
     release.set()
     _wait_until_done(client, session_id)
+
+    # Once done, the page is the real review page and no longer auto-refreshes.
+    done_page = client.get(f"/ui/sessions/{session_id}")
+    assert 'http-equiv="refresh"' not in done_page.text
+    assert "Downloads" in done_page.text
+
+
+def test_processing_page_refreshes_while_pending_but_not_on_error():
+    from pipeline.webui.pages import render_session_processing_page
+
+    for state in ("queued", "processing"):
+        page = render_session_processing_page("sid", {"status": state})
+        assert 'http-equiv="refresh"' in page, state
+
+    # A terminal error must NOT keep refreshing (nothing left to wait for) and
+    # must surface the error text.
+    err = render_session_processing_page("sid", {"status": "error", "error": "boom"})
+    assert 'http-equiv="refresh"' not in err
+    assert "boom" in err
 
 
 def test_doc_preview_iframe_image_references_actually_resolve(tmp_path):
