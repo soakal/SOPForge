@@ -351,8 +351,11 @@ plain text/markdown file has no timestamps, placement is by **order**, two ways:
 - **Labelled (recommended):** start each block with a step label — `Step 1:`,
   `1.`, `1)`, or `## Step 1`. The number picks the step, so blocks can skip
   steps or be out of order.
-- **Plain paragraphs:** blank-line-separated paragraphs, assigned to steps in
-  order (1st paragraph → step 1, …). Extra paragraphs append to the last step.
+- **Plain lines/paragraphs:** with no labels, each **line** is one step (1st
+  line → step 1, …) — so a transcript typed one line per step, with no blank
+  lines, spreads across the steps. If you use **blank lines** to separate
+  paragraphs, each paragraph (its lines joined) becomes one step instead. Extra
+  blocks beyond the last step append to it.
 
 A timestamped `.json` transcript (the faster-whisper segment shape) is also
 accepted and aligned by time. Bad transcripts are rejected at upload with a

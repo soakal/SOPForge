@@ -24,6 +24,19 @@ def test_plain_paragraphs_placed_in_order():
     assert "in order" in note
 
 
+def test_one_line_per_step_no_blank_lines_spreads_across_steps():
+    # Regression: a transcript with one line per step and NO blank lines must
+    # NOT collapse onto step 1 -- each line is its own step.
+    content = "Open the first screen\nThen click the second\nFinally save on the third"
+    per_step, note = align_transcript_to_steps("t.txt", content, _manifest())
+    assert per_step == {
+        "step-001": "Open the first screen",
+        "step-002": "Then click the second",
+        "step-003": "Finally save on the third",
+    }
+    assert "in order" in note
+
+
 def test_numbered_list_labels_place_by_number():
     content = "1. First action.\n2. Second action.\n3. Third action."
     per_step, note = align_transcript_to_steps("t.md", content, _manifest())

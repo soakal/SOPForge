@@ -39,40 +39,56 @@ def _parse_text_blocks(content):
     (blocks, labelled) where blocks is a list of (step_number_or_None, text):
     step_number is the 1-based number from a label when present, else None
     (position-based). labelled is True if ANY block carried an explicit label
-    (so the caller knows to place by number vs. by order)."""
+    (so the caller knows to place by number vs. by order).
+
+    Block boundaries, in priority order:
+      1. Explicit step labels ("Step 1:", "1.", "## Step 1") -> one block each.
+      2. Otherwise, blank-line-separated paragraphs, IF there are 2+ of them
+         (lines within a paragraph are joined).
+      3. Otherwise (no blank lines / a single paragraph), one block PER LINE --
+         so a transcript written as one line per step, with no blank lines,
+         still spreads across the steps instead of collapsing onto step 1.
+    """
     lines = content.splitlines()
-    blocks = []
-    labelled = False
-    current_num = None
-    current = []
-    saw_label_start = False
 
-    def flush():
-        text = " ".join(current).strip()
-        if text:
-            blocks.append((current_num, text))
+    # 1. Label mode.
+    def _is_label(m):
+        return bool(m and (m.group(1) or m.group(2) or m.group(4)))
 
-    for line in lines:
-        m = _LABEL.match(line)
-        is_label = bool(m and (m.group(1) or m.group(2) or m.group(4)))
-        if is_label:
-            flush()
-            current_num = int(m.group(3))
-            rest = m.group(5).strip()
-            current = [rest] if rest else []
-            labelled = True
-            saw_label_start = True
-        elif not line.strip():
-            # Blank line = paragraph boundary, but ONLY before the first label:
-            # once labelled, blocks run until the next label, so blanks inside
-            # a labelled block are just skipped.
-            if not saw_label_start:
+    if any(_is_label(_LABEL.match(ln)) for ln in lines):
+        blocks = []
+        current_num, current = None, []
+
+        def flush():
+            text = " ".join(current).strip()
+            if text:
+                blocks.append((current_num, text))
+
+        for line in lines:
+            m = _LABEL.match(line)
+            if _is_label(m):
                 flush()
-                current_num, current = None, []
-        else:
-            current.append(line.strip())
-    flush()
-    return blocks, labelled
+                current_num = int(m.group(3))
+                rest = m.group(5).strip()
+                current = [rest] if rest else []
+            elif line.strip():
+                current.append(line.strip())
+            # blank lines just end nothing in label mode (blocks run to next label)
+        flush()
+        return blocks, True
+
+    # 2. Blank-line paragraphs (2+).
+    paragraphs = [
+        " ".join(ln.strip() for ln in para.splitlines() if ln.strip())
+        for para in re.split(r"\n[ \t]*\n", content)
+    ]
+    paragraphs = [p for p in paragraphs if p]
+    if len(paragraphs) >= 2:
+        return [(None, p) for p in paragraphs], False
+
+    # 3. One block per non-empty line.
+    line_blocks = [ln.strip() for ln in lines if ln.strip()]
+    return [(None, ln) for ln in line_blocks], False
 
 
 def _place_text_blocks(manifest, blocks, labelled):

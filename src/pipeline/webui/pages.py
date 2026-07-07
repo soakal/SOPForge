@@ -125,7 +125,7 @@ def render_library_page(entries, query=None):
         '<div class="field"><label>Narration transcript &mdash; optional (.txt or .md)</label>'
         '<input type="file" name="transcript_file" accept=".txt,.md,.json">'
         "<div><small>Label blocks &ldquo;Step 1:&rdquo;, &ldquo;1.&rdquo; or &ldquo;## Step 1&rdquo; "
-        "to place each under its step, or write one paragraph per step in order.</small></div></div>"
+        "to place each under its step, or write one line (or paragraph) per step, in order.</small></div></div>"
         '<button type="submit">Upload</button></form></div>'
         "<h2>Build from screenshots + transcript (no capture)</h2>"
         '<div class="card">'
@@ -238,7 +238,7 @@ def render_session_page(session_id, title, date, report, config):
         '<input type="file" name="transcript_file" accept=".txt,.md,.json" required></div>'
         '<button type="submit">Add transcript &amp; re-render</button></form>'
         "<div><small>Label blocks &ldquo;Step 1:&rdquo;, &ldquo;1.&rdquo; or &ldquo;## Step 1&rdquo; "
-        "to place each under its step, or one paragraph per step in order.</small></div></div>"
+        "to place each under its step, or one line (or paragraph) per step, in order.</small></div></div>"
         '<div class="actions">'
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'
