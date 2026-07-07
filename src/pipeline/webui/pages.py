@@ -130,8 +130,9 @@ def render_library_page(entries, query=None):
         "<h2>Build from screenshots + transcript (no capture)</h2>"
         '<div class="card">'
         "<p><small>No capture needed &mdash; each image becomes one step, in the "
-        "order you select them, with the transcript supplying each step&rsquo;s "
-        "text.</small></p>"
+        "order you select them. With vision captioning on (default), the AI reads "
+        "each screenshot plus your narration and writes that step&rsquo;s "
+        "instruction; otherwise the transcript supplies the text.</small></p>"
         '<form method="post" action="/ui/build" enctype="multipart/form-data">'
         '<div class="field"><label>Title (optional)</label>'
         '<input type="text" name="title" placeholder="My procedure"></div>'
