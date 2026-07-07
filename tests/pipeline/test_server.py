@@ -232,7 +232,9 @@ def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monk
 
     import pipeline.server as server_module
 
-    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+    monkeypatch.setattr(
+        server_module, "caption_images", lambda paths, *a, **k: [(None, None)] * len(paths)
+    )
 
     client = _make_client(tmp_path)
 
@@ -279,7 +281,8 @@ def test_build_uses_vision_captions_when_available(tmp_path, monkeypatch):
 
     def fake_caption_images(paths, narration, endpoint, model, **kwargs):
         assert "dictated" in narration  # narration passed through as context
-        return [f"Vision caption for image {i + 1}." for i in range(len(paths))]
+        # caption + a bounding box for each image (box drives the highlight)
+        return [(f"Vision caption for image {i + 1}.", [5, 5, 30, 30]) for i in range(len(paths))]
 
     monkeypatch.setattr(server_module, "caption_images", fake_caption_images)
 

@@ -61,8 +61,8 @@ def test_pdf_text_contains_every_step_title_and_text(tmp_path):
     render_pdf(manifest, step_results, annotated_paths, output_path)
 
     text = _normalize_whitespace(_extract_text(output_path))
-    for step, result in zip(manifest.steps, step_results):
-        assert step.id in text
+    for n, (step, result) in enumerate(zip(manifest.steps, step_results), start=1):
+        assert f"Step {n}" in text
         assert _normalize_whitespace(result["text"]) in text
 
 

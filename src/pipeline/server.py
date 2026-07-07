@@ -53,6 +53,8 @@ from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.sidecar import build_sidecar_report
+from pipeline.highlight import highlight_region
+from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import align_transcript_to_steps
 from pipeline.vision import caption_images
 from pipeline.webui.pages import (
@@ -197,10 +199,11 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         )
 
     def _generate_photo(session_id):
-        """Manifest-free mode: one step per uploaded image, in order, with the
-        transcript's text placed verbatim under each. Images are copied through
-        without a click marker (there was no recorded click), and no LLM runs
-        (there's no recorded action to phrase)."""
+        """Manifest-free mode: one step per uploaded image, in order. When
+        [vision] is enabled, a vision model captions each screenshot and points
+        at the element to interact with (highlighted on the image); otherwise
+        the transcript's own placement supplies the text. A title + short
+        overview are generated from the narration."""
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
         annotated_dir.mkdir(parents=True, exist_ok=True)
 
@@ -218,31 +221,38 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
             except Exception:  # noqa: BLE001 - a bad transcript must never break generation
                 per_step, transcript_note = {}, None
 
-        # Copy each image through (no click marker) and collect its path in order.
+        # Copy each image through and collect its path in order.
         annotated_paths = []
         for step in manifest.steps:
             out = annotated_dir / step.screenshot
             shutil.copyfile(screenshots_dir / step.screenshot, out)
             annotated_paths.append(out)
 
-        # Optional vision captioning: a vision model looks at each screenshot +
-        # the narration and writes that step's instruction. The steps are still
-        # the images (one each, in order) -- the model only phrases them. Any
-        # failed caption falls back to the transcript's order/label placement.
-        captions = [None] * len(manifest.steps)
+        # Vision: caption + locate the target element for each screenshot (in
+        # parallel), then draw a highlight box on that element. The steps are
+        # still the images (one each, in order) -- the model only phrases and
+        # points. Any failed caption falls back to the transcript placement.
+        results = [(None, None)] * len(manifest.steps)
         vision_note = None
         vision_cfg = load_models_config().vision
         if vision_cfg.enabled:
-            captions = caption_images(
+            results = caption_images(
                 annotated_paths, narration, vision_cfg.endpoint, vision_cfg.model
             )
+            n_cap = sum(1 for caption, _ in results if caption)
+            n_box = 0
+            if vision_cfg.highlight:
+                for path, (_caption, box) in zip(annotated_paths, results):
+                    if box:
+                        _out, drawn = highlight_region(path, box, path)
+                        n_box += 1 if drawn else 0
             vision_note = (
-                f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
-                f"screenshots ({vision_cfg.model})"
+                f"vision-captioned {n_cap}/{len(results)} screenshots, "
+                f"{n_box} highlighted ({vision_cfg.model})"
             )
 
         step_results = []
-        for step, caption in zip(manifest.steps, captions):
+        for step, (caption, _box) in zip(manifest.steps, results):
             step_results.append(
                 {
                     "step_id": step.id,
@@ -250,6 +260,20 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
                     "used_fallback": caption is None,
                 }
             )
+
+        # A title + one-line overview from the narration (best-effort). Fill the
+        # title only if the user didn't provide one, so a UUID never shows.
+        narrative_text = None
+        if narration.strip():
+            llm = make_llm_client()
+            try:
+                gen_title, narrative_text = generate_title_and_overview(narration, llm)
+            finally:
+                close = getattr(llm, "close", None)
+                if callable(close):
+                    close()
+            if gen_title and not manifest.session.title:
+                manifest.session.title = gen_title
 
         report = {
             "template_fallback_steps": [],
@@ -262,32 +286,64 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         if vision_note:
             report["vision"] = vision_note
         _write_all_exports(
-            session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
+            session_id,
+            manifest,
+            step_results,
+            annotated_paths,
+            annotated_dir,
+            session_dir,
+            report,
+            narrative_text=narrative_text,
         )
 
     def _write_all_exports(
-        session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
+        session_id,
+        manifest,
+        step_results,
+        annotated_paths,
+        annotated_dir,
+        session_dir,
+        report,
+        narrative_text=None,
     ):
         """Render every output format + the review report from finished
         step_results and annotated images. Shared by both generation modes."""
-        md = render_markdown(manifest, step_results, annotated_paths, base_dir=annotated_dir)
+        md = render_markdown(
+            manifest,
+            step_results,
+            annotated_paths,
+            narrative_text=narrative_text,
+            base_dir=annotated_dir,
+        )
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
-        html_doc = render_html(manifest, step_results, annotated_paths, base_dir=annotated_dir)
+        html_doc = render_html(
+            manifest,
+            step_results,
+            annotated_paths,
+            narrative_text=narrative_text,
+            base_dir=annotated_dir,
+        )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
 
         docx_path = session_dir / "doc.docx"
-        _out, docx_warnings = assemble_docx(manifest, step_results, annotated_dir, docx_path)
+        _out, docx_warnings = assemble_docx(
+            manifest, step_results, annotated_dir, docx_path, narrative_text=narrative_text
+        )
         report["docx_warnings"] = docx_warnings
 
         pdf_path = session_dir / "doc.pdf"
-        render_pdf(manifest, step_results, annotated_paths, pdf_path)
+        render_pdf(manifest, step_results, annotated_paths, pdf_path, narrative_text=narrative_text)
 
-        single_html = render_single_file_html(manifest, step_results, annotated_paths)
+        single_html = render_single_file_html(
+            manifest, step_results, annotated_paths, narrative_text=narrative_text
+        )
         (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
 
         md_bundle_dir = session_dir / "md_bundle"
-        export_markdown_bundle(manifest, step_results, annotated_paths, md_bundle_dir)
+        export_markdown_bundle(
+            manifest, step_results, annotated_paths, md_bundle_dir, narrative_text=narrative_text
+        )
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
 
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")

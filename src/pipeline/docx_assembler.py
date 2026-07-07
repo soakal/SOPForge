@@ -49,6 +49,7 @@ def assemble_docx(
     revision="1.0",
     date="01/01/2026",
     author="SOPForge",
+    narrative_text=None,
 ):
     """Builds a complete docx from a manifest's steps (already rendered via
     task-06/task-12's step_results, one dict per step with a "text" key)
@@ -68,13 +69,16 @@ def assemble_docx(
     )
     title = manifest.session.title or manifest.session.id
     sop.title_page(title.upper(), author=author)
+    if narrative_text:
+        sop.heading1("Overview")
+        sop.paragraph(narrative_text)
     sop.heading1("Steps")
-    for step, result in zip(manifest.steps, step_results):
-        sop.heading2(f"Step {step.id}")
+    for n, (step, result) in enumerate(zip(manifest.steps, step_results), start=1):
+        sop.heading2(f"Step {n}")
         sop.bullet(result["text"])
         if result.get("narration"):
             sop.bullet(f"Narration: {result['narration']}", sub=True)
-        sop.image(step.screenshot, caption=step.id)
+        sop.image(step.screenshot, caption=f"Step {n}")
     sop.revision_history([(date, revision, "Initial generation", author)])
     out = sop.save()
     return out, sop.warnings

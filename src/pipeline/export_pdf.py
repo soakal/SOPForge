@@ -88,10 +88,12 @@ def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_t
     pdf.set_text_color(*_INK)
     pdf.ln(2)
 
-    for step, result, shot in zip(manifest.steps, step_results, annotated_paths, strict=True):
+    for n, (step, result, shot) in enumerate(
+        zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
+    ):
         pdf.set_font("Helvetica", "B", 14)
         pdf.set_text_color(*_INK)
-        pdf.cell(0, 10, _safe_text(f"Step {step.id}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 10, _safe_text(f"Step {n}"), new_x="LMARGIN", new_y="NEXT")
 
         _bullet(pdf, result["text"])
 
@@ -107,7 +109,7 @@ def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_t
             pdf.image(str(shot), w=130)
             pdf.set_font("Helvetica", "I", 9)
             pdf.set_text_color(*_MUTED)
-            pdf.multi_cell(0, 5, _safe_text(step.id), align="C")
+            pdf.multi_cell(0, 5, _safe_text(f"Step {n}"), align="C")
             pdf.set_text_color(*_INK)
         pdf.ln(6)
 

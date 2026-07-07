@@ -39,9 +39,11 @@ def render_single_file_html(manifest, step_results, annotated_paths, narrative_t
     ]
     if narrative_text:
         parts.extend(narrative_html_blocks(narrative_text))
-    for step, result, shot in zip(manifest.steps, step_results, annotated_paths, strict=True):
-        parts.append(f"<h2>Step {html.escape(step.id)}</h2>")
+    for n, (step, result, shot) in enumerate(
+        zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
+    ):
+        parts.append(f"<h2>Step {n}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
-        parts.append(f'<img src="{_data_uri(shot)}" alt="{html.escape(step.id)}">')
+        parts.append(f'<img src="{_data_uri(shot)}" alt="Step {n}">')
     parts.append("</body></html>")
     return "\n".join(parts)

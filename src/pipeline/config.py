@@ -40,6 +40,7 @@ class VisionConfig(BaseModel):
     enabled: bool = False
     endpoint: str = "http://192.168.200.60:11434/v1"
     model: str = "qwen2.5vl:7b"
+    highlight: bool = True
 
 
 class ModelsConfig(BaseModel):

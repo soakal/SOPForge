@@ -73,8 +73,10 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
     if narrative_text:
         lines.append(narrative_text)
         lines.append("")
-    for step, result, shot in zip(manifest.steps, step_results, annotated_paths):
-        lines.append(f"## Step {step.id}")
+    for n, (step, result, shot) in enumerate(
+        zip(manifest.steps, step_results, annotated_paths), start=1
+    ):
+        lines.append(f"## Step {n}")
         lines.append("")
         lines.append(result["text"])
         lines.append("")
@@ -122,8 +124,10 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
     ]
     if narrative_text:
         parts.extend(narrative_html_blocks(narrative_text))
-    for step, result, shot in zip(manifest.steps, step_results, annotated_paths):
-        parts.append(f"<h2>Step {html.escape(step.id)}</h2>")
+    for n, (step, result, shot) in enumerate(
+        zip(manifest.steps, step_results, annotated_paths), start=1
+    ):
+        parts.append(f"<h2>Step {n}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         if result.get("narration"):
             parts.append(
