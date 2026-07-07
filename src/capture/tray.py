@@ -20,6 +20,7 @@ import pystray
 from PIL import Image, ImageDraw
 from pynput import keyboard
 
+from capture import __version__
 from capture.recorder import Recorder
 from capture.upload import server_url_from_env, upload_session
 
@@ -68,18 +69,24 @@ class TrayApp:
         upload_fn=upload_session,
         open_browser_fn=webbrowser.open,
         shutdown_fn=_request_server_shutdown,
+        notify_fn=None,
     ):
         self.captures_root = Path(captures_root)
         self.server_url = server_url or server_url_from_env()
         self._upload_fn = upload_fn
         self._open_browser_fn = open_browser_fn
         self._shutdown_fn = shutdown_fn
+        # Desktop balloon notifications default to the real tray icon's
+        # .notify (Windows toast). Injectable so tests can assert on the
+        # failure notification without a live icon. Called only from the
+        # background auto-upload thread, never on the pystray menu thread.
+        self._notify_fn = notify_fn or self._icon_notify
         self._recorder = None
         self._lock = threading.Lock()
         self._icon = pystray.Icon(
             "sopforge",
             IDLE_ICON,
-            "SOPForge (idle)",
+            f"SOPForge v{__version__} (idle)",
             menu=pystray.Menu(
                 pystray.MenuItem("Start/Stop recording", self.toggle_recording),
                 pystray.MenuItem("Open SOPForge library", self.open_library),
@@ -110,7 +117,7 @@ class TrayApp:
         recorder.start()
         self._recorder = recorder
         self._icon.icon = RECORDING_ICON
-        self._icon.title = "SOPForge (recording)"
+        self._icon.title = f"SOPForge v{__version__} (recording)"
 
     def _stop_recording(self):
         """Caller must hold self._lock."""
@@ -121,7 +128,7 @@ class TrayApp:
             recorder.stop()
         finally:
             self._icon.icon = IDLE_ICON
-            self._icon.title = "SOPForge (idle)"
+            self._icon.title = f"SOPForge v{__version__} (idle)"
         # Off the lock, on a background thread: uploading can take a few
         # seconds (screenshot transfer + queuing), and "stop recording"
         # must feel instant regardless of whether a server is even running.
@@ -136,13 +143,31 @@ class TrayApp:
             daemon=True,
         ).start()
 
+    def _icon_notify(self, message, title="SOPForge"):
+        """Show a Windows tray balloon, best-effort. Some pystray backends
+        don't implement notify(); a missing/failing notification must never
+        take down the auto-upload thread, so this swallows everything."""
+        try:
+            self._icon.notify(message, title)
+        except Exception:  # noqa: BLE001 - a notification is a convenience, not critical
+            logger.info("tray notification not shown: %s", message)
+
     def _auto_upload(self, output_dir, upload_fn, server_url):
         """Best-effort: uploads via upload_fn and opens the browser straight
         to the review page on success. Never raises -- a failed upload just
         means the user opens the browser and uses the library page's upload
-        form manually later; the capture is already safe on disk regardless."""
+        form manually later; the capture is already safe on disk regardless.
+
+        On failure, a tray notification tells the user the recording is safe
+        on disk and where it is -- so a capture is never silently lost when
+        the server isn't running (the "I recorded but don't see it" case)."""
         session_id = upload_fn(output_dir, server_url=server_url)
         if not session_id:
+            self._notify_fn(
+                f"Couldn't reach the SOPForge server. Your recording is saved at "
+                f"{output_dir} -- start SOPForge, open the library, and use Upload.",
+                "SOPForge: recording saved locally",
+            )
             return
         try:
             self._open_browser_fn(f"{server_url}/ui/sessions/{session_id}")

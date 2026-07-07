@@ -191,6 +191,40 @@ def test_manifest_missing_required_field_returns_400(tmp_path):
     assert resp.status_code == 400
 
 
+def test_upload_missing_screenshots_returns_400_naming_them(tmp_path):
+    """A manifest whose referenced screenshots aren't all uploaded must be
+    rejected up front with a clear, actionable 400 that names the missing
+    files -- not accepted and then failed in the background with a cryptic
+    FileNotFoundError. Regression test for the "internal error" a user hits
+    when they miss a PNG in the upload form's multi-select."""
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    # Drop everything except the first screenshot (002.png, 003.png missing).
+    partial = files[:1]
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=partial)
+    assert resp.status_code == 400
+    detail = resp.json()["detail"]
+    assert "002.png" in detail and "003.png" in detail
+    assert "001.png" not in detail  # the one that WAS provided isn't reported missing
+
+    # Nothing was persisted for the rejected upload.
+    assert not any((tmp_path / "sessions").iterdir())
+
+
+def test_ui_upload_missing_screenshots_returns_400(tmp_path):
+    """The browser upload form (POST /ui/upload) enforces the same
+    screenshot-coverage check as the JSON API."""
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    upload_files = [("manifest_file", ("manifest.json", manifest_json, "application/json"))]
+    upload_files += files[:1]  # only 001.png
+
+    resp = client.post("/ui/upload", files=upload_files, follow_redirects=False)
+    assert resp.status_code == 400
+    assert "002.png" in resp.json()["detail"]
+
+
 def test_path_traversal_in_uploaded_filename_cannot_escape_the_session_directory(tmp_path):
     """A malicious/malformed upload filename must never be used as a raw
     path — it must be reduced to its basename and rejected (or written)
@@ -209,18 +243,33 @@ def test_path_traversal_in_uploaded_filename_cannot_escape_the_session_directory
         data={"manifest_json": manifest_json},
         files=[("files", ("../../escape.png", buf, "image/png"))],
     )
-    assert resp.status_code == 200  # upload accepted; generation fails in the background
-    session_id = resp.json()["session_id"]
-    status = _wait_for_terminal_status(client, session_id)
-    # The manifest's real screenshots are still missing (only the
-    # traversal filename was uploaded), so generation fails loudly...
-    assert status["status"] == "error"
-    # ...and, critically, nothing was ever written outside sessions_root.
+    # The traversal filename reduces to the basename "escape.png", which is
+    # not one of the manifest's referenced screenshots, so the upload is
+    # rejected up front (missing-screenshots 400) before any file is written.
+    assert resp.status_code == 400
+    # Critically, nothing was ever written outside sessions_root -- and, since
+    # the upload is rejected before the write loop runs, nothing named
+    # escape.png was written anywhere at all.
     sessions_root = tmp_path / "sessions"
-    escaped = sessions_root / "escape.png"
-    assert not escaped.exists()
-    for path in sessions_root.rglob("escape.png"):
-        assert path.parent.name == "screenshots"
+    assert not (sessions_root / "escape.png").exists()
+    assert not list(sessions_root.rglob("escape.png"))
+
+
+def test_version_endpoint_and_library_footer_report_the_package_version(tmp_path):
+    """The running version must be discoverable both programmatically (GET
+    /version) and visually (library page footer), so a user can confirm which
+    build they're on."""
+    from pipeline import __version__
+
+    client = _make_client(tmp_path)
+
+    resp = client.get("/version")
+    assert resp.status_code == 200
+    assert resp.json() == {"version": __version__}
+
+    page = client.get("/ui")
+    assert page.status_code == 200
+    assert __version__ in page.text
 
 
 def test_stop_endpoint_triggers_process_exit_without_terminating_this_test(tmp_path, monkeypatch):

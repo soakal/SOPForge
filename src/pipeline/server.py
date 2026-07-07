@@ -36,6 +36,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 
+from pipeline import __version__
 from pipeline.config import load_models_config
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
@@ -170,6 +171,25 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
             manifest = load_manifest(json.loads(manifest_json))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"invalid manifest: {exc}") from exc
+
+        # Fail loudly and early if the upload doesn't include every screenshot
+        # the manifest references. Without this, a missing screenshot only
+        # surfaces later as a cryptic FileNotFoundError from the background
+        # annotation step (rendered as "Status: error" on the session page) --
+        # the "internal error" a user hits when they miss a PNG in the upload
+        # form's multi-select. The filenames are reduced to basenames to match
+        # exactly how the write loop below stores them (Path(...).name).
+        provided = {Path(u.filename or "").name for u in files}
+        required = {step.screenshot for step in manifest.steps}
+        missing = sorted(required - provided)
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"missing screenshots: {', '.join(missing)} -- upload every PNG "
+                    "from the capture folder alongside manifest.json"
+                ),
+            )
 
         session_id = str(uuid.uuid4())
         session_dir = sessions_root / session_id
@@ -353,6 +373,10 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
     @app.get("/config")
     def get_config():
         return load_models_config().model_dump()
+
+    @app.get("/version")
+    def get_version():
+        return {"version": __version__}
 
     @app.get("/")
     @app.get("/ui")

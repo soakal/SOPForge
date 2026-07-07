@@ -179,6 +179,71 @@ def test_stop_recording_does_not_open_browser_when_upload_fails(tmp_path):
     assert opened == []
 
 
+def test_failed_upload_notifies_user_with_the_capture_location(tmp_path):
+    """When auto-upload fails (server not running), the tray must surface a
+    notification telling the user the recording is safe on disk and where --
+    so a capture is never silently lost. Regression guard for the "I recorded
+    but nothing showed up" report."""
+    done = threading.Event()
+    notes = []
+
+    def fake_upload(output_dir, server_url=None):
+        return None  # server unreachable
+
+    def fake_notify(message, title="SOPForge"):
+        notes.append((message, title))
+        done.set()
+
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+n",
+        upload_fn=fake_upload,
+        notify_fn=fake_notify,
+    )
+    with app._lock:
+        app._start_recording()
+        recorder = app._recorder
+        app._stop_recording()
+
+    assert done.wait(timeout=5), "no notification was shown on upload failure"
+    message, _title = notes[0]
+    assert str(recorder.output_dir) in message
+
+
+def test_successful_upload_does_not_notify(tmp_path):
+    """The failure notification must not fire on the happy path -- a
+    successful upload opens the browser instead, no balloon."""
+    done = threading.Event()
+    notes = []
+
+    def fake_upload(output_dir, server_url=None):
+        return "sid"
+
+    def fake_open_browser(url):
+        done.set()
+
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+m",
+        upload_fn=fake_upload,
+        open_browser_fn=fake_open_browser,
+        notify_fn=lambda *a, **k: notes.append(a),
+    )
+    with app._lock:
+        app._start_recording()
+        app._stop_recording()
+
+    assert done.wait(timeout=5), "browser was never opened"
+    assert notes == []
+
+
+def test_tray_tooltip_includes_version(tmp_path):
+    from capture import __version__
+
+    app = TrayApp(captures_root=tmp_path, hotkey="<ctrl>+<alt>+<shift>+g", upload_fn=_noop_upload)
+    assert __version__ in app._icon.title
+
+
 def test_default_server_url_comes_from_env(monkeypatch):
     monkeypatch.setenv("SOPFORGE_SERVER_URL", "http://from-env:1234")
     app = TrayApp(hotkey="<ctrl>+<alt>+<shift>+r")

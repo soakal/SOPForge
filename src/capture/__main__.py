@@ -6,6 +6,7 @@ import argparse
 import sys
 import threading
 
+from capture import __version__
 from capture.tray import TrayApp
 
 
@@ -28,6 +29,7 @@ def _stdin_exit_watcher(app):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="capture")
+    parser.add_argument("--version", action="version", version=f"sopforge {__version__}")
     parser.add_argument(
         "--self-check",
         action="store_true",

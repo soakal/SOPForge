@@ -5,6 +5,8 @@ JS required, no build step, no Node."""
 
 import html
 
+from pipeline import __version__
+
 
 def _color_for(category, count):
     if count == 0:
@@ -49,7 +51,12 @@ def render_library_page(entries, query=None):
         '<input type="file" name="manifest_file" accept=".json" required></label></p>'
         "<p><label>Screenshots: "
         '<input type="file" name="files" multiple required></label></p>'
+        "<p><small>Tip: select the manifest.json <em>and</em> every PNG in the "
+        "capture folder together &mdash; if any screenshot is missing the "
+        "upload is rejected.</small></p>"
         '<button type="submit">Upload</button></form>'
+        f'<footer style="margin-top:2em;color:#888;font-size:0.85em;">'
+        f"SOPForge v{html.escape(__version__)}</footer>"
         "</body></html>"
     )
 
