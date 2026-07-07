@@ -4,7 +4,9 @@ Self-hosted workflow capture → SOP generation. A Windows capture agent records
 clicks, UIA element metadata, and screenshots; a local pipeline (Ollama-backed)
 turns the capture into validated **docx / pdf / html / md** SOPs, reviewed in a
 modern local web UI. You can add a narration **transcript** (`.txt`/`.md`) that
-gets placed under the matching step. Nothing leaves your network.
+gets placed under the matching step — or skip the capture entirely and **build
+a document straight from screenshots + a transcript**. Nothing leaves your
+network.
 
 Built autonomously — see CLAUDE.md for the contract, phases/ for acceptance
 criteria. Private — see [LICENSE](LICENSE).

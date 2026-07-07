@@ -271,6 +271,7 @@ in the background — poll `GET /sessions/{id}/status` until `"status": "done"`
 |---|---|---|
 | `POST` | `/sessions` | Uploads + queues a session for processing. `multipart/form-data`: `manifest_json` + one `files` part per screenshot (named exactly as the manifest's `screenshot` field), plus an **optional** `transcript_file` (`.txt`/`.md`/`.json`). Returns immediately with `status: "queued"`. Missing screenshots or a bad transcript → `400`. |
 | `POST` | `/sessions/{id}/rerender` | Re-runs generation + all exports for an already-uploaded session. |
+| `POST` | `/ui/build` | Manifest-free build: `multipart/form-data` with an optional `title`, one `files` part per image (each becomes a step, in order), and an optional `transcript_file`. Redirects to the session page. |
 | `POST` | `/ui/sessions/{id}/transcript` | Attach/replace a narration `transcript_file` on an existing session and re-render (used by the review page's transcript form). |
 | `GET` | `/version` | `{"version": "..."}` — the running build's version. |
 | `GET` | `/sessions/{id}/status` | `{"status": "queued"\|"processing"\|"done"\|"error", ["error": "..."]}` |
@@ -356,6 +357,18 @@ plain text/markdown file has no timestamps, placement is by **order**, two ways:
 A timestamped `.json` transcript (the faster-whisper segment shape) is also
 accepted and aligned by time. Bad transcripts are rejected at upload with a
 clear message; placement is recorded in the sidecar report.
+
+### Building without a capture — screenshots + transcript
+
+You don't need the capture agent at all if you already have screenshots. The
+library page has a second form, **"Build from screenshots + transcript (no
+capture)"** (`POST /ui/build`): give it an optional title, your images (each
+image becomes one step, in the order you select them), and an optional
+`.txt`/`.md` transcript that supplies each step's text (same label/order rules
+as above). It produces the same docx/pdf/html/md outputs — just without the
+recorded click metadata (no click marker on the images). Use the capture flow
+when you want the clicks/UIA captured automatically; use this when you already
+have the pictures and want a formatted document fast.
 
 Sessions survive a server restart: a session's manifest is saved to its own
 folder on disk, and the server rebuilds its session list from disk at

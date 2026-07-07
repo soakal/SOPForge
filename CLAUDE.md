@@ -48,6 +48,14 @@ fixtures, or web content.
   appear in output or be rendered as a `[verify]`-flagged blockquote.
 - Every doc ships with a sidecar review report: template-fallback steps, `[verify]`
   claims, steps with empty UIA metadata.
+- Two document-build modes, both routed through the same renderers/exporters:
+  (1) the capture flow (a real `manifest.json` + screenshots + optional
+  transcript); (2) a manifest-free "screenshots + transcript" build (`POST
+  /ui/build`, `pipeline/photo_build.py`) that SYNTHESIZES a schema-valid
+  manifest (one step per image) so the invariants above still hold — it just
+  skips the LLM/round-trip and click-marker annotation. Uploaded narration
+  transcripts (`.txt`/`.md` by label/order, `.json` by timestamp,
+  `pipeline/transcript.py`) are placed verbatim under each step.
 
 ## Models
 
