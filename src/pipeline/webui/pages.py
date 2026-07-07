@@ -1,11 +1,82 @@
-"""Review web UI pages: library listing (search) and per-session review
-page (doc preview, colored sidecar report, re-render form, read-only
-config panel). Plain HTML with a standard <form> POST for re-render — no
-JS required, no build step, no Node."""
+"""Review web UI pages: library listing (search + upload), per-session
+processing/review pages, colored sidecar report, re-render/delete forms, and a
+read-only config panel. Plain server-rendered HTML with a single embedded
+stylesheet (no build step, no Node, no external assets -- works fully offline).
+A shared _shell() wraps every page in the same modern, light/dark-aware chrome."""
 
 import html
 
 from pipeline import __version__
+
+# One embedded stylesheet, shared by every page. System font stack, a centered
+# card layout, an accent color, and a dark-mode variant via prefers-color-scheme
+# -- no webfonts or external CSS so it renders identically offline.
+_STYLE = """
+:root{--bg:#f5f6f8;--card:#ffffff;--fg:#1f2328;--muted:#6b7280;--accent:#2563eb;
+--border:#e5e7eb;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;--radius:12px}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1115;--card:#181b20;--fg:#e6e8eb;
+--muted:#9aa1ac;--accent:#6795ff;--border:#2a2f37;--ok:#3fb950;--warn:#e3a008;--bad:#f04f4f}}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);line-height:1.55;
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:900px;margin:0 auto;padding:28px 20px 72px}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:22px}
+.brand .dot{width:22px;height:22px;border-radius:6px;background:var(--accent);
+box-shadow:0 2px 8px rgba(37,99,235,.35)}
+.brand b{font-size:1.05rem;letter-spacing:.2px}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+h1{font-size:1.7rem;margin:.1em 0 .4em}
+h2{font-size:1.15rem;margin:1.5em 0 .5em}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+padding:18px 20px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.muted,small{color:var(--muted)}
+input[type=text],input[type=file]{font:inherit;padding:9px 11px;border:1px solid var(--border);
+border-radius:9px;background:var(--card);color:var(--fg);max-width:440px;width:100%}
+.field{margin:14px 0}
+label{display:block;font-weight:600;margin-bottom:6px}
+button{font:inherit;font-weight:600;padding:9px 17px;border:0;border-radius:9px;
+background:var(--accent);color:#fff;cursor:pointer}
+button:hover{filter:brightness(1.08)}
+.actions{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.actions form{margin:0}
+button.secondary{background:transparent;color:var(--fg);border:1px solid var(--border)}
+ul.sessions{list-style:none;padding:0;margin:0}
+ul.sessions li{padding:12px 2px;border-bottom:1px solid var(--border)}
+ul.sessions li:last-child{border-bottom:0}
+ul.dl{list-style:none;padding:0;display:flex;flex-wrap:wrap;gap:10px}
+ul.dl a{display:inline-block;padding:9px 14px;border:1px solid var(--border);
+border-radius:9px;background:var(--card)}
+section[data-status]{border-left:4px solid var(--border)}
+section[data-status="green"]{border-left-color:var(--ok)}
+section[data-status="yellow"]{border-left-color:var(--warn)}
+section[data-status="red"]{border-left-color:var(--bad)}
+blockquote.narration{margin:8px 0;padding:8px 14px;border-left:3px solid var(--accent);
+background:rgba(37,99,235,.06);border-radius:0 8px 8px 0}
+iframe{width:100%;height:460px;border:1px solid var(--border);border-radius:var(--radius);background:#fff}
+.pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.85em;font-weight:600}
+.pill.processing,.pill.queued{background:rgba(217,119,6,.15);color:var(--warn)}
+.pill.error{background:rgba(220,38,38,.15);color:var(--bad)}
+.spin{display:inline-block;width:13px;height:13px;margin-right:7px;vertical-align:-1px;
+border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite}
+@keyframes s{to{transform:rotate(360deg)}}
+footer{margin-top:44px;color:var(--muted);font-size:.85em}
+"""
+
+
+def _shell(title, body):
+    """Wrap page body in the shared modern chrome + stylesheet."""
+    return (
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{html.escape(title)}</title><style>{_STYLE}</style></head><body>"
+        '<div class="wrap"><div class="brand"><span class="dot"></span>'
+        "<b>SOPForge</b></div>"
+        f"{body}"
+        f"<footer>SOPForge v{html.escape(__version__)}</footer>"
+        "</div></body></html>"
+    )
 
 
 def _color_for(category, count):
@@ -19,11 +90,12 @@ def _section(title, category, items):
     if items:
         body = "<ul>" + "".join(f"<li>{html.escape(str(item))}</li>" for item in items) + "</ul>"
     else:
-        body = "<p>None.</p>"
+        body = '<p class="muted">None.</p>'
+    # data-status + <h2> immediately after the section open tag is a contract
+    # the review tests assert against -- keep the heading first, no nested tag
+    # between the attribute and the <h2>.
     return (
-        f'<section data-status="{color}" '
-        f'style="border-left:4px solid {color};padding-left:1em;">'
-        f"<h2>{html.escape(title)}</h2>{body}</section>"
+        f'<section class="card" data-status="{color}"><h2>{html.escape(title)}</h2>{body}</section>'
     )
 
 
@@ -31,60 +103,67 @@ def render_library_page(entries, query=None):
     if entries:
         rows = "".join(
             f'<li><a href="/ui/sessions/{html.escape(e["session_id"])}">'
-            f"{html.escape(e['title'])}</a> ({html.escape(e['date'])})</li>"
+            f'{html.escape(e["title"])}</a> <span class="muted">({html.escape(e["date"])})</span></li>'
             for e in entries
         )
     else:
-        rows = "<li>No sessions yet.</li>"
+        rows = '<li class="muted">No sessions yet.</li>'
     query_value = html.escape(query) if query else ""
-    return (
-        "<!doctype html>"
-        '<html><head><meta charset="utf-8"><title>SOPForge Library</title></head><body>'
+    body = (
         "<h1>SOP Library</h1>"
-        '<form method="get" action="/ui">'
-        f'<input type="text" name="q" value="{query_value}" placeholder="Search title or date">'
-        '<button type="submit">Search</button></form>'
-        f"<ul>{rows}</ul>"
+        '<div class="field"><form method="get" action="/ui">'
+        f'<input type="text" name="q" value="{query_value}" placeholder="Search title or date"> '
+        '<button type="submit">Search</button></form></div>'
+        f'<div class="card"><ul class="sessions">{rows}</ul></div>'
         "<h2>Upload a new session</h2>"
+        '<div class="card">'
         '<form method="post" action="/ui/upload" enctype="multipart/form-data">'
-        "<p><label>Manifest (manifest.json): "
-        '<input type="file" name="manifest_file" accept=".json" required></label></p>'
-        "<p><label>Screenshots: "
-        '<input type="file" name="files" multiple required></label></p>'
-        "<p><small>Tip: select the manifest.json <em>and</em> every PNG in the "
-        "capture folder together &mdash; if any screenshot is missing the "
-        "upload is rejected.</small></p>"
-        '<button type="submit">Upload</button></form>'
-        f'<footer style="margin-top:2em;color:#888;font-size:0.85em;">'
-        f"SOPForge v{html.escape(__version__)}</footer>"
-        "</body></html>"
+        '<div class="field"><label>Manifest (manifest.json)</label>'
+        '<input type="file" name="manifest_file" accept=".json" required></div>'
+        '<div class="field"><label>Screenshots (select every PNG)</label>'
+        '<input type="file" name="files" multiple required></div>'
+        '<div class="field"><label>Narration transcript &mdash; optional (.txt or .md)</label>'
+        '<input type="file" name="transcript_file" accept=".txt,.md,.json">'
+        "<div><small>Label blocks &ldquo;Step 1:&rdquo;, &ldquo;1.&rdquo; or &ldquo;## Step 1&rdquo; "
+        "to place each under its step, or write one paragraph per step in order.</small></div></div>"
+        '<button type="submit">Upload</button></form></div>'
     )
+    return _shell("SOPForge Library", body)
 
 
 def render_session_processing_page(session_id, status):
     # While the background job is still running, auto-refresh every few seconds
     # so the page turns into the finished review page on its own the moment
     # generation completes -- without this the user is left staring at a stale
-    # "processing" snapshot forever (the page never updates itself). A terminal
-    # "error" status stops refreshing: there's nothing more to wait for.
+    # "processing" snapshot forever. A terminal "error" status stops refreshing.
     is_pending = status["status"] in ("queued", "processing")
-    refresh_meta = '<meta http-equiv="refresh" content="3">' if is_pending else ""
+    state = html.escape(status["status"])
+    spin = '<span class="spin"></span>' if is_pending else ""
     pending_note = (
-        "<p>Generating your SOP&hellip; this page updates automatically when it's ready.</p>"
+        '<p class="muted">Generating your SOP&hellip; this page updates automatically '
+        "when it&rsquo;s ready.</p>"
         if is_pending
         else ""
     )
-    return (
-        "<!doctype html>"
-        '<html><head><meta charset="utf-8"><title>SOPForge Review</title>'
-        f"{refresh_meta}</head><body>"
+    err = (
+        f'<p class="muted">{html.escape(status.get("error", ""))}</p>'
+        if status["status"] == "error"
+        else ""
+    )
+    body = (
         '<p><a href="/ui">&larr; Back to library</a></p>'
         f"<h1>Session {html.escape(session_id)}</h1>"
-        f'<p data-status="{html.escape(status["status"])}">Status: {html.escape(status["status"])}</p>'
+        f'<p data-status="{state}"><span class="pill {state}">{spin}Status: {state}</span></p>'
         + pending_note
-        + (f"<p>{html.escape(status.get('error', ''))}</p>" if status["status"] == "error" else "")
-        + "</body></html>"
+        + err
     )
+    refresh_meta = '<meta http-equiv="refresh" content="3">' if is_pending else ""
+    # The refresh meta must live in <head>; _shell builds the head, so inject it
+    # by wrapping: put the meta at the very start of the body is invalid, so
+    # instead build the doc directly here when refreshing.
+    if refresh_meta:
+        return _shell("SOPForge Review", body).replace("<style>", f"{refresh_meta}<style>", 1)
+    return _shell("SOPForge Review", body)
 
 
 def render_session_page(session_id, title, date, report, config):
@@ -113,6 +192,11 @@ def render_session_page(session_id, title, date, report, config):
         for section, values in config.items()
     )
     sid = html.escape(session_id)
+    transcript_note = (
+        f'<p class="muted">Transcript: {html.escape(report["transcript"])}</p>'
+        if report.get("transcript")
+        else ""
+    )
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (
@@ -122,25 +206,25 @@ def render_session_page(session_id, title, date, report, config):
             ("export.md.zip", "markdown bundle (zip)"),
         )
     )
-    return (
-        "<!doctype html>"
-        '<html><head><meta charset="utf-8"><title>SOPForge Review</title></head><body>'
+    body = (
         '<p><a href="/ui">&larr; Back to library</a></p>'
         f"<h1>{html.escape(title)}</h1>"
-        f"<p>{html.escape(date)} &mdash; {sid}</p>"
-        f'<iframe src="/sessions/{sid}/doc.html" '
-        'style="width:100%;height:400px;border:1px solid #ccc;"></iframe>'
+        f'<p class="muted">{html.escape(date)} &mdash; {sid}</p>'
+        f'<iframe src="/sessions/{sid}/doc.html"></iframe>'
         "<p>Every recorded step is included &mdash; the document has one step per "
         "captured action, nothing skipped. The report below only flags steps worth "
         "a second look: <em>template-fallback</em> steps are still complete and "
         "factually correct, just written from the captured data rather than the "
         "language model.</p>"
+        f"{transcript_note}"
         f"{sections}"
+        '<div class="actions">'
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'
         f'<form method="post" action="/ui/sessions/{sid}/delete">'
-        '<button type="submit">Delete</button></form>'
-        f"<h2>Downloads</h2><ul>{downloads}</ul>"
-        f"<h2>Config (read-only)</h2><ul>{config_rows}</ul>"
-        "</body></html>"
+        '<button type="submit" class="secondary">Delete</button></form>'
+        "</div>"
+        f'<h2>Downloads</h2><ul class="dl">{downloads}</ul>'
+        f'<h2>Config (read-only)</h2><div class="card"><ul class="sessions">{config_rows}</ul></div>'
     )
+    return _shell("SOPForge Review", body)

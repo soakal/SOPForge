@@ -72,6 +72,8 @@ def assemble_docx(
     for step, result in zip(manifest.steps, step_results):
         sop.heading2(f"Step {step.id}")
         sop.bullet(result["text"])
+        if result.get("narration"):
+            sop.bullet(f"Narration: {result['narration']}", sub=True)
         sop.image(step.screenshot, caption=step.id)
     sop.revision_history([(date, revision, "Initial generation", author)])
     out = sop.save()

@@ -78,6 +78,9 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
         lines.append("")
         lines.append(result["text"])
         lines.append("")
+        if result.get("narration"):
+            lines.append(f"> **Narration:** {result['narration']}")
+            lines.append("")
         lines.append(f"![{step.id}]({_image_ref(shot, base_dir)})")
         lines.append("")
     return "\n".join(lines)
@@ -122,6 +125,11 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
     for step, result, shot in zip(manifest.steps, step_results, annotated_paths):
         parts.append(f"<h2>Step {html.escape(step.id)}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
+        if result.get("narration"):
+            parts.append(
+                '<blockquote class="narration"><strong>Narration:</strong> '
+                f"{html.escape(result['narration'])}</blockquote>"
+            )
         img_ref = _image_ref(shot, base_dir)
         parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(step.id)}">')
     parts.append("</body></html>")

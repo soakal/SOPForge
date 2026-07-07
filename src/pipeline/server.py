@@ -50,6 +50,7 @@ from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.sidecar import build_sidecar_report
+from pipeline.transcript import align_transcript_to_steps
 from pipeline.webui.pages import (
     render_library_page,
     render_session_page,
@@ -155,7 +156,16 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
             close = getattr(llm_client, "close", None)
             if callable(close):
                 close()
+
+        # Place an uploaded transcript's narration under each step (by step
+        # label / order for .txt/.md, by timestamp for .json). Best-effort: a
+        # transcript is validated at upload time, but a problem here must never
+        # break generation -- the doc is complete from the steps alone.
+        transcript_note = _apply_transcript(session_dir, manifest, step_results)
+
         report = build_sidecar_report(manifest, step_results, [], {})
+        if transcript_note:
+            report["transcript"] = transcript_note
 
         md = render_markdown(manifest, step_results, annotated_paths, base_dir=annotated_dir)
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
@@ -180,14 +190,47 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
 
-    def _ingest_session(manifest_json, files):
+    def _apply_transcript(session_dir, manifest, step_results):
+        """If a transcript was uploaded (saved as transcript.<ext>), place its
+        narration onto each step_result's "narration" key and return a short
+        placement note for the report. Returns None when there's no transcript
+        or it can't be parsed -- never raises."""
+        matches = sorted(session_dir.glob("transcript.*"))
+        if not matches:
+            return None
+        tpath = matches[0]
+        try:
+            per_step, note = align_transcript_to_steps(
+                tpath.name, tpath.read_text(encoding="utf-8"), manifest
+            )
+        except Exception:  # noqa: BLE001 - a bad transcript must never break generation
+            return None
+        for result in step_results:
+            narration = per_step.get(result["step_id"])
+            if narration:
+                result["narration"] = narration
+        return note
+
+    def _ingest_session(manifest_json, files, transcript=None):
         """Shared by the JSON API (POST /sessions) and the browser upload
-        form (POST /ui/upload). Returns the new session_id, or raises
-        HTTPException on bad input."""
+        form (POST /ui/upload). `transcript`, if given, is a (filename,
+        text) tuple. Returns the new session_id, or raises HTTPException on
+        bad input."""
         try:
             manifest = load_manifest(json.loads(manifest_json))
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"invalid manifest: {exc}") from exc
+
+        # Validate the transcript up front (parse + placement) so a bad one is
+        # a clear 400 here, not a silently-dropped narration later.
+        transcript_ext = None
+        if transcript is not None:
+            t_name, t_content = transcript
+            try:
+                align_transcript_to_steps(t_name, t_content, manifest)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"invalid transcript: {exc}") from exc
+            transcript_ext = (t_name or "").lower().rsplit(".", 1)[-1]
 
         # Fail loudly and early if the upload doesn't include every screenshot
         # the manifest references. Without this, a missing screenshot only
@@ -237,19 +280,43 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         # (_restore_sessions_from_disk) -- the manifest otherwise only ever
         # exists as an in-memory object.
         (session_dir / "manifest.json").write_text(manifest_json, encoding="utf-8")
+        if transcript is not None:
+            (session_dir / f"transcript.{transcript_ext}").write_text(
+                transcript[1], encoding="utf-8"
+            )
 
         sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
         jobs.submit(session_id, lambda: _generate(session_id))
         return session_id
 
+    def _read_transcript(upload):
+        """Turn an optional transcript UploadFile into a (filename, text)
+        tuple, or None if none was provided. Raises a clear 400 if it isn't
+        UTF-8 text."""
+        if upload is None or not upload.filename:
+            return None
+        try:
+            content = upload.file.read().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"transcript must be UTF-8 text: {exc}"
+            ) from exc
+        return (upload.filename, content)
+
     @app.post("/sessions")
-    def create_session(manifest_json: str = Form(...), files: list[UploadFile] = File(default=[])):
-        session_id = _ingest_session(manifest_json, files)
+    def create_session(
+        manifest_json: str = Form(...),
+        files: list[UploadFile] = File(default=[]),
+        transcript_file: UploadFile | None = File(default=None),
+    ):
+        session_id = _ingest_session(manifest_json, files, _read_transcript(transcript_file))
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
 
     @app.post("/ui/upload")
     def ui_upload(
-        manifest_file: UploadFile = File(...), files: list[UploadFile] = File(default=[])
+        manifest_file: UploadFile = File(...),
+        files: list[UploadFile] = File(default=[]),
+        transcript_file: UploadFile | None = File(default=None),
     ):
         try:
             manifest_json = manifest_file.file.read().decode("utf-8")
@@ -257,7 +324,7 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
             raise HTTPException(
                 status_code=400, detail=f"invalid manifest encoding: {exc}"
             ) from exc
-        session_id = _ingest_session(manifest_json, files)
+        session_id = _ingest_session(manifest_json, files, _read_transcript(transcript_file))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")

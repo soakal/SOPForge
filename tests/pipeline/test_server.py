@@ -192,6 +192,45 @@ def test_manifest_missing_required_field_returns_400(tmp_path):
     assert resp.status_code == 400
 
 
+def test_upload_with_transcript_places_narration_under_each_step(tmp_path):
+    """A .md/.txt transcript uploaded with the session must have its narration
+    placed under the matching step (by step label) in the generated docs, and
+    be recorded in the sidecar report."""
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    transcript = (
+        "Step 1: First, open the console.\n\n"
+        "Step 2: Then enter the computer name.\n\n"
+        "Step 3: Finally, check the downloads."
+    )
+    files.append(("transcript_file", ("narration.md", transcript.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "First, open the console." in md
+    assert "Then enter the computer name." in md
+    assert "**Narration:**" in md
+
+    html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    assert "check the downloads" in html_doc
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "transcript" in report
+
+
+def test_upload_bad_transcript_extension_returns_400(tmp_path):
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files.append(("transcript_file", ("audio.mp3", b"not a transcript", "audio/mpeg")))
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    assert resp.status_code == 400
+    assert "transcript" in resp.json()["detail"]
+
+
 def test_upload_missing_screenshots_returns_400_naming_them(tmp_path):
     """A manifest whose referenced screenshots aren't all uploaded must be
     rejected up front with a clear, actionable 400 that names the missing
