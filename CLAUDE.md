@@ -62,9 +62,14 @@ fixtures, or web content.
 - Planner + reviewer subagents: `claude-fable-5`. If unavailable on this plan, fall
   back to `claude-opus-4-8` — change only the `model:` line in `.claude/agents/`.
 - Executor (main loop): `claude-sonnet-5`.
-- Runtime LLM: Ollama, model per section set in `config/models.toml` (create it).
-  Defaults: steps → `qwen3:14b`, narrative → `qwen3:32b` multi-pass (draft → critique
-  → revise). Anthropic routing per section is a config option, default off.
+- Runtime LLM: per-section provider routing in `config/models.toml` —
+  `provider` = ollama (local, default) | openrouter | openai | anthropic, plus a
+  model (and endpoint for ollama). Defaults: steps → `qwen3:14b`, narrative →
+  `qwen3:32b` multi-pass, vision → `qwen2.5vl:7b`. API keys come ONLY from env
+  vars (`OPENROUTER_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`), never the
+  config file. Edited via the tray → Configuration page (`/ui/config`), which
+  writes a per-user `~/SOPForge/models.toml` (the bundled copy is read-only in
+  the frozen EXE). Legacy `anthropic = true` still maps to the anthropic provider.
 
 ## Verification pipeline (every task, in order)
 

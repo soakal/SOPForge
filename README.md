@@ -18,6 +18,8 @@ Download **`SOPForge.zip`** from the repo's
 **`install.bat`** (or `install.ps1`). It installs both EXEs and, with autostart
 on by default, brings the capture tray + server up at logon. Record with
 **Ctrl+Alt+R**; the SOP appears in the review UI at `http://127.0.0.1:8420/ui`.
+Choose your AI from the tray → **Configuration** page (Ollama local by default,
+or OpenRouter / OpenAI / Anthropic — keys read from env vars, never stored).
 Full walkthrough (recording, config, transcripts, distribution): see
 [USER_MANUAL.md](USER_MANUAL.md).
 

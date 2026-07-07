@@ -409,60 +409,51 @@ information and no fallback.
 
 ## 7. Configuration
 
-`config/models.toml`:
+The easiest way to configure which AI you use is the **Configuration page**:
+open the tray icon → **Configuration** (or go to `http://127.0.0.1:8420/ui/config`,
+or the **Configuration** link on the library page).
 
-```toml
-[steps]
-endpoint = "http://192.168.200.60:11434/v1"   # Ollama OpenAI-compatible endpoint
-model = "qwen3:14b"
-anthropic = false                              # true routes this section to Anthropic instead
+It has three simple rows — **Steps**, **Narration**, **Vision** — each with a
+**provider** dropdown and a **model** box:
 
-[narrative]
-endpoint = "http://192.168.200.60:11434/v1"
-model = "qwen3:32b"
-passes = 3                                      # draft -> critique -> revise round count
-anthropic = false
+- **ollama** (default): a local, private model server — nothing leaves your
+  network, no API key. Set the endpoint to your Ollama server.
+- **openrouter** / **openai** / **anthropic**: cloud providers. Pick one and a
+  model; the API key comes from an environment variable (see below).
+
+Recommended models per provider are shown on the page. Sensible defaults:
+
+| Task | ollama | openrouter | openai | anthropic |
+|---|---|---|---|---|
+| Steps | `qwen3:14b` | `anthropic/claude-3.5-haiku` | `gpt-4o-mini` | `claude-haiku-4-5` |
+| Narration | `qwen3:32b` | `anthropic/claude-sonnet-4` | `gpt-4o` | `claude-sonnet-5` |
+| Vision | `qwen2.5vl:7b` | `openai/gpt-4o` | `gpt-4o` | `claude-sonnet-5` |
+
+Saving writes to a **per-user** config at `%USERPROFILE%\SOPForge\models.toml`
+(seeded from the bundled default). Changes take effect on the next generation —
+no restart needed. You can also edit that file directly.
+
+### API keys (security)
+
+API keys are **never stored in the config file** — they're read only from
+**environment variables**, so the config is safe to edit and share:
+
+- openrouter → `OPENROUTER_API_KEY`
+- openai → `OPENAI_API_KEY`
+- anthropic → `ANTHROPIC_API_KEY`
+
+Set the one for the provider you chose, then restart the server. In PowerShell,
+to make it persist:
+
+```powershell
+setx OPENROUTER_API_KEY "sk-or-..."
 ```
 
-`[steps]` controls how each step's text is generated (§4); `[narrative]`
-controls the not-yet-wired narration pipeline. `endpoint`/`model` point at
-an Ollama (or any OpenAI-compatible chat-completions) server by default.
-
-View the currently-active config at `GET /config` or the `/ui/sessions/{id}`
-page's config panel. Edits to `config/models.toml` take effect on the next
-session generated or re-rendered — no server restart needed.
-
-### Using Anthropic instead of Ollama
-
-Set `anthropic = true` on a section to route it to Anthropic's API instead:
-
-```toml
-[steps]
-endpoint = "unused-when-anthropic-is-true"
-model = "claude-sonnet-5"       # or claude-haiku-4-5-20251001, etc.
-anthropic = true
-```
-
-1. `endpoint` is ignored once `anthropic = true` — Anthropic's API address
-   is fixed, not configurable per-section.
-2. `model` must be a real Anthropic model name.
-3. Set the **`ANTHROPIC_API_KEY`** environment variable before launching
-   `sopforge-server.exe` (or `python -m pipeline`). The key is read only
-   from this environment variable — never from a config file, and never
-   committed to the repo. In PowerShell:
-   ```powershell
-   $env:ANTHROPIC_API_KEY = "sk-ant-..."
-   .\dist\sopforge-server\sopforge-server.exe --port 8420
-   ```
-   To make it stick across launches without setting it every time, set it
-   as a persistent user environment variable instead (Windows Settings →
-   System → About → Advanced system settings → Environment Variables), or
-   set it in the same terminal session before running the scheduled task /
-   shortcut that launches the server.
-4. If `anthropic = true` and `ANTHROPIC_API_KEY` isn't set, every step on
-   that section falls back to the template automatically (§4/§6's
-   "Template-fallback steps" turns red) — it fails loudly in the server's
-   logs but never breaks doc generation.
+The Configuration page shows whether each needed key is **set** (never the value
+itself). The server is localhost-only, validates every change, and rejects
+cross-site form posts. If a chosen provider's key isn't set, that task falls
+back to the template (Steps) or is skipped (Vision) — it fails loudly in the
+logs but never breaks doc generation.
 
 ---
 
