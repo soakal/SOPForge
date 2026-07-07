@@ -218,6 +218,14 @@ def render_session_page(session_id, title, date, report, config):
         "language model.</p>"
         f"{transcript_note}"
         f"{sections}"
+        "<h2>Narration transcript</h2>"
+        '<div class="card">'
+        f'<form method="post" action="/ui/sessions/{sid}/transcript" enctype="multipart/form-data">'
+        '<div class="field"><label>Add or replace a transcript (.txt or .md), then re-render</label>'
+        '<input type="file" name="transcript_file" accept=".txt,.md,.json" required></div>'
+        '<button type="submit">Add transcript &amp; re-render</button></form>'
+        "<div><small>Label blocks &ldquo;Step 1:&rdquo;, &ldquo;1.&rdquo; or &ldquo;## Step 1&rdquo; "
+        "to place each under its step, or one paragraph per step in order.</small></div></div>"
         '<div class="actions">'
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'

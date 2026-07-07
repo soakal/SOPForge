@@ -222,6 +222,39 @@ def test_upload_with_transcript_places_narration_under_each_step(tmp_path):
     assert "transcript" in report
 
 
+def test_add_transcript_to_existing_session_then_rerender(tmp_path):
+    """A transcript can be attached from the review page after the fact: POST
+    /ui/sessions/{id}/transcript saves it and re-renders, and the narration
+    then appears in the regenerated doc."""
+    client = _make_client(tmp_path)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+    assert "Narration" not in client.get(f"/sessions/{session_id}/doc.md").text
+
+    transcript = "1. Open the console.\n2. Enter the name.\n3. Check downloads."
+    resp = client.post(
+        f"/ui/sessions/{session_id}/transcript",
+        files=[("transcript_file", ("n.md", transcript.encode(), "text/markdown"))],
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Open the console." in md
+    assert "**Narration:**" in md
+
+
+def test_add_bad_transcript_to_session_returns_400(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, _ = _create_and_wait(client, tmp_path)
+    resp = client.post(
+        f"/ui/sessions/{session_id}/transcript",
+        files=[("transcript_file", ("bad.xyz", b"nope", "application/octet-stream"))],
+    )
+    assert resp.status_code == 400
+
+
 def test_upload_bad_transcript_extension_returns_400(tmp_path):
     client = _make_client(tmp_path)
     manifest_json, files = _manifest_and_files(tmp_path)

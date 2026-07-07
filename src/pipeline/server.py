@@ -348,6 +348,31 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         jobs.submit(session_id, lambda: _generate(session_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
+    @app.post("/ui/sessions/{session_id}/transcript")
+    def ui_add_transcript(session_id: str, transcript_file: UploadFile = File(...)):
+        """Attach (or replace) a narration transcript on an already-uploaded
+        session and re-render, so a user can add narration after the fact from
+        the review page -- not only at initial upload. _generate picks the
+        saved transcript.<ext> up automatically."""
+        _require_known_session(session_id)
+        manifest, _screens, _annot, session_dir = sessions[session_id]
+        transcript = _read_transcript(transcript_file)
+        if transcript is None:
+            raise HTTPException(status_code=400, detail="no transcript file provided")
+        t_name, t_content = transcript
+        try:
+            align_transcript_to_steps(t_name, t_content, manifest)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"invalid transcript: {exc}") from exc
+        # Only one transcript per session -- drop any prior (possibly different
+        # extension) before writing the new one.
+        for old in session_dir.glob("transcript.*"):
+            old.unlink()
+        ext = (t_name or "").lower().rsplit(".", 1)[-1]
+        (session_dir / f"transcript.{ext}").write_text(t_content, encoding="utf-8")
+        jobs.submit(session_id, lambda: _generate(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
     @app.post("/ui/sessions/{session_id}/delete")
     def ui_delete(session_id: str):
         """Removes a session entirely: its directory on disk, its library

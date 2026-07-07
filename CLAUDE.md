@@ -76,6 +76,51 @@ A task is not complete until all applicable stages pass. Commit only on green.
   failures alone.
 - Never commit: captured PNGs from real sessions, anything under `dist/`, secrets.
 
+## Operational procedures (deploy / distribute / runtime) — follow every time
+
+The **runtime is the built EXE**, not source. A source change is NOT live until
+the EXEs are rebuilt and reinstalled. When a fix must reach the running app:
+
+1. **Rebuild**: `py -3.12 -m PyInstaller --noconfirm --clean sopforge-server.spec`
+   (and `sopforge.spec` if capture changed).
+2. **Sign** (SentinelOne/AV + Windows unknown-publisher): `scripts/sign_dist.ps1`
+   — signs both EXEs with the self-signed `CN=SOPForge` cert in
+   `Cert:\CurrentUser\My`; if that cert exists but isn't in CurrentUser
+   `Root`/`TrustedPublisher`, add it there. Signing/trust-store writes are a
+   security-control action the auto-mode classifier blocks without explicit
+   user OK — ask first. **A self-signed cert does NOT satisfy SentinelOne** (it
+   only removes the Windows unknown-publisher prompt); truly silencing the EDR
+   needs a SentinelOne management-console exclusion (path `…\SOPForge\`, the
+   `CN=SOPForge` cert), which requires console access Claude does not have.
+3. **Stop** the running app first — the installer can't overwrite a running
+   `.exe`. After killing the server, wait a few seconds before starting a new
+   one on 8420 or it fails to bind (socket not released) and exits silently.
+4. **Reinstall**: `install.ps1` (self-elevates via UAC on a Program Files path).
+5. **Restart** via the `SOPForge-Server` / `SOPForge-Capture` scheduled tasks
+   (`Start-ScheduledTask`) — the same path autostart uses at logon.
+
+Fixed constraints learned the hard way (do not regress):
+- **Session data must be user-writable** — `--sessions-root` defaults to
+  `%USERPROFILE%\SOPForge\sessions`, never under Program Files (the autostart
+  server runs unelevated and can't write there → every upload 500s). The server
+  probe-writes it at startup and fails loudly if not writable.
+- **Version single source**: `src/sopforge_version.py`; keep `pyproject.toml` in
+  sync. Surfaced in tray tooltip, library footer, `GET /version`, `--version`.
+- **SOP_Factory_2 engine (`sop_lib`) is external**, not in the repo (see the
+  README) — the server EXE can't be rebuilt from a clean clone without it. For
+  dev/tests, set `SOPFORGE_SOP_FACTORY_2_DIR` to the bundled copy at
+  `dist/sopforge-server/_internal/sop_factory_2`.
+
+**Distribution** (hand someone an installable, autostart-enabled copy): run
+`py -3.12 scripts/build_release.py --zip` → `release/SOPForge/` (+
+`release/SOPForge.zip`), a self-contained folder with the signed EXEs +
+`install.bat`/`install.ps1` (autostart ON by default) + manual. Publish it as a
+**GitHub Release asset** (`gh release create`), NOT by committing `dist/` — the
+never-commit-dist rule stands. Recipient: unzip → run `install.bat`. Caveat: the
+self-signed cert is trusted only on the build host, so recipients see
+unknown-publisher and their EDR may block unless they import
+`scripts/sopforge-signing-cert.cer` or their admin allowlists it.
+
 ## Environment facts
 
 - Build host: Windows 11 VM (interactive session — required for UIA in Phase 1).

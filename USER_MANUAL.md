@@ -62,7 +62,7 @@ appear; accept it** to continue. Pass an `-InstallPath` you already own
 (e.g. `-InstallPath "$env:LOCALAPPDATA\SOPForge"`) to install without
 needing administrator rights at all — no UAC prompt appears in that case.
 
-This copies both EXEs, creates a `sessions/` folder, and — autostart being
+This copies both EXEs and — autostart being
 on by default — registers **two** per-user scheduled tasks: one that
 launches the server at logon, and one that launches the capture agent
 (tray icon) at logon too, so after signing in, recording is just a hotkey
@@ -77,6 +77,12 @@ instead — no manual step needed either way. Re-running `install.ps1` later
 that shortcut as needed. `install-config.json`'s `StartupShortcuts` field
 records which shortcuts (if any) this install created, so `uninstall.ps1`
 removes exactly those.
+
+Your generated SOPs (session data) are stored **per-user** at
+`%USERPROFILE%\SOPForge\sessions` — not under the install folder — because
+the autostart server runs unelevated and must be able to write there. This
+is recorded in `install-config.json` and preserved across re-installs; pass
+`-SessionsRoot` to `install.ps1` to put it elsewhere.
 
 #### If both the scheduled task AND the Startup-folder shortcut fail
 
@@ -137,9 +143,25 @@ zip) with:
 This produces `release\SOPForge\` (and `release\SOPForge.zip`) containing
 both built EXEs, `install.ps1`/`install.bat`/`uninstall.ps1`/`uninstall.bat`,
 `USER_MANUAL.md`, and `LICENSE` — the recipient just unzips it and
-double-clicks `install.bat` (or runs `install.ps1` directly) from inside,
-exactly as described above. `release/` is gitignored; rerun this after every
-rebuild you want to hand off.
+double-clicks `install.bat` (or runs `install.ps1` directly) from inside.
+Autostart is **on by default**, so after they install and sign in, both the
+capture tray and the server come up automatically. `release/` is gitignored;
+rerun this after every rebuild you want to hand off.
+
+**The recommended way to hand it off is a GitHub Release** (not a repo clone —
+`dist/` isn't committed): `gh release create vX.Y.Z release/SOPForge.zip`. The
+recipient downloads `SOPForge.zip` from the Releases page, unzips, runs
+`install.bat`.
+
+> **Signing / EDR caveat:** the EXEs are signed with a *self-signed* cert
+> (`scripts/sign_dist.ps1`) trusted only on the machine that built them. On
+> another machine Windows shows "unknown publisher", and endpoint security
+> (e.g. SentinelOne) may flag or block them — the capture agent legitimately
+> installs global keyboard/mouse hooks to record clicks, which looks like a
+> keylogger. To clear this, the recipient imports
+> `scripts/sopforge-signing-cert.cer` into their Trusted Root, or their
+> security admin allowlists the `C:\…\SOPForge\` path / the `CN=SOPForge` cert
+> in the management console.
 
 ### Option B — run from source (development)
 
@@ -247,14 +269,16 @@ in the background — poll `GET /sessions/{id}/status` until `"status": "done"`
 
 | Method | Path | Returns |
 |---|---|---|
-| `POST` | `/sessions` | Uploads + queues a session for processing. `multipart/form-data`: `manifest_json` + one `files` part per screenshot, named exactly as the manifest's `screenshot` field. Returns immediately with `status: "queued"`. |
+| `POST` | `/sessions` | Uploads + queues a session for processing. `multipart/form-data`: `manifest_json` + one `files` part per screenshot (named exactly as the manifest's `screenshot` field), plus an **optional** `transcript_file` (`.txt`/`.md`/`.json`). Returns immediately with `status: "queued"`. Missing screenshots or a bad transcript → `400`. |
 | `POST` | `/sessions/{id}/rerender` | Re-runs generation + all exports for an already-uploaded session. |
+| `POST` | `/ui/sessions/{id}/transcript` | Attach/replace a narration `transcript_file` on an existing session and re-render (used by the review page's transcript form). |
+| `GET` | `/version` | `{"version": "..."}` — the running build's version. |
 | `GET` | `/sessions/{id}/status` | `{"status": "queued"\|"processing"\|"done"\|"error", ["error": "..."]}` |
 | `GET` | `/sessions/{id}/report` | The sidecar review report (JSON) — see §6. 409 until done. |
 | `GET` | `/sessions/{id}/doc.md` | Markdown, relative image paths. |
 | `GET` | `/sessions/{id}/doc.html` | HTML, relative image paths (served alongside it, so it previews correctly). |
 | `GET` | `/sessions/{id}/doc.docx` | The assembled docx (VRSI/SOP Factory 2 formatting). |
-| `GET` | `/sessions/{id}/doc.pdf` | PDF, one page per step. |
+| `GET` | `/sessions/{id}/doc.pdf` | PDF, mirroring the docx structure (title page, per-step headings/bullets/narration/screenshots, revision history). |
 | `GET` | `/sessions/{id}/doc.single.html` | Self-contained single-file HTML (images inlined as base64) — safe to email or move anywhere. |
 | `GET` | `/sessions/{id}/export.md.zip` | The Markdown bundle (`.md` + `images/`) zipped up. |
 | `GET` | `/sessions/{id}/review` | A plain-HTML page rendering just the sidecar report. |
@@ -293,22 +317,45 @@ empty for now.
 
 Open **http://127.0.0.1:<port>/** (or `/ui`):
 
+The web UI uses one modern, self-contained stylesheet (light/dark aware,
+system fonts, no external assets — works fully offline).
+
 - **Library page**: every past session, searchable by title/date substring,
   plus an **upload form** for the fallback path — if the server wasn't
   running when you stopped a recording (§3), pick that capture's
   `manifest.json` and its screenshots here, hit Upload, and it lands you on
-  that session's processing page. No `curl`/API calls needed (§4's API
+  that session's processing page. The form also has an **optional narration
+  transcript** field (see below). No `curl`/API calls needed (§4's API
   walkthrough still works too, e.g. for scripting).
 - **Session page**: a back-to-library link, the session's real title and
   date, an iframe preview of the generated doc, the sidecar report as three
-  color-coded sections (see §6), a **Re-render** button, a **Delete**
+  color-coded sections (see §6), an **Add transcript & re-render** form (attach
+  narration after the fact — see below), a **Re-render** button, a **Delete**
   button (removes the session's files, library entry, and everything —
   irreversible, no undo), a **Downloads** list
   (docx/pdf/single-file-html/markdown-zip), and a read-only panel showing
-  the current `config/models.toml`.
+  the current `config/models.toml`. While a session is still generating, this
+  page auto-refreshes and turns into the finished review page on its own.
 
-No JavaScript is required — the search box, upload form, re-render button,
-and delete button are all plain HTML forms.
+No JavaScript is required — the search box, upload form, transcript form,
+re-render button, and delete button are all plain HTML forms.
+
+### Adding narration with a transcript
+
+You can attach a **narration transcript** (`.txt` or `.md`) either on the
+library upload form or, later, on a session's review page. Its text is placed
+**under the step it describes** in every export (docx/pdf/html/md). Because a
+plain text/markdown file has no timestamps, placement is by **order**, two ways:
+
+- **Labelled (recommended):** start each block with a step label — `Step 1:`,
+  `1.`, `1)`, or `## Step 1`. The number picks the step, so blocks can skip
+  steps or be out of order.
+- **Plain paragraphs:** blank-line-separated paragraphs, assigned to steps in
+  order (1st paragraph → step 1, …). Extra paragraphs append to the last step.
+
+A timestamped `.json` transcript (the faster-whisper segment shape) is also
+accepted and aligned by time. Bad transcripts are rejected at upload with a
+clear message; placement is recorded in the sidecar report.
 
 Sessions survive a server restart: a session's manifest is saved to its own
 folder on disk, and the server rebuilds its session list from disk at
@@ -332,8 +379,9 @@ listing three things a reviewer should check:
   transcript) that couldn't be matched to anything in the generated
   narrative text. Appear in the doc as `> [verify] (claim-id): <original
   claim text>` blockquotes — nothing from a recording is ever silently
-  dropped. Always empty today, since narration isn't wired into the live
-  server yet (no transcript upload endpoint exists).
+  dropped. (An uploaded `.txt`/`.md` transcript is placed verbatim under each
+  step by label/order, so it doesn't produce verify-claims; these come from the
+  claim-coverage narrative path.)
 - **Empty-metadata steps** (yellow if non-empty) — steps where no UI
   Automation element info was captured at all. These render using screen
   coordinates instead of an element name — still factual, just less specific.
