@@ -222,6 +222,48 @@ def test_upload_with_transcript_places_narration_under_each_step(tmp_path):
     assert "transcript" in report
 
 
+def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path):
+    """Manifest-free mode: POST /ui/build with just images (+ a transcript)
+    produces a full SOP -- one step per image, in order, with the transcript
+    text placed under each, and all export formats generated."""
+    import io
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (200, 150), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("first.png", png((200, 0, 0)), "image/png")),
+        ("files", ("second.png", png((0, 200, 0)), "image/png")),
+        ("transcript_file", ("t.md", b"1. Open the first screen.\n2. Then the second.", "text/markdown")),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "My Photo SOP"}, files=files, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert md.startswith("# My Photo SOP")
+    assert md.count("## Step") == 2  # one step per image
+    assert "Open the first screen." in md
+    assert "Then the second." in md
+
+    assert client.get(f"/sessions/{session_id}/doc.docx").status_code == 200
+    assert client.get(f"/sessions/{session_id}/doc.pdf").status_code == 200
+
+
+def test_build_requires_at_least_one_image(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.post("/ui/build", data={"title": "x"}, files=[])
+    assert resp.status_code == 400
+
+
 def test_add_transcript_to_existing_session_then_rerender(tmp_path):
     """A transcript can be attached from the review page after the fact: POST
     /ui/sessions/{id}/transcript saves it and re-renders, and the narration

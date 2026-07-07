@@ -127,6 +127,19 @@ def render_library_page(entries, query=None):
         "<div><small>Label blocks &ldquo;Step 1:&rdquo;, &ldquo;1.&rdquo; or &ldquo;## Step 1&rdquo; "
         "to place each under its step, or write one paragraph per step in order.</small></div></div>"
         '<button type="submit">Upload</button></form></div>'
+        "<h2>Build from screenshots + transcript (no capture)</h2>"
+        '<div class="card">'
+        "<p><small>No capture needed &mdash; each image becomes one step, in the "
+        "order you select them, with the transcript supplying each step&rsquo;s "
+        "text.</small></p>"
+        '<form method="post" action="/ui/build" enctype="multipart/form-data">'
+        '<div class="field"><label>Title (optional)</label>'
+        '<input type="text" name="title" placeholder="My procedure"></div>'
+        '<div class="field"><label>Screenshots / images (in order)</label>'
+        '<input type="file" name="files" accept="image/*" multiple required></div>'
+        '<div class="field"><label>Transcript &mdash; optional (.txt or .md)</label>'
+        '<input type="file" name="transcript_file" accept=".txt,.md,.json"></div>'
+        '<button type="submit">Build document</button></form></div>'
     )
     return _shell("SOPForge Library", body)
 

@@ -31,12 +31,15 @@ import threading
 import time
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from PIL import Image
 
 from pipeline import __version__
+from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import load_models_config
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
@@ -115,6 +118,17 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
     to the (usually unreachable in a dev/test environment) configured
     endpoint before falling back, adding real seconds per step."""
     app = FastAPI()
+
+    @app.middleware("http")
+    async def _no_store_html(request, call_next):
+        """Never let the browser cache the HTML pages -- otherwise a stale
+        library/review page keeps showing an old version footer or session
+        list after an upgrade (the "still shows the old version" trap)."""
+        response = await call_next(request)
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
     sessions_root.mkdir(parents=True, exist_ok=True)
     # Fail loudly at startup if sessions_root isn't actually writable, rather
     # than letting every upload blow up later with a bare 500 from deep inside
@@ -139,8 +153,18 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
     sessions = {}
     _restore_sessions_from_disk(sessions_root, sessions, jobs)
 
+    def _is_photo_mode(session_dir):
+        mode = session_dir / "mode.txt"
+        return mode.exists() and mode.read_text(encoding="utf-8").strip() == "photo"
+
     def _generate(session_id):
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+
+        # Manifest-free "screenshots + transcript" sessions take a different
+        # path: no LLM step phrasing, no click-marker annotation.
+        if _is_photo_mode(session_dir):
+            _generate_photo(session_id)
+            return
 
         # One generation attempt per step, round-trip-gated with a
         # template fallback (task-06) -- if the configured endpoint is
@@ -167,6 +191,58 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         if transcript_note:
             report["transcript"] = transcript_note
 
+        _write_all_exports(
+            session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
+        )
+
+    def _generate_photo(session_id):
+        """Manifest-free mode: one step per uploaded image, in order, with the
+        transcript's text placed verbatim under each. Images are copied through
+        without a click marker (there was no recorded click), and no LLM runs
+        (there's no recorded action to phrase)."""
+        manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+        annotated_dir.mkdir(parents=True, exist_ok=True)
+
+        per_step, transcript_note = {}, None
+        matches = sorted(session_dir.glob("transcript.*"))
+        if matches:
+            try:
+                per_step, transcript_note = align_transcript_to_steps(
+                    matches[0].name, matches[0].read_text(encoding="utf-8"), manifest
+                )
+            except Exception:  # noqa: BLE001 - a bad transcript must never break generation
+                per_step, transcript_note = {}, None
+
+        step_results, annotated_paths = [], []
+        for step in manifest.steps:
+            step_results.append(
+                {
+                    "step_id": step.id,
+                    "text": per_step.get(step.id) or "(no description provided)",
+                    "used_fallback": False,
+                }
+            )
+            out = annotated_dir / step.screenshot
+            shutil.copyfile(screenshots_dir / step.screenshot, out)  # no click marker
+            annotated_paths.append(out)
+
+        report = {
+            "template_fallback_steps": [],
+            "verify_claims": [],
+            "empty_metadata_steps": [],
+            "docx_warnings": [],
+        }
+        if transcript_note:
+            report["transcript"] = transcript_note
+        _write_all_exports(
+            session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
+        )
+
+    def _write_all_exports(
+        session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
+    ):
+        """Render every output format + the review report from finished
+        step_results and annotated images. Shared by both generation modes."""
         md = render_markdown(manifest, step_results, annotated_paths, base_dir=annotated_dir)
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
@@ -325,6 +401,76 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
                 status_code=400, detail=f"invalid manifest encoding: {exc}"
             ) from exc
         session_id = _ingest_session(manifest_json, files, _read_transcript(transcript_file))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    _IMG_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
+
+    def _ingest_photo_session(title, files, transcript=None):
+        """Manifest-free build: each uploaded image becomes one step (in upload
+        order), with the transcript supplying each step's text. Synthesizes a
+        schema-valid manifest so the rest of the pipeline works unchanged.
+        Returns the new session_id or raises HTTPException on bad input."""
+        images = [u for u in files if u.filename]
+        if not images:
+            raise HTTPException(status_code=400, detail="upload at least one screenshot/image")
+
+        session_id = str(uuid.uuid4())
+        session_dir = sessions_root / session_id
+        screenshots_dir = session_dir / "screenshots"
+        annotated_dir = session_dir / "annotated"
+        screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+        # Normalize every image to NNN.png (upload order) via PIL -- this both
+        # fixes the ordering/naming and validates each file really is an image
+        # (PIL raises on junk), so downstream export never trips on a bad file.
+        names = []
+        for i, upload in enumerate(images, start=1):
+            ext = Path(upload.filename or "").suffix.lower().lstrip(".")
+            if ext not in _IMG_EXTS:
+                raise HTTPException(
+                    status_code=400, detail=f"not a supported image: {upload.filename!r}"
+                )
+            name = f"{i:03d}.png"
+            try:
+                Image.open(upload.file).convert("RGB").save(screenshots_dir / name)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(
+                    status_code=400, detail=f"unreadable image {upload.filename!r}: {exc}"
+                ) from exc
+            names.append(name)
+
+        started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        manifest_dict = synthetic_manifest_dict(title, names, started)
+        manifest_dict["session"]["id"] = session_id
+        manifest = load_manifest(manifest_dict)
+
+        transcript_ext = None
+        if transcript is not None:
+            t_name, t_content = transcript
+            try:
+                align_transcript_to_steps(t_name, t_content, manifest)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"invalid transcript: {exc}") from exc
+            transcript_ext = (t_name or "").lower().rsplit(".", 1)[-1]
+
+        (session_dir / "manifest.json").write_text(json.dumps(manifest_dict), encoding="utf-8")
+        (session_dir / "mode.txt").write_text("photo", encoding="utf-8")
+        if transcript is not None:
+            (session_dir / f"transcript.{transcript_ext}").write_text(
+                transcript[1], encoding="utf-8"
+            )
+
+        sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
+        jobs.submit(session_id, lambda: _generate(session_id))
+        return session_id
+
+    @app.post("/ui/build")
+    def ui_build(
+        title: str = Form(""),
+        files: list[UploadFile] = File(default=[]),
+        transcript_file: UploadFile | None = File(default=None),
+    ):
+        session_id = _ingest_photo_session(title, files, _read_transcript(transcript_file))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")
