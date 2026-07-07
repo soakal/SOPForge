@@ -222,11 +222,17 @@ def test_upload_with_transcript_places_narration_under_each_step(tmp_path):
     assert "transcript" in report
 
 
-def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path):
+def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monkeypatch):
     """Manifest-free mode: POST /ui/build with just images (+ a transcript)
     produces a full SOP -- one step per image, in order, with the transcript
-    text placed under each, and all export formats generated."""
+    text placed under each, and all export formats generated. Vision captioning
+    is stubbed off (returns None per image) so this exercises the transcript
+    fallback deterministically, with no network call."""
     import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
 
     client = _make_client(tmp_path)
 
@@ -262,6 +268,43 @@ def test_build_requires_at_least_one_image(tmp_path):
     client = _make_client(tmp_path)
     resp = client.post("/ui/build", data={"title": "x"}, files=[])
     assert resp.status_code == 400
+
+
+def test_build_uses_vision_captions_when_available(tmp_path, monkeypatch):
+    """When vision captioning succeeds, each step's text is the caption (in
+    order), overriding the transcript's own placement."""
+    import io
+
+    import pipeline.server as server_module
+
+    def fake_caption_images(paths, narration, endpoint, model, **kwargs):
+        assert "dictated" in narration  # narration passed through as context
+        return [f"Vision caption for image {i + 1}." for i in range(len(paths))]
+
+    monkeypatch.setattr(server_module, "caption_images", fake_caption_images)
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        ("transcript_file", ("t.txt", b"a dictated blob of narration", "text/plain")),
+    ]
+    resp = client.post("/ui/build", data={"title": "Vision SOP"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Vision caption for image 1." in md
+    assert "Vision caption for image 2." in md
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "vision" in report
 
 
 def test_add_transcript_to_existing_session_then_rerender(tmp_path):

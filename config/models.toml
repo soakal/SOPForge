@@ -22,3 +22,12 @@ endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen3:32b"
 anthropic = false
 passes = 3
+
+# Vision captioning for the "screenshots + transcript" build mode: when enabled,
+# a vision model looks at each screenshot (plus the narration) and writes that
+# step's instruction, instead of relying on the transcript's per-step structure.
+# Only affects that build mode; the capture flow is unchanged.
+[vision]
+enabled = true
+endpoint = "http://192.168.200.60:11434/v1"
+model = "qwen2.5vl:7b"

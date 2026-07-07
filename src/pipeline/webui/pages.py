@@ -199,9 +199,16 @@ def render_session_page(session_id, title, date, report, config):
             ),
         ]
     )
+
+    def _fmt_config(values):
+        # Render any section shape (steps/narrative carry anthropic/passes;
+        # vision carries enabled) -- endpoint/model first, then the rest.
+        ordered = [k for k in ("endpoint", "model") if k in values]
+        ordered += [k for k in values if k not in ("endpoint", "model")]
+        return ", ".join(f"{k}={values[k]}" for k in ordered)
+
     config_rows = "".join(
-        f"<li>{html.escape(section)}: endpoint={html.escape(values['endpoint'])}, "
-        f"model={html.escape(values['model'])}, anthropic={values['anthropic']}</li>"
+        f"<li>{html.escape(section)}: {html.escape(_fmt_config(values))}</li>"
         for section, values in config.items()
     )
     sid = html.escape(session_id)

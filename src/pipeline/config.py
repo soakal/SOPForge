@@ -5,7 +5,7 @@ default off")."""
 
 import tomllib
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from pipeline.resource_path import resource_path
 
@@ -28,11 +28,26 @@ class SectionConfig(BaseModel):
     passes: int = 1
 
 
+class VisionConfig(BaseModel):
+    """Vision-model captioning for the screenshots+transcript build mode: when
+    enabled, each screenshot is captioned by a vision LLM (looking at the image
+    plus the narration) instead of relying on the transcript's own per-step
+    structure. Optional -- a config without a [vision] section defaults to
+    off, and old configs keep working."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    endpoint: str = "http://192.168.200.60:11434/v1"
+    model: str = "qwen2.5vl:7b"
+
+
 class ModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     steps: SectionConfig
     narrative: SectionConfig
+    vision: VisionConfig = Field(default_factory=VisionConfig)
 
 
 def load_models_config(path=None):

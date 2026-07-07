@@ -54,6 +54,7 @@ from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.sidecar import build_sidecar_report
 from pipeline.transcript import align_transcript_to_steps
+from pipeline.vision import caption_images
 from pipeline.webui.pages import (
     render_library_page,
     render_session_page,
@@ -203,28 +204,52 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
         annotated_dir.mkdir(parents=True, exist_ok=True)
 
+        # Raw narration (vision context) + order/label placement (the fallback
+        # when vision is off or a caption fails).
+        narration = ""
         per_step, transcript_note = {}, None
         matches = sorted(session_dir.glob("transcript.*"))
         if matches:
+            narration = matches[0].read_text(encoding="utf-8")
             try:
                 per_step, transcript_note = align_transcript_to_steps(
-                    matches[0].name, matches[0].read_text(encoding="utf-8"), manifest
+                    matches[0].name, narration, manifest
                 )
             except Exception:  # noqa: BLE001 - a bad transcript must never break generation
                 per_step, transcript_note = {}, None
 
-        step_results, annotated_paths = [], []
+        # Copy each image through (no click marker) and collect its path in order.
+        annotated_paths = []
         for step in manifest.steps:
+            out = annotated_dir / step.screenshot
+            shutil.copyfile(screenshots_dir / step.screenshot, out)
+            annotated_paths.append(out)
+
+        # Optional vision captioning: a vision model looks at each screenshot +
+        # the narration and writes that step's instruction. The steps are still
+        # the images (one each, in order) -- the model only phrases them. Any
+        # failed caption falls back to the transcript's order/label placement.
+        captions = [None] * len(manifest.steps)
+        vision_note = None
+        vision_cfg = load_models_config().vision
+        if vision_cfg.enabled:
+            captions = caption_images(
+                annotated_paths, narration, vision_cfg.endpoint, vision_cfg.model
+            )
+            vision_note = (
+                f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
+                f"screenshots ({vision_cfg.model})"
+            )
+
+        step_results = []
+        for step, caption in zip(manifest.steps, captions):
             step_results.append(
                 {
                     "step_id": step.id,
-                    "text": per_step.get(step.id) or "(no description provided)",
-                    "used_fallback": False,
+                    "text": caption or per_step.get(step.id) or "(no description provided)",
+                    "used_fallback": caption is None,
                 }
             )
-            out = annotated_dir / step.screenshot
-            shutil.copyfile(screenshots_dir / step.screenshot, out)  # no click marker
-            annotated_paths.append(out)
 
         report = {
             "template_fallback_steps": [],
@@ -234,6 +259,8 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         }
         if transcript_note:
             report["transcript"] = transcript_note
+        if vision_note:
+            report["vision"] = vision_note
         _write_all_exports(
             session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
         )
