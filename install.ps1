@@ -7,9 +7,12 @@
 .DESCRIPTION
     Creates <InstallPath>/capture/ (sopforge.exe) and <InstallPath>/server/
     (sopforge-server.exe) as copies of dist/sopforge/ and
-    dist/sopforge-server/, plus an empty <InstallPath>/sessions/ directory
-    and an install-config.json recording what was installed (read back by
-    uninstall.ps1 so it removes exactly what this script created, and by
+    dist/sopforge-server/. Session data (generated SOPs) is stored under the
+    per-user profile at -SessionsRoot (default %USERPROFILE%\SOPForge\sessions),
+    NOT under <InstallPath> -- the server autostart task runs unelevated and
+    could not write into a Program Files install dir. An install-config.json
+    records what was installed, including the resolved SessionsRoot (read back
+    by uninstall.ps1 so it removes exactly what this script created, and by
     the -Autostart scheduled tasks for their launch arguments).
 
     -Autostart registers TWO per-user scheduled tasks (AtLogOn trigger,
@@ -71,6 +74,13 @@
 param(
     [string]$InstallPath = "$env:ProgramFiles\SOPForge",
     [int]$Port = 8420,
+    # Where generated SOPs are stored. Defaults to the per-user profile so the
+    # unelevated server can write to it (a Program Files InstallPath cannot be
+    # written by the unelevated autostart task). Captured from the INVOKING
+    # user's %USERPROFILE% and threaded through the elevated relaunch below, so
+    # even an over-the-shoulder (different-admin) UAC still targets the logged-in
+    # user's profile, not the admin's.
+    [string]$SessionsRoot = "$env:USERPROFILE\SOPForge\sessions",
     [switch]$Autostart,
     [switch]$NoAutostart
 )
@@ -121,7 +131,10 @@ if (-not (Test-IsElevated)) {
     }
     if ($NeedsElevation) {
         Write-Output "'$InstallPath' requires administrator rights -- relaunching elevated (a UAC prompt will appear)..."
-        $ElevatedArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-InstallPath", "`"$InstallPath`"", "-Port", "$Port")
+        # Pass the invoking user's resolved -SessionsRoot through so the
+        # elevated run doesn't recompute it from the (possibly different) admin
+        # account's %USERPROFILE%.
+        $ElevatedArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-InstallPath", "`"$InstallPath`"", "-Port", "$Port", "-SessionsRoot", "`"$SessionsRoot`"")
         if ($NoAutostart) { $ElevatedArgs += "-NoAutostart" }
         try {
             $ElevatedProc = Start-Process -FilePath "powershell.exe" -ArgumentList $ElevatedArgs -Verb RunAs -Wait -PassThru -ErrorAction Stop
@@ -141,11 +154,24 @@ New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 
 $CaptureInstallPath = Join-Path $InstallPath "capture"
 $ServerInstallPath = Join-Path $InstallPath "server"
-$SessionsRoot = Join-Path $InstallPath "sessions"
 
 New-Item -ItemType Directory -Force -Path $CaptureInstallPath | Out-Null
 New-Item -ItemType Directory -Force -Path $ServerInstallPath | Out-Null
 New-Item -ItemType Directory -Force -Path $SessionsRoot | Out-Null
+
+# Migrate session data from an older install that (incorrectly) kept it under
+# <InstallPath>\sessions -- where the unelevated server couldn't write, the bug
+# this location move fixes. Moving it into $SessionsRoot on upgrade means prior
+# SOPs aren't orphaned, and uninstall (which now tracks the recorded
+# $SessionsRoot) never deletes real data it stopped knowing about.
+$LegacySessions = Join-Path $InstallPath "sessions"
+if ((Test-Path $LegacySessions) -and ($LegacySessions -ne $SessionsRoot)) {
+    Get-ChildItem -Force -LiteralPath $LegacySessions -ErrorAction SilentlyContinue | ForEach-Object {
+        Move-Item -LiteralPath $_.FullName -Destination $SessionsRoot -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -LiteralPath $LegacySessions -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Output "Migrated prior session data from $LegacySessions to $SessionsRoot."
+}
 
 Copy-Item -Path (Join-Path $CaptureDist "*") -Destination $CaptureInstallPath -Recurse -Force
 Copy-Item -Path (Join-Path $ServerDist "*") -Destination $ServerInstallPath -Recurse -Force

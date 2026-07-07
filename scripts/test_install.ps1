@@ -121,15 +121,24 @@ if (Test-Path $TestRoot) { throw "test root already exists: $TestRoot" }
 Write-Output "=== Round trip 1: install / health check / uninstall ==="
 $Port = 28420
 
-& $InstallScript -InstallPath $TestRoot -Port $Port
+# Pass an explicit -SessionsRoot INSIDE the temp test root: install.ps1 now
+# defaults SessionsRoot to the per-user profile (%USERPROFILE%\SOPForge\
+# sessions), which a test must never create/delete. Keeping it under $TestRoot
+# keeps this round trip fully isolated and self-cleaning.
+$SessionsRoot = Join-Path $TestRoot "sessions"
+& $InstallScript -InstallPath $TestRoot -Port $Port -SessionsRoot $SessionsRoot
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed (exit $LASTEXITCODE)" }
+
+$Config1 = Get-Content (Join-Path $TestRoot "install-config.json") -Raw | ConvertFrom-Json
+if ($Config1.SessionsRoot -ne $SessionsRoot) {
+    throw "FAIL: install-config.json SessionsRoot '$($Config1.SessionsRoot)' != requested '$SessionsRoot'"
+}
 
 $ServerExe = Join-Path $TestRoot "server\sopforge-server.exe"
 $CaptureExe = Join-Path $TestRoot "capture\sopforge.exe"
 if (-not (Test-Path $ServerExe)) { throw "FAIL: $ServerExe not found after install" }
 if (-not (Test-Path $CaptureExe)) { throw "FAIL: $CaptureExe not found after install" }
 
-$SessionsRoot = Join-Path $TestRoot "sessions"
 # Explicit stdio redirection is required: this console=False (windowed)
 # EXE does not respond at all when launched without it (reproduced
 # directly against dist/sopforge-server/sopforge-server.exe while writing
@@ -177,7 +186,7 @@ $TestRoot2 = Join-Path $env:TEMP "sopforge-install-test-autostart-$(Get-Random)"
 $TaskNames = @("SOPForge-Server", "SOPForge-Capture")
 $Port2 = $Port + 1
 
-& $InstallScript -InstallPath $TestRoot2 -Port $Port2 -Autostart
+& $InstallScript -InstallPath $TestRoot2 -Port $Port2 -Autostart -SessionsRoot (Join-Path $TestRoot2 "sessions")
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Autostart failed (exit $LASTEXITCODE)" }
 
 if (-not (Test-Path (Join-Path $TestRoot2 "server\sopforge-server.exe"))) {
@@ -272,6 +281,41 @@ if (Test-Path $TestRoot2) {
 Assert-ServerUrlEnvRestored "round trip 2"
 
 Write-Output "PASS: -Autostart round trip -- scheduled task(s)/fallback shortcut(s) removed; directory state matches baseline."
+
+# --- Round trip 3: external (per-user-style) SessionsRoot preserve/remove ---
+# The core of the sessions-location fix: SessionsRoot now lives OUTSIDE
+# InstallPath. Verify uninstall (a) preserves it by default when it holds data
+# while still removing the install dir, and (b) deletes it with -RemoveData.
+# Uses temp dirs (NOT %USERPROFILE%) so the test never touches real user data.
+# -NoAutostart keeps this focused on the data logic without task registration.
+Write-Output ""
+Write-Output "=== Round trip 3: external SessionsRoot preserve/remove ==="
+$Port3 = $Port + 2
+$TestRoot3 = Join-Path $env:TEMP "sopforge-install-test-extroot-$(Get-Random)"
+$ExtSessions = Join-Path $env:TEMP "sopforge-install-test-extdata-$(Get-Random)"
+
+& $InstallScript -InstallPath $TestRoot3 -Port $Port3 -SessionsRoot $ExtSessions -NoAutostart
+if ($LASTEXITCODE -ne 0) { throw "install.ps1 (ext sessions) failed (exit $LASTEXITCODE)" }
+$FakeSop = Join-Path $ExtSessions "session-xyz"
+New-Item -ItemType Directory -Force -Path $FakeSop | Out-Null
+Set-Content -Path (Join-Path $FakeSop "report.json") -Value "{}" -Encoding utf8
+
+& $UninstallScript -InstallPath $TestRoot3
+if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 (ext, preserve) failed (exit $LASTEXITCODE)" }
+if (Test-Path $TestRoot3) { throw "FAIL: install dir $TestRoot3 not removed on default uninstall" }
+if (-not (Test-Path (Join-Path $FakeSop "report.json"))) {
+    throw "FAIL: external session data at $ExtSessions was NOT preserved on default uninstall"
+}
+Write-Output "Preserve verified: install dir removed, external session data kept."
+
+& $InstallScript -InstallPath $TestRoot3 -Port $Port3 -SessionsRoot $ExtSessions -NoAutostart
+if ($LASTEXITCODE -ne 0) { throw "install.ps1 (ext sessions, reinstall) failed (exit $LASTEXITCODE)" }
+& $UninstallScript -InstallPath $TestRoot3 -RemoveData
+if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 (ext, RemoveData) failed (exit $LASTEXITCODE)" }
+if (Test-Path $TestRoot3) { throw "FAIL: install dir $TestRoot3 not removed on -RemoveData uninstall" }
+if (Test-Path $ExtSessions) { throw "FAIL: external session data at $ExtSessions NOT removed with -RemoveData" }
+Write-Output "PASS: external SessionsRoot preserve/remove round trip."
+
 Write-Output ""
 Write-Output "ALL PASS"
 exit 0

@@ -115,6 +115,23 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
     endpoint before falling back, adding real seconds per step."""
     app = FastAPI()
     sessions_root.mkdir(parents=True, exist_ok=True)
+    # Fail loudly at startup if sessions_root isn't actually writable, rather
+    # than letting every upload blow up later with a bare 500 from deep inside
+    # the ingest path (a real bug: installing under Program Files pointed
+    # --sessions-root at an admin-only location while the server ran
+    # unelevated, so mkdir on each upload raised PermissionError). mkdir with
+    # exist_ok=True above succeeds on an already-existing dir even when it's
+    # unwritable, so an explicit write probe is what actually catches it.
+    _probe = sessions_root / ".sopforge-write-test"
+    try:
+        _probe.write_text("ok", encoding="utf-8")
+        _probe.unlink()
+    except OSError as exc:
+        raise RuntimeError(
+            f"sessions-root {sessions_root} is not writable ({exc}). Point "
+            "--sessions-root at a directory this process can write to (e.g. a "
+            "per-user location, not Program Files when running unelevated)."
+        ) from exc
     jobs = JobRunner()
     make_llm_client = llm_client_factory or _default_llm_client_factory
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)

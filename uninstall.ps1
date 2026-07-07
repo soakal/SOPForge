@@ -5,14 +5,17 @@
     capture/ and server/ EXE folders, and install-config.json.
 
 .DESCRIPTION
-    By default preserves <InstallPath>/sessions/ if it contains any real
+    By default preserves the session-data directory (the recorded
+    SessionsRoot from install-config.json -- a per-user location like
+    %USERPROFILE%\SOPForge\sessions for current installs, or the legacy
+    <InstallPath>/sessions/ for older ones) if it contains any real
     generated content (a user's captured/generated SOPs), removing only
     what install.ps1 actually created (the EXE folders, config,
     scheduled task(s), the env var) -- deleting a user's data isn't
     "uninstalling the app", and CLAUDE.md's rule against destructive
     actions without confirmation applies here too. Pass -RemoveData to
-    also delete sessions/ (e.g. for a full clean wipe, or the automated
-    round-trip test where no real session data is ever created).
+    also delete the session data (e.g. for a full clean wipe, or the
+    automated round-trip test where no real session data is ever created).
 
     The SOPFORGE_SERVER_URL removal is conditional: only removed if its
     current value still matches exactly what THIS install wrote
@@ -158,7 +161,13 @@ if (-not (Test-Path $InstallPath)) {
     exit 0
 }
 
-$SessionsRoot = Join-Path $InstallPath "sessions"
+# Current installs record SessionsRoot in install-config.json and place it in
+# the per-user profile (outside InstallPath) so the unelevated server can
+# write to it. Older installs put it at <InstallPath>\sessions with no recorded
+# value -- fall back to that so uninstalling an older install still works.
+$SessionsRoot = if ($Config -and $Config.SessionsRoot) { $Config.SessionsRoot } else { Join-Path $InstallPath "sessions" }
+$SessionsInsideInstall = (ConvertTo-PathPrefix $SessionsRoot).StartsWith(
+    (ConvertTo-PathPrefix $InstallPath), [StringComparison]::OrdinalIgnoreCase)
 $HasData = (Test-Path $SessionsRoot) -and
     ((Get-ChildItem $SessionsRoot -Recurse -Force -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
 
@@ -167,9 +176,24 @@ if ($HasData -and -not $RemoveData) {
     Remove-Item -Path (Join-Path $InstallPath "capture") -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path (Join-Path $InstallPath "server") -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -Path $ConfigPath -Force -ErrorAction SilentlyContinue
-    Write-Output "Removed capture/, server/, and install-config.json from $InstallPath."
+    if ($SessionsInsideInstall) {
+        # Leave InstallPath standing so the preserved sessions\ under it survives.
+        Write-Output "Removed capture/, server/, and install-config.json from $InstallPath."
+    } else {
+        # Session data lives elsewhere, so nothing left in InstallPath needs
+        # preserving -- remove the now data-free install dir entirely.
+        Remove-Item -Path $InstallPath -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Output "Removed $InstallPath (session data preserved separately at $SessionsRoot)."
+    }
 } else {
     Remove-Item -Path $InstallPath -Recurse -Force
     Write-Output "Removed $InstallPath."
+    # A per-user SessionsRoot is outside InstallPath, so -RemoveData has to
+    # delete it explicitly (a no-op for older in-InstallPath installs, already
+    # gone with the dir above).
+    if ($RemoveData -and -not $SessionsInsideInstall -and (Test-Path $SessionsRoot)) {
+        Remove-Item -Path $SessionsRoot -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Output "Removed session data at $SessionsRoot."
+    }
 }
 exit 0

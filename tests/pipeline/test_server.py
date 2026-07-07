@@ -11,6 +11,7 @@ terminal "error") before asserting on downstream endpoints."""
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -253,6 +254,27 @@ def test_path_traversal_in_uploaded_filename_cannot_escape_the_session_directory
     sessions_root = tmp_path / "sessions"
     assert not (sessions_root / "escape.png").exists()
     assert not list(sessions_root.rglob("escape.png"))
+
+
+def test_unwritable_sessions_root_fails_loudly_at_startup(tmp_path, monkeypatch):
+    """If --sessions-root isn't writable (the real bug: an unelevated server
+    pointed at a Program Files dir it couldn't write), the server must fail at
+    startup with a clear message -- not start fine and then throw a bare 500
+    from deep in the ingest path on every upload. mkdir(exist_ok=True) alone
+    can't catch this (it succeeds on an existing-but-unwritable dir), so a
+    write probe does."""
+    real_write = Path.write_text
+
+    def boom(self, *args, **kwargs):
+        if self.name == ".sopforge-write-test":
+            raise PermissionError("Access to the path is denied")
+        return real_write(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", boom)
+    with pytest.raises(RuntimeError, match="not writable"):
+        create_app(
+            sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
+        )
 
 
 def test_version_endpoint_and_library_footer_report_the_package_version(tmp_path):
