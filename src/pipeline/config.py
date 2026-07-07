@@ -40,12 +40,6 @@ class VisionConfig(BaseModel):
     enabled: bool = False
     endpoint: str = "http://192.168.200.60:11434/v1"
     model: str = "qwen2.5vl:7b"
-    # Draw a box around the target UI element from the model's bounding box.
-    # OFF by default: qwen2.5vl:7b's element LOCALIZATION is unreliable (boxes
-    # are often misplaced), and a wrong highlight misleads the reader more than
-    # no highlight. Captioning is accurate; only the box coordinates aren't.
-    # Enable to experiment, ideally with a larger vision model (qwen2.5vl:32b).
-    highlight: bool = False
 
 
 class ModelsConfig(BaseModel):

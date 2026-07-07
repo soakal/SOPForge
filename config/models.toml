@@ -27,11 +27,7 @@ passes = 3
 # a vision model looks at each screenshot (plus the narration) and writes that
 # step's instruction, instead of relying on the transcript's per-step structure.
 # Only affects that build mode; the capture flow is unchanged.
-#   highlight: draw a box around the target UI element. OFF -- qwen2.5vl:7b's
-#   box localization is unreliable (misplaced boxes); a bigger model
-#   (qwen2.5vl:32b) is more accurate if you want to turn it on.
 [vision]
 enabled = true
 endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen2.5vl:7b"
-highlight = false

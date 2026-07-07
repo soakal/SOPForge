@@ -53,7 +53,6 @@ from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.sidecar import build_sidecar_report
-from pipeline.highlight import highlight_region
 from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import align_transcript_to_steps
 from pipeline.vision import caption_images
@@ -200,10 +199,9 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
 
     def _generate_photo(session_id):
         """Manifest-free mode: one step per uploaded image, in order. When
-        [vision] is enabled, a vision model captions each screenshot and points
-        at the element to interact with (highlighted on the image); otherwise
-        the transcript's own placement supplies the text. A title + short
-        overview are generated from the narration."""
+        [vision] is enabled, a vision model captions each screenshot from the
+        image + narration; otherwise the transcript's own placement supplies the
+        text. A title + short overview are generated from the narration."""
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
         annotated_dir.mkdir(parents=True, exist_ok=True)
 
@@ -228,31 +226,24 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
             shutil.copyfile(screenshots_dir / step.screenshot, out)
             annotated_paths.append(out)
 
-        # Vision: caption + locate the target element for each screenshot (in
-        # parallel), then draw a highlight box on that element. The steps are
-        # still the images (one each, in order) -- the model only phrases and
-        # points. Any failed caption falls back to the transcript placement.
-        results = [(None, None)] * len(manifest.steps)
+        # Vision captioning: a vision model looks at each screenshot + the
+        # narration and writes that step's instruction (in parallel). The steps
+        # are still the images (one each, in order) -- the model only phrases
+        # them. Any failed caption falls back to the transcript placement.
+        captions = [None] * len(manifest.steps)
         vision_note = None
         vision_cfg = load_models_config().vision
         if vision_cfg.enabled:
-            results = caption_images(
+            captions = caption_images(
                 annotated_paths, narration, vision_cfg.endpoint, vision_cfg.model
             )
-            n_cap = sum(1 for caption, _ in results if caption)
-            n_box = 0
-            if vision_cfg.highlight:
-                for path, (_caption, box) in zip(annotated_paths, results):
-                    if box:
-                        _out, drawn = highlight_region(path, box, path)
-                        n_box += 1 if drawn else 0
             vision_note = (
-                f"vision-captioned {n_cap}/{len(results)} screenshots, "
-                f"{n_box} highlighted ({vision_cfg.model})"
+                f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
+                f"screenshots ({vision_cfg.model})"
             )
 
         step_results = []
-        for step, (caption, _box) in zip(manifest.steps, results):
+        for step, caption in zip(manifest.steps, captions):
             step_results.append(
                 {
                     "step_id": step.id,
