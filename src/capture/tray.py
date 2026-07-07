@@ -90,6 +90,7 @@ class TrayApp:
             menu=pystray.Menu(
                 pystray.MenuItem("Start/Stop recording", self.toggle_recording),
                 pystray.MenuItem("Open SOPForge library", self.open_library),
+                pystray.MenuItem("Configuration", self.open_config),
                 pystray.MenuItem("Exit", self.exit),
             ),
         )
@@ -184,6 +185,14 @@ class TrayApp:
             self._open_browser_fn(self.server_url)
         except Exception:  # noqa: BLE001 - opening a browser tab is a convenience, not critical
             logger.warning("could not open library at %s", self.server_url, exc_info=True)
+
+    def open_config(self):
+        """Open the configuration page (choose AI provider/model per task).
+        Best-effort, same as open_library."""
+        try:
+            self._open_browser_fn(f"{self.server_url.rstrip('/')}/ui/config")
+        except Exception:  # noqa: BLE001 - opening a browser tab is a convenience, not critical
+            logger.warning("could not open config at %s", self.server_url, exc_info=True)
 
     def exit(self):
         """Stops the recording (if any), then the headless server, then the

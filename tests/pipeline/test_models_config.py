@@ -40,9 +40,10 @@ def test_rejects_unknown_section(tmp_path):
 
 
 def test_rejects_missing_required_field(tmp_path):
+    # `model` is required (endpoint has a default); a section without it must fail.
     path = tmp_path / "models.toml"
     path.write_text(
-        '[steps]\nmodel = "m"\n[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
+        '[steps]\nendpoint = "http://x"\n[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
         encoding="utf-8",
     )
     with pytest.raises(ValidationError):

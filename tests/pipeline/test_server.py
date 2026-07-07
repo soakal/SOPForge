@@ -8,6 +8,7 @@ Generation runs on a background job (task-05), so POST /sessions returns
 "queued"/"processing" immediately — tests poll /status until "done" (or a
 terminal "error") before asserting on downstream endpoints."""
 
+import shutil
 import time
 from pathlib import Path
 
@@ -15,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from pipeline.config import default_config_path
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 
@@ -24,8 +26,14 @@ FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 
 
 def _make_client(tmp_path):
+    # Isolate the runtime config to a writable temp copy so the config-editor
+    # test never touches the real per-user ~/SOPForge/models.toml.
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
     app = create_app(
-        sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
     )
     return TestClient(app)
 
@@ -432,6 +440,71 @@ def test_unwritable_sessions_root_fails_loudly_at_startup(tmp_path, monkeypatch)
         create_app(
             sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
         )
+
+
+def test_config_page_renders_and_saves(tmp_path):
+    """GET /ui/config renders the editor; POST saves valid changes to the
+    isolated config file and they read back via GET /config."""
+    client = _make_client(tmp_path)
+
+    page = client.get("/ui/config")
+    assert page.status_code == 200
+    assert "Configuration" in page.text
+    assert "qwen3:14b" in page.text  # current steps model shown
+
+    resp = client.post(
+        "/ui/config",
+        data={
+            "steps_provider": "openrouter",
+            "steps_endpoint": "http://x/v1",
+            "steps_model": "anthropic/claude-3.5-haiku",
+            "narrative_provider": "ollama",
+            "narrative_endpoint": "http://192.168.200.60:11434/v1",
+            "narrative_model": "qwen3:32b",
+            "narrative_passes": "3",
+            "vision_provider": "ollama",
+            "vision_endpoint": "http://192.168.200.60:11434/v1",
+            "vision_model": "qwen2.5vl:7b",
+            "vision_enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    cfg = client.get("/config").json()
+    assert cfg["steps"]["provider"] == "openrouter"
+    assert cfg["steps"]["model"] == "anthropic/claude-3.5-haiku"
+    assert cfg["vision"]["enabled"] is True
+
+
+def test_config_save_rejects_invalid_provider(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={
+            "steps_provider": "not-a-provider",
+            "steps_endpoint": "http://x",
+            "steps_model": "m",
+            "narrative_provider": "ollama",
+            "narrative_endpoint": "http://x",
+            "narrative_model": "m",
+            "narrative_passes": "1",
+            "vision_provider": "ollama",
+            "vision_endpoint": "http://x",
+            "vision_model": "m",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_config_save_rejects_cross_site_origin(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert resp.status_code == 403
 
 
 def test_version_endpoint_and_library_footer_report_the_package_version(tmp_path):

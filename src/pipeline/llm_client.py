@@ -15,13 +15,15 @@ import os
 
 import httpx
 
+from pipeline.config import PROVIDERS
+
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 ANTHROPIC_DEFAULT_MAX_TOKENS = 1024
 
 
 class AnthropicAPIKeyMissingError(RuntimeError):
-    """A section has anthropic=true but ANTHROPIC_API_KEY isn't set. Fails
+    """A section routes to a provider whose API key env var isn't set. Fails
     loudly and immediately — the caller (task-06's orchestrator) treats
     this like any other chat() failure and falls back to the template,
     never retries, but the underlying cause must still be a clear,
@@ -35,36 +37,51 @@ class LLMClient:
         is capped much shorter (default 5s) since "can we even reach this
         host" is a network-level question, not a model-latency one — an
         unreachable/misconfigured endpoint must fail fast, not eat up to
-        `timeout` seconds *per step* (this matters a lot once step
-        generation is on the live server's hot path, not just an opt-in
-        test)."""
+        `timeout` seconds *per step*."""
         self.config = section_config
+        self.provider = getattr(section_config, "provider", "ollama")
+        # ollama uses the section's own endpoint; openrouter/openai have fixed
+        # endpoints; anthropic uses its Messages API (absolute URL below).
+        endpoint = PROVIDERS.get(self.provider, {}).get("endpoint") or section_config.endpoint
         self._client = httpx.Client(
-            base_url=section_config.endpoint.rstrip("/"),
+            base_url=endpoint.rstrip("/"),
             transport=transport,
             timeout=httpx.Timeout(timeout, connect=connect_timeout),
         )
 
+    def _api_key(self):
+        """The API key for this provider, from its env var. Returns None for a
+        keyless provider (ollama). Raises if a keyed provider's var is unset."""
+        key_env = PROVIDERS.get(self.provider, {}).get("key_env")
+        if not key_env:
+            return None
+        key = os.environ.get(key_env)
+        if not key:
+            raise AnthropicAPIKeyMissingError(
+                f"This section routes to '{self.provider}' but the {key_env} "
+                "environment variable is not set."
+            )
+        return key
+
     def chat(self, messages, **kwargs):
         """messages: list of {"role": ..., "content": ...}. Returns the
-        assistant's reply content (str). Raises httpx.HTTPStatusError on a
-        non-2xx response — the caller (task-06's orchestrator) is
-        responsible for falling back to the template, never retrying."""
-        if self.config.anthropic:
+        assistant's reply content (str). Raises on a non-2xx response or a
+        missing API key — the caller falls back to the template, never
+        retrying."""
+        if self.provider == "anthropic":
             return self._chat_anthropic(messages, **kwargs)
+        headers = {}
+        key = self._api_key()  # None for ollama; raises if a keyed provider is unset
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         payload = {"model": self.config.model, "messages": messages, **kwargs}
-        response = self._client.post("/chat/completions", json=payload)
+        response = self._client.post("/chat/completions", json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
     def _chat_anthropic(self, messages, **kwargs):
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise AnthropicAPIKeyMissingError(
-                "This section's config has anthropic=true but the "
-                "ANTHROPIC_API_KEY environment variable is not set."
-            )
+        api_key = self._api_key()
         max_tokens = kwargs.pop("max_tokens", ANTHROPIC_DEFAULT_MAX_TOKENS)
         payload = {
             "model": self.config.model,

@@ -1,33 +1,24 @@
-# Runtime LLM routing: per-section endpoint/model, Ollama by default.
-# "anthropic" opts that section into the Anthropic API instead of the local
-# Ollama endpoint — off by default (CLAUDE.md: "Anthropic routing per section
-# is a config option, default off").
-#
-# To use Anthropic for a section instead of Ollama:
-#   1. Set anthropic = true below.
-#   2. Set model to a real Anthropic model name, e.g. "claude-sonnet-5" or
-#      "claude-haiku-4-5-20251001" (endpoint is ignored when anthropic=true —
-#      Anthropic's API address is fixed, not configurable per-section).
-#   3. Set the ANTHROPIC_API_KEY environment variable before launching the
-#      server (never put the key in this file — it's never read from here).
-# See USER_MANUAL.md's Configuration section for the full walkthrough.
+# SOPForge model routing. Each section picks a provider (ollama / openrouter /
+# openai / anthropic) and a model. API keys are read from environment variables,
+# never stored here:
+#   openrouter -> OPENROUTER_API_KEY   openai -> OPENAI_API_KEY
+#   anthropic  -> ANTHROPIC_API_KEY
+# Ollama is local & private (no key). Edit this from the tray's Configuration
+# page, or here directly. The runtime copy lives at ~/SOPForge/models.toml.
 
 [steps]
+provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen3:14b"
-anthropic = false
 
 [narrative]
+provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen3:32b"
-anthropic = false
 passes = 3
 
-# Vision captioning for the "screenshots + transcript" build mode: when enabled,
-# a vision model looks at each screenshot (plus the narration) and writes that
-# step's instruction, instead of relying on the transcript's per-step structure.
-# Only affects that build mode; the capture flow is unchanged.
 [vision]
 enabled = true
+provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen2.5vl:7b"

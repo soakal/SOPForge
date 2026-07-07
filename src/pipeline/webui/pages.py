@@ -32,8 +32,11 @@ h2{font-size:1.15rem;margin:1.5em 0 .5em}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
 padding:18px 20px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
 .muted,small{color:var(--muted)}
-input[type=text],input[type=file]{font:inherit;padding:9px 11px;border:1px solid var(--border);
+input[type=text],input[type=file],select{font:inherit;padding:9px 11px;border:1px solid var(--border);
 border-radius:9px;background:var(--card);color:var(--fg);max-width:440px;width:100%}
+table{border-collapse:collapse;width:100%;font-size:.88em}
+th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;white-space:nowrap}
+th{background:rgba(0,0,0,.04)}
 .field{margin:14px 0}
 label{display:block;font-weight:600;margin-bottom:6px}
 button{font:inherit;font-weight:600;padding:9px 17px;border:0;border-radius:9px;
@@ -110,7 +113,7 @@ def render_library_page(entries, query=None):
         rows = '<li class="muted">No sessions yet.</li>'
     query_value = html.escape(query) if query else ""
     body = (
-        "<h1>SOP Library</h1>"
+        '<h1>SOP Library</h1><p><a href="/ui/config">&#9881; Configuration</a></p>'
         '<div class="field"><form method="get" action="/ui">'
         f'<input type="text" name="q" value="{query_value}" placeholder="Search title or date"> '
         '<button type="submit">Search</button></form></div>'
@@ -178,6 +181,113 @@ def render_session_processing_page(session_id, status):
     if refresh_meta:
         return _shell("SOPForge Review", body).replace("<style>", f"{refresh_meta}<style>", 1)
     return _shell("SOPForge Review", body)
+
+
+_PROVIDERS = ["ollama", "openrouter", "openai", "anthropic"]
+_KEY_ENV = {
+    "openrouter": "OPENROUTER_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+_RECOMMENDED = {
+    "steps": {
+        "ollama": "qwen3:14b",
+        "openrouter": "anthropic/claude-3.5-haiku",
+        "openai": "gpt-4o-mini",
+        "anthropic": "claude-haiku-4-5",
+    },
+    "narrative": {
+        "ollama": "qwen3:32b",
+        "openrouter": "anthropic/claude-sonnet-4",
+        "openai": "gpt-4o",
+        "anthropic": "claude-sonnet-5",
+    },
+    "vision": {
+        "ollama": "qwen2.5vl:7b",
+        "openrouter": "openai/gpt-4o",
+        "openai": "gpt-4o",
+        "anthropic": "claude-sonnet-5",
+    },
+}
+
+
+def _provider_select(name, current):
+    opts = "".join(
+        f'<option value="{p}"{" selected" if p == current else ""}>{p}</option>' for p in _PROVIDERS
+    )
+    return f'<select name="{name}">{opts}</select>'
+
+
+def _config_row(key, heading, values, extra=""):
+    return (
+        f'<div class="card"><h2>{heading}</h2>'
+        f'<div class="field"><label>Provider</label>{_provider_select(f"{key}_provider", values["provider"])}</div>'
+        f'<div class="field"><label>Model</label>'
+        f'<input type="text" name="{key}_model" value="{html.escape(values["model"])}"></div>'
+        f'<div class="field"><label>Endpoint <small>(Ollama / custom only)</small></label>'
+        f'<input type="text" name="{key}_endpoint" value="{html.escape(values["endpoint"])}"></div>'
+        f"{extra}</div>"
+    )
+
+
+def render_config_page(config, keystatus, saved=False):
+    steps, narr, vis = config["steps"], config["narrative"], config["vision"]
+    saved_note = (
+        '<div class="card" data-status="green" style="border-left:4px solid var(--ok)">'
+        "<p><strong>Saved.</strong> Changes take effect on the next generation.</p></div>"
+        if saved
+        else ""
+    )
+    checked = " checked" if vis.get("enabled") else ""
+    vision_extra = (
+        '<div class="field"><label><input type="checkbox" name="vision_enabled"'
+        f"{checked}> Enable vision captioning</label></div>"
+    )
+    passes_extra = (
+        f'<div class="field"><label>Passes</label>'
+        f'<input type="text" name="narrative_passes" value="{narr.get("passes", 1)}"></div>'
+    )
+
+    key_rows = "".join(
+        f"<li>{html.escape(_KEY_ENV.get(p, p))}: "
+        + ("<strong>set</strong>" if ok else '<span class="muted">not set</span>')
+        + "</li>"
+        for p, ok in sorted(keystatus.items())
+    )
+    key_panel = (
+        f'<h2>API keys</h2><div class="card"><p class="muted">Keys are read from '
+        "environment variables and never stored in the config. Set the one for the provider "
+        f"you chose, then restart.</p><ul>{key_rows or '<li class="muted">All chosen providers are local (Ollama) — no key needed.</li>'}</ul></div>"
+    )
+
+    rec_rows = "".join(
+        f"<tr><td>{html.escape(task)}</td>"
+        + "".join(f"<td>{html.escape(_RECOMMENDED[task][p])}</td>" for p in _PROVIDERS)
+        + "</tr>"
+        for task in ("steps", "narrative", "vision")
+    )
+    rec_table = (
+        '<h2>Recommended models</h2><div class="card" style="overflow-x:auto"><table>'
+        "<tr><th>Task</th>"
+        + "".join(f"<th>{p}</th>" for p in _PROVIDERS)
+        + f"</tr>{rec_rows}</table></div>"
+    )
+
+    body = (
+        '<p><a href="/ui">&larr; Back to library</a></p>'
+        "<h1>Configuration</h1>"
+        f"{saved_note}"
+        '<p class="muted">Pick the AI provider and model for each task. '
+        "<strong>Ollama</strong> is local and private (no key, nothing leaves your network). "
+        "Other providers use an API key from an environment variable.</p>"
+        '<form method="post" action="/ui/config">'
+        f"{_config_row('steps', 'Steps', steps)}"
+        f"{_config_row('narrative', 'Narration', narr, extra=passes_extra)}"
+        f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra)}"
+        '<button type="submit">Save configuration</button></form>'
+        f"{key_panel}{rec_table}"
+    )
+    return _shell("SOPForge Configuration", body)
 
 
 def render_session_page(session_id, title, date, report, config):

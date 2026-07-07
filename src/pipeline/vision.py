@@ -32,13 +32,15 @@ def _prompt(narration, index, total):
     )
 
 
-def _caption_one(path, narration, index, total, endpoint, model, timeout, transport):
+def _caption_one(path, narration, index, total, endpoint, model, timeout, transport, api_key):
     """Returns the caption text, or None on any failure. Never raises."""
     try:
         data = base64.b64encode(path.read_bytes()).decode("ascii")
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         with httpx.Client(transport=transport, timeout=timeout) as client:
             resp = client.post(
                 f"{endpoint.rstrip('/')}/chat/completions",
+                headers=headers,
                 json={
                     "model": model,
                     "messages": [
@@ -65,18 +67,28 @@ def _caption_one(path, narration, index, total, endpoint, model, timeout, transp
 
 
 def caption_images(
-    image_paths, narration, endpoint, model, timeout=120.0, max_workers=4, transport=None
+    image_paths,
+    narration,
+    endpoint,
+    model,
+    api_key=None,
+    timeout=120.0,
+    max_workers=4,
+    transport=None,
 ):
     """Caption each image, in parallel. Returns a list the same length as
     image_paths; each entry is the caption string or None on failure. Order is
-    preserved. `transport` is injectable for tests (no network)."""
+    preserved. `api_key` (Bearer) is used for non-ollama providers; `transport`
+    is injectable for tests (no network)."""
     total = len(image_paths)
     if total == 0:
         return []
 
     def work(item):
         index, path = item
-        return _caption_one(path, narration, index, total, endpoint, model, timeout, transport)
+        return _caption_one(
+            path, narration, index, total, endpoint, model, timeout, transport, api_key
+        )
 
     with ThreadPoolExecutor(max_workers=max(1, min(max_workers, total))) as pool:
         return list(pool.map(work, [(i + 1, p) for i, p in enumerate(image_paths)]))

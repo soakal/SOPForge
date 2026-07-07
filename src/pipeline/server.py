@@ -34,13 +34,21 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from PIL import Image
 
 from pipeline import __version__
 from pipeline.photo_build import synthetic_manifest_dict
-from pipeline.config import load_models_config
+from pipeline.config import (
+    ModelsConfig,
+    key_status,
+    load_models_config,
+    provider_api_key,
+    provider_endpoint,
+    runtime_config_path,
+    save_models_config,
+)
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import export_markdown_bundle
@@ -57,6 +65,7 @@ from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import align_transcript_to_steps
 from pipeline.vision import caption_images
 from pipeline.webui.pages import (
+    render_config_page,
     render_library_page,
     render_session_page,
     render_session_processing_page,
@@ -72,10 +81,6 @@ def _zip_directory(directory):
             if path.is_file():
                 zf.write(path, path.relative_to(directory))
     return buf.getvalue()
-
-
-def _default_llm_client_factory():
-    return LLMClient(load_models_config().steps)
 
 
 def _restore_sessions_from_disk(sessions_root, sessions, jobs):
@@ -109,7 +114,7 @@ def _restore_sessions_from_disk(sessions_root, sessions, jobs):
         jobs.seed_done(session_id)
 
 
-def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
+def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
     for every generation. Defaults to a real LLMClient built from the
@@ -150,7 +155,13 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
             "per-user location, not Program Files when running unelevated)."
         ) from exc
     jobs = JobRunner()
-    make_llm_client = llm_client_factory or _default_llm_client_factory
+    # The editable runtime config lives in a per-user writable file (seeded from
+    # the bundled default). Tests pass an isolated config_path so the editor
+    # never writes to the real user config.
+    resolved_config_path = config_path or runtime_config_path()
+    make_llm_client = llm_client_factory or (
+        lambda: LLMClient(load_models_config(resolved_config_path).steps)
+    )
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
     _restore_sessions_from_disk(sessions_root, sessions, jobs)
@@ -232,10 +243,14 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         # them. Any failed caption falls back to the transcript placement.
         captions = [None] * len(manifest.steps)
         vision_note = None
-        vision_cfg = load_models_config().vision
+        vision_cfg = load_models_config(resolved_config_path).vision
         if vision_cfg.enabled:
             captions = caption_images(
-                annotated_paths, narration, vision_cfg.endpoint, vision_cfg.model
+                annotated_paths,
+                narration,
+                provider_endpoint(vision_cfg.provider, vision_cfg.endpoint),
+                vision_cfg.model,
+                api_key=provider_api_key(vision_cfg.provider),
             )
             vision_note = (
                 f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
@@ -701,7 +716,60 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
 
     @app.get("/config")
     def get_config():
-        return load_models_config().model_dump()
+        return load_models_config(resolved_config_path).model_dump()
+
+    def _reject_cross_site(request):
+        """A tiny CSRF guard for the state-changing config form: the server is
+        localhost-only, but a page on another site could still POST to it in the
+        user's browser. Browsers attach an Origin header on cross-origin form
+        POSTs -- reject anything whose Origin isn't this local server."""
+        origin = request.headers.get("origin")
+        if origin and not (
+            origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")
+        ):
+            raise HTTPException(status_code=403, detail="cross-site request rejected")
+
+    @app.get("/ui/config")
+    def ui_config(saved: str | None = None):
+        cfg = load_models_config(resolved_config_path)
+        return HTMLResponse(
+            render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved))
+        )
+
+    @app.post("/ui/config")
+    async def ui_config_save(request: Request):
+        _reject_cross_site(request)
+        form = await request.form()
+        data = {
+            "steps": {
+                "provider": form.get("steps_provider", "ollama"),
+                "endpoint": form.get("steps_endpoint", ""),
+                "model": form.get("steps_model", ""),
+            },
+            "narrative": {
+                "provider": form.get("narrative_provider", "ollama"),
+                "endpoint": form.get("narrative_endpoint", ""),
+                "model": form.get("narrative_model", ""),
+                "passes": int(form.get("narrative_passes") or 1),
+            },
+            "vision": {
+                "enabled": form.get("vision_enabled") == "on",
+                "provider": form.get("vision_provider", "ollama"),
+                "endpoint": form.get("vision_endpoint", ""),
+                "model": form.get("vision_model", ""),
+            },
+        }
+        try:
+            cfg = ModelsConfig.model_validate(data)
+        except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> clear 400
+            raise HTTPException(status_code=400, detail=f"invalid config: {exc}") from exc
+        try:
+            save_models_config(cfg, resolved_config_path)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=500, detail=f"could not save config to {resolved_config_path}: {exc}"
+            ) from exc
+        return RedirectResponse("/ui/config?saved=1", status_code=303)
 
     @app.get("/version")
     def get_version():
@@ -721,7 +789,7 @@ def create_app(sessions_root: Path, llm_client_factory=None) -> FastAPI:
         manifest = sessions[session_id][0]
         session_dir = sessions[session_id][3]
         report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
-        config = load_models_config().model_dump()
+        config = load_models_config(resolved_config_path).model_dump()
         title = manifest.session.title or manifest.session.id
         date = manifest.session.started_utc
         return HTMLResponse(render_session_page(session_id, title, date, report, config))
