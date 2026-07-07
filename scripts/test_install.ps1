@@ -316,6 +316,51 @@ if (Test-Path $TestRoot3) { throw "FAIL: install dir $TestRoot3 not removed on -
 if (Test-Path $ExtSessions) { throw "FAIL: external session data at $ExtSessions NOT removed with -RemoveData" }
 Write-Output "PASS: external SessionsRoot preserve/remove round trip."
 
+# --- Round trip 4: upgrade-in-place OVER a running install ---
+# Regression: re-running install over a still-running SOPForge used to fail
+# with "cannot access the file ... VCRUNTIME140.dll ... used by another
+# process" because a running .exe locks its own files. install.ps1 now stops
+# any instance from the target path before copying. -NoAutostart keeps this to
+# the copy/lock behavior; the server is started by hand purely to hold a lock.
+Write-Output ""
+Write-Output "=== Round trip 4: upgrade-in-place over a running install ==="
+$Port4 = $Port + 3
+$TestRoot4 = Join-Path $env:TEMP "sopforge-install-test-upgrade-$(Get-Random)"
+$Sess4 = Join-Path $TestRoot4 "sessions"
+
+& $InstallScript -InstallPath $TestRoot4 -Port $Port4 -SessionsRoot $Sess4 -NoAutostart
+if ($LASTEXITCODE -ne 0) { throw "install.ps1 (upgrade base install) failed (exit $LASTEXITCODE)" }
+
+$ServerExe4 = Join-Path $TestRoot4 "server\sopforge-server.exe"
+$Proc4 = Start-Process -FilePath $ServerExe4 `
+    -ArgumentList "--port", $Port4, "--sessions-root", "`"$Sess4`"" `
+    -PassThru -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $env:TEMP "sopforge-upgrade-out.log") `
+    -RedirectStandardError (Join-Path $env:TEMP "sopforge-upgrade-err.log")
+Start-Sleep -Seconds 3  # let it start and lock its _internal files
+
+$UpgradeError = $null
+try {
+    & $InstallScript -InstallPath $TestRoot4 -Port $Port4 -SessionsRoot $Sess4 -NoAutostart
+    if ($LASTEXITCODE -ne 0) {
+        throw "FAIL: upgrade-in-place over a running install failed (exit $LASTEXITCODE)"
+    }
+    if (-not (Test-Path $ServerExe4)) { throw "FAIL: server exe missing after upgrade" }
+    Write-Output "Upgrade over a running install succeeded (files not locked)."
+} catch {
+    $UpgradeError = $_
+} finally {
+    # The reinstall's stop-before-copy already killed the original process;
+    # sweep any stragglers launched from this test root, regardless.
+    Get-CimInstance Win32_Process -Filter "Name='sopforge-server.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($TestRoot4, [StringComparison]::OrdinalIgnoreCase) } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+& $UninstallScript -InstallPath $TestRoot4 -RemoveData | Out-Null
+if ($UpgradeError) { throw $UpgradeError }
+if (Test-Path $TestRoot4) { throw "FAIL: $TestRoot4 still exists after uninstall" }
+Write-Output "PASS: upgrade-in-place over a running install."
+
 Write-Output ""
 Write-Output "ALL PASS"
 exit 0

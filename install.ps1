@@ -159,6 +159,31 @@ New-Item -ItemType Directory -Force -Path $CaptureInstallPath | Out-Null
 New-Item -ItemType Directory -Force -Path $ServerInstallPath | Out-Null
 New-Item -ItemType Directory -Force -Path $SessionsRoot | Out-Null
 
+# Stop any SOPForge EXE already running from THIS install path before touching
+# its files. A running .exe holds a lock on its own files (e.g.
+# capture\_internal\VCRUNTIME140.dll), so an upgrade-in-place otherwise fails
+# with "cannot access the file ... because it is being used by another process"
+# -- exactly what a recipient hits re-running install.bat while autostart has
+# the previous version running. Match on executable path (trailing separator
+# via ConvertTo-PathPrefix) so a sopforge process from a DIFFERENT install or a
+# dev build under a repo dist/ is never touched. Done BEFORE the session
+# migration below too, so a still-running old server can't lock files it moves.
+$RunningSopforge = @(
+    Get-CimInstance Win32_Process -Filter "Name='sopforge-server.exe' OR Name='sopforge.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith((ConvertTo-PathPrefix $InstallPath), [StringComparison]::OrdinalIgnoreCase) }
+)
+foreach ($proc in $RunningSopforge) {
+    Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    Write-Output "Stopped running '$($proc.Name)' (PID $($proc.ProcessId)) to upgrade in place."
+}
+if ($RunningSopforge.Count -gt 0) {
+    # Stop-Process returns before the OS tears the process down and releases its
+    # file locks; wait for actual exit (bounded) rather than a fixed sleep, so
+    # the copy below can't lose the race and abort the install mid-upgrade.
+    Wait-Process -Id ($RunningSopforge.ProcessId) -Timeout 15 -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 300
+}
+
 # Migrate session data from an older install that (incorrectly) kept it under
 # <InstallPath>\sessions -- where the unelevated server couldn't write, the bug
 # this location move fixes. Moving it into $SessionsRoot on upgrade means prior
@@ -173,8 +198,23 @@ if ((Test-Path $LegacySessions) -and ($LegacySessions -ne $SessionsRoot)) {
     Write-Output "Migrated prior session data from $LegacySessions to $SessionsRoot."
 }
 
-Copy-Item -Path (Join-Path $CaptureDist "*") -Destination $CaptureInstallPath -Recurse -Force
-Copy-Item -Path (Join-Path $ServerDist "*") -Destination $ServerInstallPath -Recurse -Force
+# Copy the EXEs in, retrying briefly: even after the old processes exit, AV or
+# the OS can hold a transient lock on a just-released image for a moment, and
+# this script runs under ErrorActionPreference=Stop, where one failed copy
+# would abort the whole install mid-upgrade.
+function Copy-DistWithRetry([string]$Source, [string]$Destination) {
+    for ($attempt = 1; $attempt -le 5; $attempt++) {
+        try {
+            Copy-Item -Path $Source -Destination $Destination -Recurse -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -eq 5) { throw }
+            Start-Sleep -Milliseconds 600
+        }
+    }
+}
+Copy-DistWithRetry (Join-Path $CaptureDist "*") $CaptureInstallPath
+Copy-DistWithRetry (Join-Path $ServerDist "*") $ServerInstallPath
 
 # A non-default port means the capture agent's auto-upload (which defaults
 # to http://127.0.0.1:8420) needs to be told where the server actually is,
