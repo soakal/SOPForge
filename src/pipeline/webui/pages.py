@@ -77,7 +77,7 @@ def _shell(title, body):
         '<div class="wrap"><div class="brand"><span class="dot"></span>'
         "<b>SOPForge</b></div>"
         f"{body}"
-        f"<footer>SOPForge v{html.escape(__version__)}</footer>"
+        f"<footer>SOPForge v{html.escape(__version__)} &middot; Built by CWi AI</footer>"
         "</div></body></html>"
     )
 
