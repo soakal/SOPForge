@@ -8,6 +8,7 @@ Generation runs on a background job (task-05), so POST /sessions returns
 "queued"/"processing" immediately — tests poll /status until "done" (or a
 terminal "error") before asserting on downstream endpoints."""
 
+import re
 import shutil
 import time
 from pathlib import Path
@@ -478,6 +479,58 @@ def test_config_page_renders_and_saves(tmp_path):
     assert cfg["steps"]["provider"] == "openrouter"
     assert cfg["steps"]["model"] == "anthropic/claude-3.5-haiku"
     assert cfg["vision"]["enabled"] is True
+
+
+def test_config_page_model_datalists(tmp_path):
+    """The Model fields are <input list> + <datalist> suggestions, not plain
+    free text -- still accept any typed value (Ollama pulls, new models)."""
+    client = _make_client(tmp_path)
+
+    page = client.get("/ui/config")
+    assert page.status_code == 200
+    text = page.text
+
+    for key, default_model in (
+        ("steps", "qwen3:14b"),
+        ("narrative", "qwen3:32b"),
+        ("vision", "qwen2.5vl:7b"),
+    ):
+        suggestions_id = f"{key}_model_suggestions"
+        assert f'list="{suggestions_id}"' in text
+        match = re.search(rf'<datalist id="{suggestions_id}">(.*?)</datalist>', text, re.DOTALL)
+        assert match, f"missing datalist for {key}"
+        assert default_model in match.group(1)
+
+    vision_match = re.search(
+        r'<datalist id="vision_model_suggestions">(.*?)</datalist>', text, re.DOTALL
+    )
+    vision_options = re.findall(r'<option value="([^"]*)">', vision_match.group(1))
+    assert vision_options, "vision datalist has no options"
+    assert not any(opt.startswith("claude-") for opt in vision_options), (
+        "vision datalist should not suggest bare anthropic models"
+    )
+
+    resp = client.post(
+        "/ui/config",
+        data={
+            "steps_provider": "ollama",
+            "steps_endpoint": "http://192.168.200.60:11434/v1",
+            "steps_model": "my-custom:latest",
+            "narrative_provider": "ollama",
+            "narrative_endpoint": "http://192.168.200.60:11434/v1",
+            "narrative_model": "qwen3:32b",
+            "narrative_passes": "3",
+            "vision_provider": "ollama",
+            "vision_endpoint": "http://192.168.200.60:11434/v1",
+            "vision_model": "qwen2.5vl:7b",
+            "vision_enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    cfg = client.get("/config").json()
+    assert cfg["steps"]["model"] == "my-custom:latest"
 
 
 def test_config_save_rejects_invalid_provider(tmp_path):

@@ -195,21 +195,32 @@ _KEY_ENV = {
 _RECOMMENDED = {
     "steps": {
         "ollama": "qwen3:14b",
-        "openrouter": "anthropic/claude-3.5-haiku",
-        "openai": "gpt-4o-mini",
-        "anthropic": "claude-haiku-4-5",
+        "openrouter": "anthropic/claude-haiku-4.5",
+        "openai": "gpt-5.4-mini",
+        "anthropic": "claude-haiku-4-5-20251001",
     },
     "narrative": {
         "ollama": "qwen3:32b",
-        "openrouter": "anthropic/claude-sonnet-4",
-        "openai": "gpt-4o",
+        "openrouter": "anthropic/claude-sonnet-5",
+        "openai": "gpt-5.5",
         "anthropic": "claude-sonnet-5",
     },
     "vision": {
         "ollama": "qwen2.5vl:7b",
-        "openrouter": "openai/gpt-4o",
+        "openrouter": "anthropic/claude-sonnet-5",
         "openai": "gpt-4o",
     },
+}
+_MODEL_SUGGESTIONS = {
+    "steps": [
+        "qwen3:14b",
+        "claude-haiku-4-5-20251001",
+        "anthropic/claude-haiku-4.5",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+    ],
+    "narrative": ["qwen3:32b", "claude-sonnet-5", "anthropic/claude-sonnet-5", "gpt-5.5"],
+    "vision": ["qwen2.5vl:7b", "anthropic/claude-sonnet-5", "openai/gpt-5.5", "gpt-4o"],
 }
 
 
@@ -221,13 +232,21 @@ def _provider_select(name, current, providers=None):
     return f'<select name="{name}">{opts}</select>'
 
 
+def _model_datalist(key):
+    suggestions_id = f"{key}_model_suggestions"
+    options = "".join(f'<option value="{html.escape(m)}">' for m in _MODEL_SUGGESTIONS.get(key, []))
+    return suggestions_id, f'<datalist id="{suggestions_id}">{options}</datalist>'
+
+
 def _config_row(key, heading, values, extra="", providers=None):
+    suggestions_id, datalist = _model_datalist(key)
     return (
         f'<div class="card"><h2>{heading}</h2>'
         f'<div class="field"><label>Provider</label>'
         f"{_provider_select(f'{key}_provider', values['provider'], providers)}</div>"
         f'<div class="field"><label>Model</label>'
-        f'<input type="text" name="{key}_model" value="{html.escape(values["model"])}"></div>'
+        f'<input type="text" name="{key}_model" value="{html.escape(values["model"])}" '
+        f'list="{suggestions_id}">{datalist}</div>'
         f'<div class="field"><label>Endpoint <small>(Ollama / custom only)</small></label>'
         f'<input type="text" name="{key}_endpoint" value="{html.escape(values["endpoint"])}"></div>'
         f"{extra}</div>"

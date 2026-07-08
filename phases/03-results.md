@@ -231,3 +231,9 @@ first launch 6.678s, steady-state average 3.803s (threshold 5.0s), clean
 exit codes `[0, 0, 0, 0]`. AC5 E2E: still passes. Full suite: 241 passed,
 5 skipped, 3 deselected; `ruff` clean.
 
+## AC3: sopforge-server.exe cold-start timing and clean exit
+
+- First launch after build: 2.589s (one-time AV-scan cost, same mechanism as Phase 1's sopforge.exe — see phases/DEVIATIONS.md)
+- Steady-state launches (3 repeats): 2.009s, 2.018s, 1.990s (average 2.006s, threshold 5.0s)
+- Clean exit return codes: [0, 0, 0, 0]
+

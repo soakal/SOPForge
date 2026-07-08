@@ -465,20 +465,27 @@ open the tray icon → **Configuration** (or go to `http://127.0.0.1:8420/ui/con
 or the **Configuration** link on the library page).
 
 It has three simple rows — **Steps**, **Narration**, **Vision** — each with a
-**provider** dropdown and a **model** box:
+**provider** dropdown and a **model** box. The model box is a suggestion
+dropdown (native browser autocomplete, no JavaScript) listing a few current
+models per provider, but it still accepts any typed model name — needed for
+Ollama's arbitrary local pull names, or any model not yet in the list.
 
 - **ollama** (default): a local, private model server — nothing leaves your
   network, no API key. Set the endpoint to your Ollama server.
 - **openrouter** / **openai** / **anthropic**: cloud providers. Pick one and a
   model; the API key comes from an environment variable (see below).
 
+Vision only offers **ollama** / **openrouter** / **openai** — it goes through
+an OpenAI-compatible image path that anthropic doesn't support directly (use
+`anthropic/...` via openrouter instead).
+
 Recommended models per provider are shown on the page. Sensible defaults:
 
 | Task | ollama | openrouter | openai | anthropic |
 |---|---|---|---|---|
-| Steps | `qwen3:14b` | `anthropic/claude-3.5-haiku` | `gpt-4o-mini` | `claude-haiku-4-5` |
-| Narration | `qwen3:32b` | `anthropic/claude-sonnet-4` | `gpt-4o` | `claude-sonnet-5` |
-| Vision | `qwen2.5vl:7b` | `openai/gpt-4o` | `gpt-4o` | `claude-sonnet-5` |
+| Steps | `qwen3:14b` | `anthropic/claude-haiku-4.5` | `gpt-5.4-mini` | `claude-haiku-4-5-20251001` |
+| Narration | `qwen3:32b` | `anthropic/claude-sonnet-5` | `gpt-5.5` | `claude-sonnet-5` |
+| Vision | `qwen2.5vl:7b` | `anthropic/claude-sonnet-5` | `gpt-4o` | — |
 
 Saving writes to a **per-user** config at `%USERPROFILE%\SOPForge\models.toml`
 (seeded from the bundled default). Changes take effect on the next generation —
