@@ -77,7 +77,7 @@ def _shell(title, body):
         '<div class="wrap"><div class="brand"><span class="dot"></span>'
         "<b>SOPForge</b></div>"
         f"{body}"
-        f"<footer>SOPForge v{html.escape(__version__)} &middot; Built by CWi AI</footer>"
+        f"<footer>SOPForge v{html.escape(__version__)} &middot; Built by CWI AI</footer>"
         "</div></body></html>"
     )
 
@@ -260,8 +260,12 @@ def render_config_page(config, keystatus, saved=False):
     )
     key_panel = (
         f'<h2>API keys</h2><div class="card"><p class="muted">Keys are read from '
-        "environment variables and never stored in the config. Set the one for the provider "
-        f"you chose, then restart.</p><ul>{key_rows or '<li class="muted">All chosen providers are local (Ollama) — no key needed.</li>'}</ul></div>"
+        "environment variables and never stored in the config — this page can only show "
+        "whether one is set, never edit or reveal it. To set one: PowerShell "
+        "<code>setx ANTHROPIC_API_KEY &quot;sk-ant-...&quot;</code> (swap in the variable name "
+        "below for your provider), or Windows Settings → search &quot;Environment Variables&quot; "
+        "→ Edit environment variables for your account → New. Then restart the server."
+        f"</p><ul>{key_rows or '<li class="muted">All chosen providers are local (Ollama) — no key needed.</li>'}</ul></div>"
     )
 
     rec_rows = "".join(

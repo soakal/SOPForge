@@ -1,6 +1,6 @@
 # SOPForge User Manual
 
-Private software — see [LICENSE](LICENSE). Built by CwiAI.
+Private software — see [LICENSE](LICENSE). Built by CWI AI.
 
 SOPForge is complete: the capture agent, the generation pipeline, exports,
 the review web UI, and packaged installers all work as described below.
@@ -288,6 +288,57 @@ in the background — poll `GET /sessions/{id}/status` until `"status": "done"`
 | `GET` | `/` or `/ui` | The review web UI's library page (see §5). |
 | `GET` | `/ui/sessions/{id}` | The review web UI's per-session page. |
 
+### Example commands per endpoint
+
+Substitute your own `{id}` (the `session_id` from the `/sessions` response) and
+port. All examples use `curl.exe` (PowerShell's built-in `curl` is an alias for
+`Invoke-WebRequest`, not real curl, so call `curl.exe` explicitly).
+
+```powershell
+# POST /sessions -- see "Uploading a session via the API" above for the full form.
+
+# POST /sessions/{id}/rerender -- re-run generation + all exports
+curl.exe -X POST http://127.0.0.1:8420/sessions/$id/rerender
+
+# POST /ui/build -- manifest-free build from screenshots (+ optional transcript)
+curl.exe -X POST http://127.0.0.1:8420/ui/build `
+  -F "title=My procedure" `
+  -F "files=@C:\path\to\001.png" `
+  -F "files=@C:\path\to\002.png" `
+  -F "transcript_file=@C:\path\to\transcript.md"
+
+# POST /ui/sessions/{id}/transcript -- attach/replace a transcript, then re-render
+curl.exe -X POST http://127.0.0.1:8420/ui/sessions/$id/transcript `
+  -F "transcript_file=@C:\path\to\transcript.md"
+
+# GET /version
+curl.exe http://127.0.0.1:8420/version
+
+# GET /sessions/{id}/status -- poll until "done" or "error"
+curl.exe http://127.0.0.1:8420/sessions/$id/status
+
+# GET /sessions/{id}/report -- the sidecar review report (JSON)
+curl.exe http://127.0.0.1:8420/sessions/$id/report
+
+# GET /sessions/{id}/doc.md | doc.html | doc.docx | doc.pdf | doc.single.html
+curl.exe http://127.0.0.1:8420/sessions/$id/doc.docx -o out.docx
+
+# GET /sessions/{id}/export.md.zip -- the Markdown bundle, zipped
+curl.exe http://127.0.0.1:8420/sessions/$id/export.md.zip -o export.zip
+
+# GET /sessions/{id}/review -- plain-HTML sidecar report page (open in a browser instead)
+curl.exe http://127.0.0.1:8420/sessions/$id/review
+
+# GET /library?q= -- search past sessions by title/date substring
+curl.exe "http://127.0.0.1:8420/library?q=onboarding"
+
+# GET /config -- read-only view of the parsed config/models.toml
+curl.exe http://127.0.0.1:8420/config
+```
+
+`/` (or `/ui`) and `/ui/sessions/{id}` are meant to be opened in a browser, not
+curled — see §5.
+
 ### What "template mode" means
 
 Every step's wording can come from one of two places:
@@ -450,10 +501,14 @@ setx OPENROUTER_API_KEY "sk-or-..."
 ```
 
 The Configuration page shows whether each needed key is **set** (never the value
-itself). The server is localhost-only, validates every change, and rejects
-cross-site form posts. If a chosen provider's key isn't set, that task falls
-back to the template (Steps) or is skipped (Vision) — it fails loudly in the
-logs but never breaks doc generation.
+itself) — **there is no field on that page to type or paste a key**; it's a
+status-only readout, by design, so the key never passes through the web UI at
+all. If a chosen provider's key isn't set, that task falls back to the template
+(Steps) or is skipped (Vision) — it fails loudly in the logs but never breaks
+doc generation.
+
+The server is localhost-only, validates every change, and rejects cross-site
+form posts.
 
 ---
 
