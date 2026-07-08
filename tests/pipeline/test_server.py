@@ -483,7 +483,13 @@ def test_config_page_renders_and_saves(tmp_path):
 
 def test_config_page_model_datalists(tmp_path):
     """The Model fields are <input list> + <datalist> suggestions, not plain
-    free text -- still accept any typed value (Ollama pulls, new models)."""
+    free text -- still accept any typed value (Ollama pulls, new models). The
+    canonical datalist per field is scoped to the CURRENTLY-SAVED provider
+    (the default fixture config is all-ollama), and a per-provider datalist
+    exists for every provider that field's suggestions dict knows about, so
+    the provider-select's onchange handler can swap in the right options."""
+    from pipeline.webui.pages import _MODEL_SUGGESTIONS
+
     client = _make_client(tmp_path)
 
     page = client.get("/ui/config")
@@ -498,17 +504,27 @@ def test_config_page_model_datalists(tmp_path):
         suggestions_id = f"{key}_model_suggestions"
         assert f'list="{suggestions_id}"' in text
         match = re.search(rf'<datalist id="{suggestions_id}">(.*?)</datalist>', text, re.DOTALL)
-        assert match, f"missing datalist for {key}"
+        assert match, f"missing canonical datalist for {key}"
         assert default_model in match.group(1)
 
-    vision_match = re.search(
-        r'<datalist id="vision_model_suggestions">(.*?)</datalist>', text, re.DOTALL
+        for provider in _MODEL_SUGGESTIONS[key]:
+            per_provider_id = f"{key}_model_suggestions_{provider}"
+            assert f'<datalist id="{per_provider_id}">' in text, (
+                f"missing per-provider datalist for {key}/{provider}"
+            )
+
+    assert "anthropic" not in _MODEL_SUGGESTIONS["vision"], (
+        "vision suggestions should not have a bare anthropic entry"
     )
-    vision_options = re.findall(r'<option value="([^"]*)">', vision_match.group(1))
-    assert vision_options, "vision datalist has no options"
-    assert not any(opt.startswith("claude-") for opt in vision_options), (
-        "vision datalist should not suggest bare anthropic models"
+    vision_datalists = re.findall(
+        r'<datalist id="vision_model_suggestions[^"]*">(.*?)</datalist>', text, re.DOTALL
     )
+    assert vision_datalists, "vision datalists missing"
+    for options_html in vision_datalists:
+        options = re.findall(r'<option value="([^"]*)">', options_html)
+        assert not any(opt.startswith("claude-") for opt in options), (
+            "vision datalist should not suggest bare anthropic models"
+        )
 
     resp = client.post(
         "/ui/config",
@@ -531,6 +547,85 @@ def test_config_page_model_datalists(tmp_path):
 
     cfg = client.get("/config").json()
     assert cfg["steps"]["model"] == "my-custom:latest"
+
+
+def test_config_provider_select_switches_suggestions(tmp_path):
+    """Each Provider <select> carries an onchange handler that swaps the
+    canonical datalist's contents to match the newly-selected provider's
+    per-provider datalist -- and every id it could reference actually exists
+    on the page (no dangling getElementById reference)."""
+    from pipeline.webui.pages import _PROVIDERS, _VISION_PROVIDERS
+
+    client = _make_client(tmp_path)
+    text = client.get("/ui/config").text
+
+    for key, providers in (
+        ("steps", _PROVIDERS),
+        ("narrative", _PROVIDERS),
+        ("vision", _VISION_PROVIDERS),
+    ):
+        select_match = re.search(rf'<select name="{key}_provider"[^>]*>', text)
+        assert select_match, f"missing provider select for {key}"
+        select_tag = select_match.group(0)
+        assert "onchange=" in select_tag
+        assert f"{key}_model_suggestions" in select_tag
+
+        for provider in providers:
+            per_provider_id = f"{key}_model_suggestions_{provider}"
+            assert f'<datalist id="{per_provider_id}">' in text, (
+                f"select for {key} can select {provider} but no datalist {per_provider_id} exists"
+            )
+
+
+def test_config_model_inputs_focus_clear(tmp_path):
+    """Model inputs clear on focus (so the browser shows the full unfiltered
+    suggestion list instead of just the current value, since a datalist
+    filters to options matching the current text) and restore the original
+    value on blur only if left empty."""
+    client = _make_client(tmp_path)
+    text = client.get("/ui/config").text
+
+    for key in ("steps", "narrative", "vision"):
+        input_match = re.search(rf'<input type="text" name="{key}_model"[^>]*>', text)
+        assert input_match, f"missing model input for {key}"
+        input_tag = input_match.group(0)
+        assert 'value="' in input_tag
+        assert f'list="{key}_model_suggestions"' in input_tag
+        assert "onfocus=\"this.dataset.prev=this.value;this.value=''\"" in input_tag
+        assert "onblur=\"if(!this.value)this.value=this.dataset.prev||''\"" in input_tag
+
+
+def test_config_save_empty_model_keeps_existing(tmp_path):
+    """A submitted empty narrative_model (e.g. a race with the focus-clear
+    trick, or a stray Enter mid-clear) must NOT blank out the saved model --
+    it should fall back to whatever was already saved."""
+    client = _make_client(tmp_path)
+
+    before = client.get("/config").json()
+    existing_narrative_model = before["narrative"]["model"]
+    assert existing_narrative_model  # sanity: fixture config has a real model
+
+    resp = client.post(
+        "/ui/config",
+        data={
+            "steps_provider": "ollama",
+            "steps_endpoint": "http://192.168.200.60:11434/v1",
+            "steps_model": "qwen3:14b",
+            "narrative_provider": "ollama",
+            "narrative_endpoint": "http://192.168.200.60:11434/v1",
+            "narrative_model": "",
+            "narrative_passes": "3",
+            "vision_provider": "ollama",
+            "vision_endpoint": "http://192.168.200.60:11434/v1",
+            "vision_model": "qwen2.5vl:7b",
+            "vision_enabled": "on",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    after = client.get("/config").json()
+    assert after["narrative"]["model"] == existing_narrative_model
 
 
 def test_config_save_rejects_invalid_provider(tmp_path):

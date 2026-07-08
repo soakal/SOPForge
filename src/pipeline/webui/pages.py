@@ -212,41 +212,75 @@ _RECOMMENDED = {
     },
 }
 _MODEL_SUGGESTIONS = {
-    "steps": [
-        "qwen3:14b",
-        "claude-haiku-4-5-20251001",
-        "anthropic/claude-haiku-4.5",
-        "gpt-5.4-mini",
-        "gpt-5.4-nano",
-    ],
-    "narrative": ["qwen3:32b", "claude-sonnet-5", "anthropic/claude-sonnet-5", "gpt-5.5"],
-    "vision": ["qwen2.5vl:7b", "anthropic/claude-sonnet-5", "openai/gpt-5.5", "gpt-4o"],
+    "steps": {
+        "ollama": ["qwen3:14b"],
+        "openrouter": ["anthropic/claude-haiku-4.5", "openai/gpt-5.4-mini"],
+        "openai": ["gpt-5.4-mini", "gpt-5.4-nano"],
+        "anthropic": ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-fable-5"],
+    },
+    "narrative": {
+        "ollama": ["qwen3:32b"],
+        "openrouter": ["anthropic/claude-sonnet-5", "openai/gpt-5.5"],
+        "openai": ["gpt-5.5", "gpt-5.4"],
+        "anthropic": ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"],
+    },
+    "vision": {
+        "ollama": ["qwen2.5vl:7b"],
+        "openrouter": ["anthropic/claude-sonnet-5", "openai/gpt-5.5"],
+        "openai": ["gpt-5.5", "gpt-4o"],
+        # deliberately no "anthropic" key -- vision excludes bare anthropic (see _VISION_PROVIDERS)
+    },
 }
 
 
-def _provider_select(name, current, providers=None):
+def _provider_select(name, current, key, providers=None):
     opts = "".join(
         f'<option value="{p}"{" selected" if p == current else ""}>{p}</option>'
         for p in (providers or _PROVIDERS)
     )
-    return f'<select name="{name}">{opts}</select>'
+    # Swap the canonical datalist's contents to the newly-selected provider's
+    # per-provider datalist. Defensive null-check: every field's providers
+    # currently have a per-provider datalist entry, but a missing one should
+    # no-op instead of throwing on a null getElementById.
+    onchange = (
+        "(function(s){"
+        f"var t=document.getElementById('{key}_model_suggestions');"
+        f"var d=document.getElementById('{key}_model_suggestions_'+s.value);"
+        "if(d)t.innerHTML=d.innerHTML;"
+        "})(this)"
+    )
+    return f'<select name="{name}" onchange="{onchange}">{opts}</select>'
 
 
-def _model_datalist(key):
-    suggestions_id = f"{key}_model_suggestions"
-    options = "".join(f'<option value="{html.escape(m)}">' for m in _MODEL_SUGGESTIONS.get(key, []))
-    return suggestions_id, f'<datalist id="{suggestions_id}">{options}</datalist>'
+def _model_datalist(key, current_provider):
+    canonical_id = f"{key}_model_suggestions"
+    per_provider = _MODEL_SUGGESTIONS.get(key, {})
+    canonical_options = "".join(
+        f'<option value="{html.escape(m)}">' for m in per_provider.get(current_provider, [])
+    )
+    extra_datalists = "".join(
+        f'<datalist id="{key}_model_suggestions_{p}">'
+        + "".join(f'<option value="{html.escape(m)}">' for m in models)
+        + "</datalist>"
+        for p, models in per_provider.items()
+    )
+    return (
+        canonical_id,
+        f'<datalist id="{canonical_id}">{canonical_options}</datalist>{extra_datalists}',
+    )
 
 
 def _config_row(key, heading, values, extra="", providers=None):
-    suggestions_id, datalist = _model_datalist(key)
+    suggestions_id, datalist = _model_datalist(key, values["provider"])
     return (
         f'<div class="card"><h2>{heading}</h2>'
         f'<div class="field"><label>Provider</label>'
-        f"{_provider_select(f'{key}_provider', values['provider'], providers)}</div>"
+        f"{_provider_select(f'{key}_provider', values['provider'], key, providers)}</div>"
         f'<div class="field"><label>Model</label>'
         f'<input type="text" name="{key}_model" value="{html.escape(values["model"])}" '
-        f'list="{suggestions_id}">{datalist}</div>'
+        f'list="{suggestions_id}" '
+        f"onfocus=\"this.dataset.prev=this.value;this.value=''\" "
+        f"onblur=\"if(!this.value)this.value=this.dataset.prev||''\">{datalist}</div>"
         f'<div class="field"><label>Endpoint <small>(Ollama / custom only)</small></label>'
         f'<input type="text" name="{key}_endpoint" value="{html.escape(values["endpoint"])}"></div>'
         f"{extra}</div>"

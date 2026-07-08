@@ -770,23 +770,35 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     @app.post("/ui/config")
     async def ui_config_save(request: Request):
         form = await request.form()
+        # The Model fields clear on focus so the browser shows the full
+        # suggestion list (see webui/pages.py's onfocus/onblur handlers) --
+        # an empty submission (a stray Enter mid-clear, or similar race)
+        # must not blank out the saved model, so fall back to the currently
+        # saved value for any field submitted empty.
+        existing = load_models_config(resolved_config_path)
+
+        def _model_or_existing(form_value, existing_model):
+            return form_value if form_value else existing_model
+
         data = {
             "steps": {
                 "provider": form.get("steps_provider", "ollama"),
                 "endpoint": form.get("steps_endpoint", ""),
-                "model": form.get("steps_model", ""),
+                "model": _model_or_existing(form.get("steps_model", ""), existing.steps.model),
             },
             "narrative": {
                 "provider": form.get("narrative_provider", "ollama"),
                 "endpoint": form.get("narrative_endpoint", ""),
-                "model": form.get("narrative_model", ""),
+                "model": _model_or_existing(
+                    form.get("narrative_model", ""), existing.narrative.model
+                ),
                 "passes": form.get("narrative_passes") or "1",
             },
             "vision": {
                 "enabled": form.get("vision_enabled") == "on",
                 "provider": form.get("vision_provider", "ollama"),
                 "endpoint": form.get("vision_endpoint", ""),
-                "model": form.get("vision_model", ""),
+                "model": _model_or_existing(form.get("vision_model", ""), existing.vision.model),
             },
         }
         try:

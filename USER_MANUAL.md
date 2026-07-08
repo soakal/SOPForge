@@ -466,9 +466,14 @@ or the **Configuration** link on the library page).
 
 It has three simple rows — **Steps**, **Narration**, **Vision** — each with a
 **provider** dropdown and a **model** box. The model box is a suggestion
-dropdown (native browser autocomplete, no JavaScript) listing a few current
-models per provider, but it still accepts any typed model name — needed for
-Ollama's arbitrary local pull names, or any model not yet in the list.
+dropdown (native browser autocomplete; a small bit of JavaScript makes the
+suggestions follow whichever provider you've selected, and clears-on-focus so
+you see every option instead of just the field's current value — the page
+still fully works with JavaScript disabled, you just lose that convenience
+and see the currently-configured provider's suggestions instead).
+Suggestions follow the selected provider. It still accepts any typed model
+name — needed for Ollama's arbitrary local pull names, or any model not yet
+in the list.
 
 - **ollama** (default): a local, private model server — nothing leaves your
   network, no API key. Set the endpoint to your Ollama server.
