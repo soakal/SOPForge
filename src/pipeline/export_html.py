@@ -44,6 +44,9 @@ def render_single_file_html(manifest, step_results, annotated_paths, narrative_t
     ):
         parts.append(f"<h2>Step {n}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
-        parts.append(f'<img src="{_data_uri(shot)}" alt="Step {n}">')
+        # Guard a missing annotated image (like render_pdf does) so one absent
+        # file doesn't crash the job after docx/pdf were already written.
+        if shot is not None and Path(shot).exists():
+            parts.append(f'<img src="{_data_uri(shot)}" alt="Step {n}">')
     parts.append("</body></html>")
     return "\n".join(parts)

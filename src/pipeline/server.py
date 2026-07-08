@@ -33,9 +33,16 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+    Response,
+)
 from PIL import Image
 
 from pipeline import __version__
@@ -125,6 +132,23 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     to the (usually unreachable in a dev/test environment) configured
     endpoint before falling back, adding real seconds per step."""
     app = FastAPI()
+
+    _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+    @app.middleware("http")
+    async def _csrf_guard(request, call_next):
+        """CSRF guard for EVERY state-changing request. The server is
+        localhost-only, but a page on another site could still POST to it in the
+        user's browser (e.g. auto-submit a form to /shutdown or /ui/config).
+        Browsers attach an Origin header on cross-origin requests -- reject any
+        whose host isn't this local server. Programmatic clients (the capture
+        agent's auto-upload) send no Origin and are allowed. The host is matched
+        exactly (not a prefix), so 'http://127.0.0.1.evil.com' is rejected."""
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            origin = request.headers.get("origin")
+            if origin and urlsplit(origin).hostname not in _LOCAL_HOSTS:
+                return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def _no_store_html(request, call_next):
@@ -509,45 +533,56 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         annotated_dir = session_dir / "annotated"
         screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-        # Normalize every image to NNN.png (upload order) via PIL -- this both
-        # fixes the ordering/naming and validates each file really is an image
-        # (PIL raises on junk), so downstream export never trips on a bad file.
-        names = []
-        for i, upload in enumerate(images, start=1):
-            ext = Path(upload.filename or "").suffix.lower().lstrip(".")
-            if ext not in _IMG_EXTS:
-                raise HTTPException(
-                    status_code=400, detail=f"not a supported image: {upload.filename!r}"
+        # If any validation below rejects the input, remove the just-created
+        # session directory so a bad request never leaves an orphan on disk
+        # (unregistered, never restored, never cleaned).
+        try:
+            # Normalize every image to NNN.png (upload order) via PIL -- fixes
+            # ordering/naming and validates each file really is an image.
+            names = []
+            for i, upload in enumerate(images, start=1):
+                ext = Path(upload.filename or "").suffix.lower().lstrip(".")
+                if ext not in _IMG_EXTS:
+                    raise HTTPException(
+                        status_code=400, detail=f"not a supported image: {upload.filename!r}"
+                    )
+                name = f"{i:03d}.png"
+                try:
+                    with Image.open(upload.file) as im:
+                        im.convert("RGB").save(screenshots_dir / name)
+                except HTTPException:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    raise HTTPException(
+                        status_code=400, detail=f"unreadable image {upload.filename!r}: {exc}"
+                    ) from exc
+                names.append(name)
+
+            started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            manifest_dict = synthetic_manifest_dict(title, names, started)
+            manifest_dict["session"]["id"] = session_id
+            manifest = load_manifest(manifest_dict)
+
+            transcript_ext = None
+            if transcript is not None:
+                t_name, t_content = transcript
+                try:
+                    align_transcript_to_steps(t_name, t_content, manifest)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400, detail=f"invalid transcript: {exc}"
+                    ) from exc
+                transcript_ext = (t_name or "").lower().rsplit(".", 1)[-1]
+
+            (session_dir / "manifest.json").write_text(json.dumps(manifest_dict), encoding="utf-8")
+            (session_dir / "mode.txt").write_text("photo", encoding="utf-8")
+            if transcript is not None:
+                (session_dir / f"transcript.{transcript_ext}").write_text(
+                    transcript[1], encoding="utf-8"
                 )
-            name = f"{i:03d}.png"
-            try:
-                Image.open(upload.file).convert("RGB").save(screenshots_dir / name)
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(
-                    status_code=400, detail=f"unreadable image {upload.filename!r}: {exc}"
-                ) from exc
-            names.append(name)
-
-        started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        manifest_dict = synthetic_manifest_dict(title, names, started)
-        manifest_dict["session"]["id"] = session_id
-        manifest = load_manifest(manifest_dict)
-
-        transcript_ext = None
-        if transcript is not None:
-            t_name, t_content = transcript
-            try:
-                align_transcript_to_steps(t_name, t_content, manifest)
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=f"invalid transcript: {exc}") from exc
-            transcript_ext = (t_name or "").lower().rsplit(".", 1)[-1]
-
-        (session_dir / "manifest.json").write_text(json.dumps(manifest_dict), encoding="utf-8")
-        (session_dir / "mode.txt").write_text("photo", encoding="utf-8")
-        if transcript is not None:
-            (session_dir / f"transcript.{transcript_ext}").write_text(
-                transcript[1], encoding="utf-8"
-            )
+        except HTTPException:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            raise
 
         sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
         jobs.submit(session_id, lambda: _generate(session_id))
@@ -614,6 +649,13 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         index entry, and its in-memory registration. Irreversible -- there
         is no undo/trash, matching how uninstall.ps1 -RemoveData works."""
         _require_known_session(session_id)
+        # Refuse to delete a session whose generation job is still running --
+        # rmtree racing the worker thread mid-export would crash the job and
+        # could leave a half-deleted directory.
+        if jobs.status(session_id)["status"] in ("queued", "processing"):
+            raise HTTPException(
+                status_code=409, detail="session is still generating; try again once it's done"
+            )
         session_dir = sessions[session_id][3]
         del sessions[session_id]
         # report.json's absence is what _restore_sessions_from_disk actually
@@ -718,17 +760,6 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     def get_config():
         return load_models_config(resolved_config_path).model_dump()
 
-    def _reject_cross_site(request):
-        """A tiny CSRF guard for the state-changing config form: the server is
-        localhost-only, but a page on another site could still POST to it in the
-        user's browser. Browsers attach an Origin header on cross-origin form
-        POSTs -- reject anything whose Origin isn't this local server."""
-        origin = request.headers.get("origin")
-        if origin and not (
-            origin.startswith("http://127.0.0.1") or origin.startswith("http://localhost")
-        ):
-            raise HTTPException(status_code=403, detail="cross-site request rejected")
-
     @app.get("/ui/config")
     def ui_config(saved: str | None = None):
         cfg = load_models_config(resolved_config_path)
@@ -738,7 +769,6 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
 
     @app.post("/ui/config")
     async def ui_config_save(request: Request):
-        _reject_cross_site(request)
         form = await request.form()
         data = {
             "steps": {
@@ -750,7 +780,7 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
                 "provider": form.get("narrative_provider", "ollama"),
                 "endpoint": form.get("narrative_endpoint", ""),
                 "model": form.get("narrative_model", ""),
-                "passes": int(form.get("narrative_passes") or 1),
+                "passes": form.get("narrative_passes") or "1",
             },
             "vision": {
                 "enabled": form.get("vision_enabled") == "on",
@@ -760,6 +790,8 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
             },
         }
         try:
+            # pydantic coerces "passes" from str and enforces ge=1; a non-numeric
+            # value is a clean 400 here, not an int() crash before validation.
             cfg = ModelsConfig.model_validate(data)
         except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> clear 400
             raise HTTPException(status_code=400, detail=f"invalid config: {exc}") from exc

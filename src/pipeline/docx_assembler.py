@@ -73,7 +73,7 @@ def assemble_docx(
         sop.heading1("Overview")
         sop.paragraph(narrative_text)
     sop.heading1("Steps")
-    for n, (step, result) in enumerate(zip(manifest.steps, step_results), start=1):
+    for n, (step, result) in enumerate(zip(manifest.steps, step_results, strict=True), start=1):
         sop.heading2(f"Step {n}")
         sop.bullet(result["text"])
         if result.get("narration"):

@@ -37,7 +37,11 @@ def _caption_one(path, narration, index, total, endpoint, model, timeout, transp
     try:
         data = base64.b64encode(path.read_bytes()).decode("ascii")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        with httpx.Client(transport=transport, timeout=timeout) as client:
+        # Cap the CONNECT phase short (like LLMClient) so an unreachable/
+        # firewalled endpoint fails fast per image instead of stalling the whole
+        # build ~timeout seconds each.
+        client_timeout = httpx.Timeout(timeout, connect=5.0)
+        with httpx.Client(transport=transport, timeout=client_timeout) as client:
             resp = client.post(
                 f"{endpoint.rstrip('/')}/chat/completions",
                 headers=headers,

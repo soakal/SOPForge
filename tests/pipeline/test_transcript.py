@@ -108,6 +108,48 @@ def test_json_timed_transcript_aligns_by_timestamp():
     assert "timed segment" in note
 
 
+def test_numberish_prose_not_treated_as_labels():
+    # Regression: "10:30", "1.5 million", "3-4 minutes" must NOT be mistaken for
+    # step labels (they previously flipped the whole file into label mode and
+    # misplaced every paragraph). They stay plain prose, placed in order.
+    content = "10:30 we open the app.\n\nWe processed 1.5 million records.\n\nIt took 3-4 minutes."
+    per_step, note = align_transcript_to_steps("t.txt", content, _manifest())
+    assert per_step["step-001"] == "10:30 we open the app."
+    assert per_step["step-002"] == "We processed 1.5 million records."
+    assert per_step["step-003"] == "It took 3-4 minutes."
+    assert "in order" in note
+
+
+def test_malformed_json_transcript_raises_valueerror():
+    # Well-formed JSON of the wrong shape must be a clean ValueError (-> 400),
+    # not a KeyError/TypeError/AttributeError 500.
+    for bad in ('{"foo": 1}', '"just a string"', "[1, 2, 3]", "123"):
+        with pytest.raises(ValueError):
+            align_transcript_to_steps("t.json", bad, _manifest())
+
+
+def test_timed_transcript_on_synthetic_manifest_distributes_positionally():
+    # A photo-build synthetic manifest gives every step the SAME timestamp, so
+    # timed placement can't use timing -- it must fall back to positional
+    # (segment i -> step i), not dump every segment on the last step.
+    from pipeline.photo_build import synthetic_manifest_dict
+
+    md = synthetic_manifest_dict("T", ["001.png", "002.png", "003.png"], "2026-01-01T00:00:00Z")
+    md["session"]["id"] = "photo-session"  # the server sets this before loading
+    manifest = load_manifest(md)
+    sids = [s.id for s in manifest.steps]
+    content = (
+        '{"segments":['
+        '{"text":"first","start":1.0},'
+        '{"text":"second","start":2.0},'
+        '{"text":"third","start":3.0}]}'
+    )
+    per_step, _ = align_transcript_to_steps("w.json", content, manifest)
+    assert per_step[sids[0]] == "first"
+    assert per_step[sids[1]] == "second"
+    assert per_step[sids[2]] == "third"
+
+
 def test_unsupported_extension_raises():
     with pytest.raises(ValueError, match="unsupported transcript format"):
         align_transcript_to_steps("audio.mp3", "data", _manifest())

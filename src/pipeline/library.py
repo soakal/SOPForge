@@ -70,7 +70,7 @@ def upsert_entry(sessions_root, session_id, manifest, report):
         "verify_claims_count": len(report.get("verify_claims", [])),
         "empty_metadata_count": len(report.get("empty_metadata_steps", [])),
     }
-    entries = [e for e in load_index(sessions_root) if e["session_id"] != session_id]
+    entries = [e for e in load_index(sessions_root) if e.get("session_id") != session_id]
     entries.append(entry)
     _save_index(sessions_root, entries)
     return entry
@@ -79,15 +79,23 @@ def upsert_entry(sessions_root, session_id, manifest, report):
 def remove_entry(sessions_root, session_id):
     """Removes this session's library entry, if present. No-op if it isn't
     (deleting an already-removed or never-indexed session)."""
-    entries = [e for e in load_index(sessions_root) if e["session_id"] != session_id]
+    entries = [e for e in load_index(sessions_root) if e.get("session_id") != session_id]
     _save_index(sessions_root, entries)
 
 
 def search(sessions_root, query=None):
     """Returns library entries whose title or date contains `query`
     (case-insensitive substring), or all entries if query is empty/None."""
-    entries = load_index(sessions_root)
+    # Skip malformed entries (hand-edited or older-schema library.json) so one
+    # bad row can't KeyError-500 GET /library and the home page.
+    entries = [
+        e
+        for e in load_index(sessions_root)
+        if isinstance(e, dict) and e.get("session_id") and e.get("title") is not None
+    ]
+    for e in entries:
+        e.setdefault("date", "")
     if not query:
         return entries
     q = query.lower()
-    return [e for e in entries if q in e["title"].lower() or q in e["date"].lower()]
+    return [e for e in entries if q in str(e["title"]).lower() or q in str(e["date"]).lower()]

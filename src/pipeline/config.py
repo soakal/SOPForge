@@ -31,6 +31,11 @@ PROVIDERS = {
 }
 
 Provider = Literal["ollama", "openrouter", "openai", "anthropic"]
+# Vision captioning goes through the OpenAI-compatible image path (base64
+# image_url). Anthropic uses a different image format AND has no OpenAI-compat
+# endpoint here -- allowing it would send ANTHROPIC_API_KEY as a Bearer token to
+# the (leftover) ollama endpoint. So vision providers exclude anthropic.
+VisionProvider = Literal["ollama", "openrouter", "openai"]
 
 
 def default_config_path():
@@ -62,7 +67,7 @@ class SectionConfig(BaseModel):
     provider: Provider = "ollama"
     # Legacy: older configs used `anthropic = true` instead of provider.
     anthropic: bool = False
-    passes: int = 1
+    passes: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def _legacy_anthropic(self):
@@ -79,7 +84,7 @@ class VisionConfig(BaseModel):
     enabled: bool = False
     endpoint: str = "http://192.168.200.60:11434/v1"
     model: str = "qwen2.5vl:7b"
-    provider: Provider = "ollama"
+    provider: VisionProvider = "ollama"
 
 
 class ModelsConfig(BaseModel):
@@ -131,7 +136,13 @@ def _toml_str(value):
         return "true" if value else "false"
     if isinstance(value, int):
         return str(value)
-    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    # Escape backslash and quote, plus control chars (a raw newline in a TOML
+    # basic string is illegal -- without this, a multiline model value would
+    # write invalid TOML and brick every subsequent config load).
+    s = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    s = "".join(c if c >= " " else f"\\u{ord(c):04x}" for c in s)
+    return '"' + s + '"'
 
 
 def dump_models_config_toml(cfg: ModelsConfig) -> str:

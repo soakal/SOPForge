@@ -101,11 +101,22 @@ class TrayApp:
         return self._recorder is not None
 
     def toggle_recording(self):
-        with self._lock:
-            if self.is_recording:
-                self._stop_recording()
-            else:
-                self._start_recording()
+        # This runs on the pynput hotkey listener thread (and pystray's menu
+        # thread). pynput STOPS the listener if a callback raises -- so an
+        # unguarded exception here would silently kill Ctrl+Alt+R for the rest
+        # of the process. Swallow, log, and notify instead.
+        try:
+            with self._lock:
+                if self.is_recording:
+                    self._stop_recording()
+                else:
+                    self._start_recording()
+        except Exception:  # noqa: BLE001 - never let a toggle failure kill the hotkey listener
+            logger.exception("recording toggle failed")
+            self._notify_fn(
+                "SOPForge couldn't start/stop the recording. See the log for details.",
+                "SOPForge",
+            )
 
     def _start_recording(self):
         """Caller must hold self._lock. Starts into a local variable first —
@@ -120,16 +131,22 @@ class TrayApp:
         self._icon.icon = RECORDING_ICON
         self._icon.title = f"SOPForge v{__version__} (recording)"
 
-    def _stop_recording(self):
-        """Caller must hold self._lock."""
+    def _stop_recording(self, upload=True):
+        """Caller must hold self._lock. Returns the finished capture's output
+        directory (or None if nothing was recording). `upload=False` finalizes
+        the capture to disk WITHOUT spawning the auto-upload -- used by exit(),
+        where uploading to a server we're about to shut down would just race the
+        shutdown and be killed with the process."""
         if not self.is_recording:
-            return
+            return None
         recorder, self._recorder = self._recorder, None
         try:
             recorder.stop()
         finally:
             self._icon.icon = IDLE_ICON
             self._icon.title = f"SOPForge v{__version__} (idle)"
+        if not upload:
+            return recorder.output_dir
         # Off the lock, on a background thread: uploading can take a few
         # seconds (screenshot transfer + queuing), and "stop recording"
         # must feel instant regardless of whether a server is even running.
@@ -143,6 +160,7 @@ class TrayApp:
             args=(recorder.output_dir, self._upload_fn, self.server_url),
             daemon=True,
         ).start()
+        return recorder.output_dir
 
     def _icon_notify(self, message, title="SOPForge"):
         """Show a Windows tray balloon, best-effort. Some pystray backends
@@ -198,10 +216,22 @@ class TrayApp:
         """Stops the recording (if any), then the headless server, then the
         tray icon -- so a single Exit closes both processes. The server stop
         is best-effort (see _request_server_shutdown); the icon always stops
-        regardless."""
+        regardless.
+
+        Exiting mid-recording finalizes the capture to disk but does NOT
+        auto-upload: we're about to shut the server down, so an upload would
+        race that shutdown and be killed with the process. Instead we notify
+        (while the icon is still alive) where the capture is saved so the user
+        can upload it next time -- the capture is never silently lost."""
         try:
             with self._lock:
-                self._stop_recording()
+                saved_dir = self._stop_recording(upload=False)
+            if saved_dir is not None:
+                self._notify_fn(
+                    f"Recording saved at {saved_dir}. Start SOPForge later, open the "
+                    "library, and use Upload.",
+                    "SOPForge: recording saved locally",
+                )
             self._shutdown_fn(self.server_url)
         finally:
             self._icon.stop()

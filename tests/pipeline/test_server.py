@@ -252,7 +252,10 @@ def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monk
     files = [
         ("files", ("first.png", png((200, 0, 0)), "image/png")),
         ("files", ("second.png", png((0, 200, 0)), "image/png")),
-        ("transcript_file", ("t.md", b"1. Open the first screen.\n2. Then the second.", "text/markdown")),
+        (
+            "transcript_file",
+            ("t.md", b"1. Open the first screen.\n2. Then the second.", "text/markdown"),
+        ),
     ]
     resp = client.post(
         "/ui/build", data={"title": "My Photo SOP"}, files=files, follow_redirects=False
@@ -303,7 +306,9 @@ def test_build_uses_vision_captions_when_available(tmp_path, monkeypatch):
         ("files", ("b.png", png((20, 20, 20)), "image/png")),
         ("transcript_file", ("t.txt", b"a dictated blob of narration", "text/plain")),
     ]
-    resp = client.post("/ui/build", data={"title": "Vision SOP"}, files=files, follow_redirects=False)
+    resp = client.post(
+        "/ui/build", data={"title": "Vision SOP"}, files=files, follow_redirects=False
+    )
     session_id = resp.headers["location"].rsplit("/", 1)[-1]
     status = _wait_for_terminal_status(client, session_id)
     assert status["status"] == "done"
@@ -437,9 +442,7 @@ def test_unwritable_sessions_root_fails_loudly_at_startup(tmp_path, monkeypatch)
 
     monkeypatch.setattr(Path, "write_text", boom)
     with pytest.raises(RuntimeError, match="not writable"):
-        create_app(
-            sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
-        )
+        create_app(sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory)
 
 
 def test_config_page_renders_and_saves(tmp_path):
@@ -504,6 +507,26 @@ def test_config_save_rejects_cross_site_origin(tmp_path):
         data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
         headers={"Origin": "http://evil.example.com"},
     )
+    assert resp.status_code == 403
+
+
+def test_csrf_rejects_lookalike_host(tmp_path):
+    # "http://127.0.0.1.evil.com" must NOT pass a prefix check -- the guard
+    # compares the exact host.
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Origin": "http://127.0.0.1.evil.com"},
+    )
+    assert resp.status_code == 403
+
+
+def test_shutdown_rejects_cross_site_origin(tmp_path):
+    # /shutdown is a state-changing POST -- the CSRF guard must cover it too, so
+    # a malicious page can't auto-submit a form to kill the server.
+    client = _make_client(tmp_path)
+    resp = client.post("/shutdown", headers={"Origin": "http://evil.example.com"})
     assert resp.status_code == 403
 
 

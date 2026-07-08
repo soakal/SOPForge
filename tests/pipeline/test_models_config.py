@@ -3,7 +3,12 @@
 import pytest
 from pydantic import ValidationError
 
-from pipeline.config import load_models_config
+from pipeline.config import (
+    ModelsConfig,
+    dump_models_config_toml,
+    load_models_config,
+    save_models_config,
+)
 
 
 def test_loads_committed_config():
@@ -37,6 +42,45 @@ def test_rejects_unknown_section(tmp_path):
     )
     with pytest.raises(ValidationError):
         load_models_config(path)
+
+
+def _base_cfg():
+    return {
+        "steps": {"provider": "ollama", "endpoint": "http://x", "model": "m"},
+        "narrative": {"provider": "ollama", "endpoint": "http://x", "model": "m"},
+        "vision": {"provider": "ollama", "endpoint": "http://x", "model": "m"},
+    }
+
+
+def test_vision_provider_rejects_anthropic():
+    # anthropic as a vision provider would leak ANTHROPIC_API_KEY to the ollama
+    # endpoint -- it must be rejected at validation.
+    data = _base_cfg()
+    data["vision"]["provider"] = "anthropic"
+    with pytest.raises(ValidationError):
+        ModelsConfig.model_validate(data)
+
+
+def test_passes_must_be_at_least_one():
+    data = _base_cfg()
+    data["narrative"]["passes"] = 0
+    with pytest.raises(ValidationError):
+        ModelsConfig.model_validate(data)
+
+
+def test_toml_writer_escapes_control_chars_and_roundtrips(tmp_path):
+    # A model value with a newline must serialize to VALID toml (not brick every
+    # subsequent load) and read back exactly.
+    data = _base_cfg()
+    data["steps"]["model"] = 'weird\nmodel\twith\\control"chars'
+    cfg = ModelsConfig.model_validate(data)
+    path = tmp_path / "models.toml"
+    save_models_config(cfg, path)
+    # Must be loadable (would raise TOMLDecodeError if the writer emitted a raw
+    # newline) and preserve the value.
+    reloaded = load_models_config(path)
+    assert reloaded.steps.model == 'weird\nmodel\twith\\control"chars'
+    assert "[steps]" in dump_models_config_toml(cfg)
 
 
 def test_rejects_missing_required_field(tmp_path):

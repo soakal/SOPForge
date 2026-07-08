@@ -120,7 +120,9 @@ def test_render_markdown_includes_verify_blockquotes():
     ]
     final_text, _covered, _verify_ids = ensure_claim_coverage("Unrelated narrative text.", claims)
 
-    md = render_markdown(manifest, [], [], narrative_text=final_text)
+    step_results = [{"step_id": s.id, "text": ""} for s in manifest.steps]
+    annotated = [None] * len(manifest.steps)
+    md = render_markdown(manifest, step_results, annotated, narrative_text=final_text)
     assert "[verify] (claim-001)" in md
 
 
@@ -136,7 +138,9 @@ def test_render_html_includes_verify_blockquotes_as_blockquote_elements():
     ]
     final_text, _covered, _verify_ids = ensure_claim_coverage("Unrelated narrative text.", claims)
 
-    doc = render_html(manifest, [], [], narrative_text=final_text)
+    step_results = [{"step_id": s.id, "text": ""} for s in manifest.steps]
+    annotated = [None] * len(manifest.steps)
+    doc = render_html(manifest, step_results, annotated, narrative_text=final_text)
     assert (
         "<blockquote>[verify] (claim-001): Something not in the narrative at all.</blockquote>"
         in doc

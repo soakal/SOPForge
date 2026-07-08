@@ -26,12 +26,25 @@ import json
 import re
 from datetime import datetime
 
-# A leading step label. A line counts as a label only if it carries an
-# explicit marker -- markdown heading hashes (group 1), a "step" word
-# (group 2), or number punctuation like . ) : - (group 4) -- so an ordinary
-# paragraph that merely starts with a number ("2024 was ...") is NOT mistaken
-# for a step label. Group 3 is the number, group 5 the rest of the line.
-_LABEL = re.compile(r"^\s*(#{1,6}\s*)?(step\s*)?(\d+)\s*([.)\:\-])?\s*(.*)$", re.IGNORECASE)
+# A leading step label is EITHER an explicit "step N" (optionally under
+# markdown heading hashes: "Step 1", "Step 1:", "## Step 1") OR a numbered-list
+# item ("1. text", "2) text" -- number, then . or ), then a space). Requiring
+# the "step" word or a real list marker (punctuation + space) keeps ordinary
+# prose from being mistaken for labels: "1.5 million", "10:30 we open", "3-4
+# minutes", and a plain "## 2024 Results" heading are all NOT labels.
+_STEP_LABEL = re.compile(r"^\s*#{0,6}\s*step\s+(\d+)\s*[:.)\-]?\s*(.*)$", re.IGNORECASE)
+_NUM_LIST = re.compile(r"^\s*(\d+)[.)]\s+(\S.*)$")
+
+
+def _label_match(line):
+    """Return (step_number, rest_text) if the line is a step label, else None."""
+    m = _STEP_LABEL.match(line)
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    m = _NUM_LIST.match(line)
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    return None
 
 
 def _parse_text_blocks(content):
@@ -52,10 +65,7 @@ def _parse_text_blocks(content):
     lines = content.splitlines()
 
     # 1. Label mode.
-    def _is_label(m):
-        return bool(m and (m.group(1) or m.group(2) or m.group(4)))
-
-    if any(_is_label(_LABEL.match(ln)) for ln in lines):
+    if any(_label_match(ln) for ln in lines):
         blocks = []
         current_num, current = None, []
 
@@ -65,11 +75,10 @@ def _parse_text_blocks(content):
                 blocks.append((current_num, text))
 
         for line in lines:
-            m = _LABEL.match(line)
-            if _is_label(m):
+            label = _label_match(line)
+            if label:
                 flush()
-                current_num = int(m.group(3))
-                rest = m.group(5).strip()
+                current_num, rest = label
                 current = [rest] if rest else []
             elif line.strip():
                 current.append(line.strip())
@@ -122,15 +131,21 @@ def _ts_to_seconds(h, m, s, ms):
 
 
 def _parse_json_segments(content):
-    data = json.loads(content)
-    raw = data["segments"] if isinstance(data, dict) else data
-    segments = []
-    for seg in raw:
-        text = (seg.get("text") or "").strip()
-        if not text:
-            continue
-        start = float(seg.get("start", 0.0))
-        segments.append({"text": text, "start": start})
+    # Well-formed JSON of the wrong SHAPE ({"foo":1}, a bare string, a list of
+    # strings) would otherwise raise KeyError/TypeError/AttributeError deep in
+    # here and 500 the upload -- normalize all of those to ValueError so the
+    # caller returns a clean 400 (its documented contract).
+    try:
+        data = json.loads(content)
+        raw = data["segments"] if isinstance(data, dict) else data
+        segments = []
+        for seg in raw:
+            text = (seg.get("text") or "").strip()
+            if not text:
+                continue
+            segments.append({"text": text, "start": float(seg.get("start", 0.0))})
+    except (KeyError, TypeError, AttributeError, ValueError) as exc:
+        raise ValueError(f"malformed JSON transcript: {exc}") from exc
     return sorted(segments, key=lambda s: s["start"])
 
 
@@ -146,16 +161,30 @@ def _place_timed_segments(manifest, segments):
         (step.id, (_parse_iso(step.ts_utc) - session_start).total_seconds())
         for step in manifest.steps
     ]
+    step_ids = [sid for sid, _ in step_offsets]
     per_step = {}
+
+    def add(sid, text):
+        per_step[sid] = (per_step[sid] + " " + text).strip() if sid in per_step else text
+
+    # Degenerate timing (e.g. the synthetic photo-mode manifest gives every step
+    # the SAME ts, so all offsets are equal) -- timestamp placement is
+    # meaningless, so fall back to positional (segment i -> step i, overflow to
+    # the last step) instead of piling everything on one step.
+    if len({off for _, off in step_offsets}) <= 1:
+        for i, seg in enumerate(segments):
+            add(step_ids[min(i, len(step_ids) - 1)], seg["text"])
+        return per_step
+
+    # A segment belongs to the step with the LARGEST offset that is <= its start
+    # time; among tied offsets, the FIRST such step (not the last).
     for seg in segments:
-        chosen = step_offsets[0][0]
-        for step_id, offset in step_offsets:
-            if offset <= seg["start"]:
-                chosen = step_id
-            else:
-                break
-        per_step.setdefault(chosen, []).append(seg["text"])
-    return {sid: " ".join(texts) for sid, texts in per_step.items()}
+        chosen, best = step_ids[0], None
+        for sid, offset in step_offsets:
+            if offset <= seg["start"] and (best is None or offset > best):
+                chosen, best = sid, offset
+        add(chosen, seg["text"])
+    return per_step
 
 
 def align_transcript_to_steps(filename, content, manifest):

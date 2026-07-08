@@ -184,6 +184,9 @@ def render_session_processing_page(session_id, status):
 
 
 _PROVIDERS = ["ollama", "openrouter", "openai", "anthropic"]
+# Vision goes through the OpenAI-compatible image path, which excludes anthropic
+# (see config.VisionProvider) -- so the vision row offers only these three.
+_VISION_PROVIDERS = ["ollama", "openrouter", "openai"]
 _KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -206,22 +209,23 @@ _RECOMMENDED = {
         "ollama": "qwen2.5vl:7b",
         "openrouter": "openai/gpt-4o",
         "openai": "gpt-4o",
-        "anthropic": "claude-sonnet-5",
     },
 }
 
 
-def _provider_select(name, current):
+def _provider_select(name, current, providers=None):
     opts = "".join(
-        f'<option value="{p}"{" selected" if p == current else ""}>{p}</option>' for p in _PROVIDERS
+        f'<option value="{p}"{" selected" if p == current else ""}>{p}</option>'
+        for p in (providers or _PROVIDERS)
     )
     return f'<select name="{name}">{opts}</select>'
 
 
-def _config_row(key, heading, values, extra=""):
+def _config_row(key, heading, values, extra="", providers=None):
     return (
         f'<div class="card"><h2>{heading}</h2>'
-        f'<div class="field"><label>Provider</label>{_provider_select(f"{key}_provider", values["provider"])}</div>'
+        f'<div class="field"><label>Provider</label>'
+        f"{_provider_select(f'{key}_provider', values['provider'], providers)}</div>"
         f'<div class="field"><label>Model</label>'
         f'<input type="text" name="{key}_model" value="{html.escape(values["model"])}"></div>'
         f'<div class="field"><label>Endpoint <small>(Ollama / custom only)</small></label>'
@@ -262,7 +266,7 @@ def render_config_page(config, keystatus, saved=False):
 
     rec_rows = "".join(
         f"<tr><td>{html.escape(task)}</td>"
-        + "".join(f"<td>{html.escape(_RECOMMENDED[task][p])}</td>" for p in _PROVIDERS)
+        + "".join(f"<td>{html.escape(_RECOMMENDED[task].get(p, '—'))}</td>" for p in _PROVIDERS)
         + "</tr>"
         for task in ("steps", "narrative", "vision")
     )
@@ -283,7 +287,7 @@ def render_config_page(config, keystatus, saved=False):
         '<form method="post" action="/ui/config">'
         f"{_config_row('steps', 'Steps', steps)}"
         f"{_config_row('narrative', 'Narration', narr, extra=passes_extra)}"
-        f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra)}"
+        f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra, providers=_VISION_PROVIDERS)}"
         '<button type="submit">Save configuration</button></form>'
         f"{key_panel}{rec_table}"
     )
