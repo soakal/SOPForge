@@ -24,7 +24,11 @@ def test_caption_images_returns_one_caption_per_image(tmp_path):
         return httpx.Response(200, json={"choices": [{"message": {"content": "Do the thing."}}]})
 
     caps = caption_images(
-        imgs, "narration of the whole procedure", "http://x/v1", "m", transport=httpx.MockTransport(handler)
+        imgs,
+        "narration of the whole procedure",
+        "http://x/v1",
+        "m",
+        transport=httpx.MockTransport(handler),
     )
     assert caps == ["Do the thing.", "Do the thing."]
     assert len(seen) == 2  # one call per image
