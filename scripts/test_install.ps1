@@ -386,4 +386,35 @@ exit 0
             Remove-Item -Path $Path -Force
         }
     }
+
+    # Unregister any scheduled task this test created -- a task whose action
+    # points under our %TEMP%\sopforge-install-test-* dirs. Without this, a
+    # failure between install and uninstall leaves a REAL AtLogOn task launching
+    # an EXE from a since-deleted temp path, and a later real install would then
+    # refuse the task name and silently downgrade to the shortcut fallback. A
+    # task pointing at a genuine install (Program Files) is never touched.
+    $TestPrefix = Join-Path $env:TEMP "sopforge-install-test"
+    foreach ($TaskName in @("SOPForge-Server", "SOPForge-Capture")) {
+        $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if (-not $Task) { continue }
+        $TaskExe = ($Task.Actions | Select-Object -First 1).Execute
+        if ($TaskExe -and $TaskExe.StartsWith($TestPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Output "Cleanup: removed test-owned scheduled task '$TaskName'."
+        }
+    }
+
+    # Remove every test root/data dir this run may have created (some may not
+    # exist if it threw early) plus the captured stdout/stderr logs. The logs
+    # are removed via a null-filtered pipeline: $OutLog/$ErrLog are unset if the
+    # try threw before they were assigned, and `Remove-Item -Path $null` throws
+    # a binding error that -EA can't suppress -- which would REPLACE the real
+    # failure propagating out of this finally.
+    Get-ChildItem -Path $env:TEMP -Filter "sopforge-install-test-*" -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    @(
+        $OutLog, $ErrLog,
+        (Join-Path $env:TEMP "sopforge-upgrade-out.log"),
+        (Join-Path $env:TEMP "sopforge-upgrade-err.log")
+    ) | Where-Object { $_ } | ForEach-Object { Remove-Item -LiteralPath $_ -Force -ErrorAction SilentlyContinue }
 }

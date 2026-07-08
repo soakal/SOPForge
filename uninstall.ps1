@@ -55,6 +55,10 @@ function ConvertTo-PathPrefix([string]$Path) {
     return $Path.TrimEnd('\') + '\'
 }
 
+# Normalize InstallPath (forward slashes / trailing separator / ..\ forms) so
+# every ownership/containment comparison below is against a canonical path.
+$InstallPath = [System.IO.Path]::GetFullPath($InstallPath)
+
 # Nothing to elevate for if there's nothing installed at this path yet.
 if ((Test-Path $InstallPath) -and -not (Test-IsElevated)) {
     $ProbeFile = Join-Path $InstallPath ".sopforge-write-test"
@@ -80,8 +84,21 @@ if ((Test-Path $InstallPath) -and -not (Test-IsElevated)) {
 }
 
 $ConfigPath = Join-Path $InstallPath "install-config.json"
+$Config = $null
 if (Test-Path $ConfigPath) {
-    $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    # A truncated/corrupt install-config.json must NOT abort the uninstall under
+    # ErrorActionPreference=Stop (that would leave tasks, shortcuts, and files
+    # behind with no way forward). Parse defensively; on failure continue with
+    # $Config = $null -- file removal below still runs, only the config-driven
+    # task/shortcut/env cleanup is skipped.
+    try {
+        $Config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    } catch {
+        Write-Warning "install-config.json is unreadable ($_) -- removing files but skipping the task/shortcut/env cleanup that depends on it."
+        $Config = $null
+    }
+}
+if ($Config) {
     # Both the current (ServerTaskName + CaptureTaskName) and the older
     # single-TaskName install-config.json schema are handled, so
     # uninstalling an install created by a previous SOPForge version still
@@ -148,13 +165,21 @@ if (Test-Path $ConfigPath) {
 # leave server/ or capture/ behind. Match on executable path so a sopforge
 # process launched from somewhere else (e.g. a dev build under the repo's dist/)
 # is never touched.
+$StoppedPids = @()
 Get-CimInstance Win32_Process -Filter "Name='sopforge-server.exe' OR Name='sopforge.exe'" -ErrorAction SilentlyContinue |
     Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith((ConvertTo-PathPrefix $InstallPath), [StringComparison]::OrdinalIgnoreCase) } |
     ForEach-Object {
         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         Write-Output "Stopped running '$($_.Name)' (PID $($_.ProcessId))."
+        $StoppedPids += $_.ProcessId
     }
-Start-Sleep -Milliseconds 500
+# Stop-Process returns before the OS releases the process's file locks; wait for
+# actual exit (bounded), like install.ps1 does, so the removal below doesn't
+# race a still-dying process holding a lock on its own .exe.
+if ($StoppedPids) {
+    Wait-Process -Id $StoppedPids -Timeout 15 -ErrorAction SilentlyContinue
+}
+Start-Sleep -Milliseconds 300
 
 if (-not (Test-Path $InstallPath)) {
     Write-Output "$InstallPath does not exist; nothing to remove."
@@ -166,6 +191,11 @@ if (-not (Test-Path $InstallPath)) {
 # write to it. Older installs put it at <InstallPath>\sessions with no recorded
 # value -- fall back to that so uninstalling an older install still works.
 $SessionsRoot = if ($Config -and $Config.SessionsRoot) { $Config.SessionsRoot } else { Join-Path $InstallPath "sessions" }
+# Normalize before the containment test: an older install may have recorded a
+# forward-slash or trailing-separator SessionsRoot, and a raw compare could then
+# wrongly decide it's OUTSIDE InstallPath and delete data the preserve branch
+# claims to keep.
+$SessionsRoot = [System.IO.Path]::GetFullPath($SessionsRoot)
 $SessionsInsideInstall = (ConvertTo-PathPrefix $SessionsRoot).StartsWith(
     (ConvertTo-PathPrefix $InstallPath), [StringComparison]::OrdinalIgnoreCase)
 $HasData = (Test-Path $SessionsRoot) -and
@@ -186,14 +216,28 @@ if ($HasData -and -not $RemoveData) {
         Write-Output "Removed $InstallPath (session data preserved separately at $SessionsRoot)."
     }
 } else {
-    Remove-Item -Path $InstallPath -Recurse -Force
-    Write-Output "Removed $InstallPath."
-    # A per-user SessionsRoot is outside InstallPath, so -RemoveData has to
-    # delete it explicitly (a no-op for older in-InstallPath installs, already
-    # gone with the dir above).
-    if ($RemoveData -and -not $SessionsInsideInstall -and (Test-Path $SessionsRoot)) {
+    # SilentlyContinue + an explicit post-check (not a bare Stop): a lingering
+    # file lock must not abort the uninstall AFTER tasks/env/shortcuts were
+    # already removed, which would leave a half-uninstalled, un-recoverable
+    # state (install-config.json is gone, so a re-run can't finish the job).
+    Remove-Item -Path $InstallPath -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path $InstallPath) {
+        Write-Warning "Could not fully remove $InstallPath (a file may still be locked). Close any SOPForge windows and re-run, or delete the folder by hand."
+    } else {
+        Write-Output "Removed $InstallPath."
+    }
+    # A per-user SessionsRoot is outside InstallPath, so it needs deleting
+    # explicitly. We're in this branch because either -RemoveData was given OR
+    # the sessions dir is empty -- both mean it's safe to remove (no data is
+    # being discarded when it's empty), so an empty external dir is never
+    # orphaned. (A no-op for older in-InstallPath installs, already gone above.)
+    if (-not $SessionsInsideInstall -and (Test-Path $SessionsRoot)) {
         Remove-Item -Path $SessionsRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Output "Removed session data at $SessionsRoot."
+        if ($HasData) {
+            Write-Output "Removed session data at $SessionsRoot."
+        } else {
+            Write-Output "Removed empty session directory at $SessionsRoot."
+        }
     }
 }
 exit 0

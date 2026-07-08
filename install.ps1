@@ -150,6 +150,16 @@ if (-not (Test-IsElevated)) {
 # for backward compatibility but is a no-op since it's already the default.
 $AutostartEffective = -not $NoAutostart
 
+# Normalize to full paths BEFORE any path comparison or the install-config
+# record: a raw-string compare (the migration below) or containment check
+# (uninstall.ps1) would otherwise mishandle "<InstallPath>/sessions" (forward
+# slashes), a trailing-backslash form, or a "..\" form -- the class of bug that
+# could migrate data into itself and then delete it, or delete session data
+# uninstall claimed to preserve. Recording the normalized SessionsRoot makes
+# uninstall's containment check reliable too.
+$InstallPath  = [System.IO.Path]::GetFullPath($InstallPath)
+$SessionsRoot = [System.IO.Path]::GetFullPath($SessionsRoot)
+
 New-Item -ItemType Directory -Force -Path $InstallPath | Out-Null
 
 $CaptureInstallPath = Join-Path $InstallPath "capture"
@@ -189,13 +199,26 @@ if ($RunningSopforge.Count -gt 0) {
 # this location move fixes. Moving it into $SessionsRoot on upgrade means prior
 # SOPs aren't orphaned, and uninstall (which now tracks the recorded
 # $SessionsRoot) never deletes real data it stopped knowing about.
-$LegacySessions = Join-Path $InstallPath "sessions"
-if ((Test-Path $LegacySessions) -and ($LegacySessions -ne $SessionsRoot)) {
+$LegacySessions = [System.IO.Path]::GetFullPath((Join-Path $InstallPath "sessions"))
+# Migrate ONLY when legacy is a genuinely different directory from the sessions
+# root, and neither contains the other -- otherwise moving files "into itself"
+# errors (silently, -EA SilentlyContinue) and the delete below would then wipe
+# un-moved data. Both paths are already GetFullPath-normalized above.
+$SameDir = $LegacySessions.TrimEnd('\') -ieq $SessionsRoot.TrimEnd('\')
+$Nested = $SessionsRoot.StartsWith((ConvertTo-PathPrefix $LegacySessions), [StringComparison]::OrdinalIgnoreCase) -or
+          $LegacySessions.StartsWith((ConvertTo-PathPrefix $SessionsRoot), [StringComparison]::OrdinalIgnoreCase)
+if ((Test-Path -LiteralPath $LegacySessions) -and -not $SameDir -and -not $Nested) {
     Get-ChildItem -Force -LiteralPath $LegacySessions -ErrorAction SilentlyContinue | ForEach-Object {
         Move-Item -LiteralPath $_.FullName -Destination $SessionsRoot -Force -ErrorAction SilentlyContinue
     }
-    Remove-Item -LiteralPath $LegacySessions -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Output "Migrated prior session data from $LegacySessions to $SessionsRoot."
+    # Remove the legacy dir ONLY if migration actually emptied it -- never delete
+    # data a name-collision or a transient lock left un-moved. Leave it and warn.
+    if (-not (Get-ChildItem -Force -LiteralPath $LegacySessions -ErrorAction SilentlyContinue)) {
+        Remove-Item -LiteralPath $LegacySessions -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Output "Migrated prior session data from $LegacySessions to $SessionsRoot."
+    } else {
+        Write-Warning "Some legacy session data in $LegacySessions could not be migrated (a name collision or a locked file) and was LEFT IN PLACE. Move it into $SessionsRoot by hand."
+    }
 }
 
 # Copy the EXEs in, retrying briefly: even after the old processes exit, AV or
