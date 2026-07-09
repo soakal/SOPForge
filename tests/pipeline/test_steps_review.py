@@ -96,6 +96,24 @@ def test_ui_sessions_page_renders_checklist_for_staged_session(tmp_path):
     assert 'name="pos-step-003" value="3"' in page.text
 
 
+def test_ui_sessions_page_has_a_shared_lightbox_not_per_card_overlays(tmp_path):
+    """Clicking a screenshot thumbnail should show it full size via ONE
+    shared modal (O(1) markup), not an overlay duplicated per card (O(n))."""
+    client = _make_client(tmp_path)
+    session_id = _create_staged_session(client, tmp_path).json()["session_id"]
+
+    page = client.get(f"/ui/sessions/{session_id}")
+    assert page.status_code == 200
+    text = page.text
+
+    assert text.count('id="lightbox"') == 1
+    assert text.count('class="shot"') == 3  # one per step, same as the checkbox count
+    assert "preventDefault" in text
+    assert "Escape" in text
+    assert "max-width:95vw" in text
+    assert "max-height:90vh" in text
+
+
 def test_raw_screenshot_route_serves_staged_image(tmp_path):
     client = _make_client(tmp_path)
     session_id = _create_staged_session(client, tmp_path).json()["session_id"]

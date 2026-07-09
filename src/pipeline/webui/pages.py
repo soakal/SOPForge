@@ -66,6 +66,13 @@ border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;
 @keyframes s{to{transform:rotate(360deg)}}
 progress{width:100%;height:14px;border-radius:7px;accent-color:var(--accent);margin:10px 0 4px}
 footer{margin-top:44px;color:var(--muted);font-size:.85em}
+img.shot{cursor:zoom-in}
+#lightbox{position:fixed;inset:0;background:rgba(0,0,0,.75);display:flex;
+align-items:center;justify-content:center;z-index:100}
+#lightbox[hidden]{display:none}
+#lightbox img{max-width:95vw;max-height:90vh;object-fit:contain;border-radius:var(--radius)}
+#lightbox .close{position:absolute;top:18px;right:24px;color:#fff;font-size:2rem;
+line-height:1;cursor:pointer;user-select:none}
 """
 
 
@@ -211,11 +218,12 @@ def render_steps_review_page(session_id, manifest):
         action_line = f"{html.escape(step.action)} ({html.escape(detail or '')})"
         window_line = f"{html.escape(step.window.title)} &middot; {html.escape(step.element.name)}"
         control_type = html.escape(step.element.control_type)
+        shot_src = f"/sessions/{sid}/raw/{html.escape(step.screenshot)}"
         cards.append(
             '<label class="card" style="display:flex;gap:14px;align-items:flex-start">'
             f'<input type="checkbox" name="keep" value="{step_id}" checked '
             'style="margin-top:4px">'
-            f'<img src="/sessions/{sid}/raw/{html.escape(step.screenshot)}" '
+            f'<img class="shot" src="{shot_src}" alt="{step_id}" '
             'style="max-width:220px;border-radius:8px;border:1px solid var(--border)">'
             f"<span><strong>{step_id}</strong> &mdash; {action_line}"
             f'<br><span class="muted">{window_line} ({control_type})</span></span>'
@@ -227,15 +235,51 @@ def render_steps_review_page(session_id, manifest):
             "</span>"
             "</label>"
         )
+    # One shared lightbox for every card (not one overlay per card) -- a click
+    # on any .shot thumbnail sets its src and shows it. preventDefault() on
+    # that click is what stops the surrounding <label> from also toggling its
+    # checkbox (a plain click handler alone wouldn't: <img> inside a <label>
+    # activates the label by default). Closes via the X, clicking the dimmed
+    # backdrop, or Escape; clearing the src on close avoids holding a large
+    # decoded image in memory between views. Inline attribute handlers, no
+    # <script> block -- same "considered exception" pattern as /ui/config's
+    # datalist JS (see .claude memory), not a framework or build step.
+    lightbox = (
+        '<div id="lightbox" hidden '
+        "onclick=\"if(event.target===this)this.hidden=true,this.querySelector('img').src=''\">"
+        "<span class=\"close\" onclick=\"lightbox.hidden=true;lightbox.querySelector('img').src=''\">"
+        "&times;</span>"
+        '<img alt=""></div>'
+    )
+    lightbox_script = (
+        "<script>"
+        "document.addEventListener('click',function(e){"
+        "if(!e.target.classList.contains('shot'))return;"
+        "e.preventDefault();"
+        "var lb=document.getElementById('lightbox');"
+        "lb.querySelector('img').src=e.target.src;"
+        "lb.querySelector('img').alt=e.target.alt;"
+        "lb.hidden=false;"
+        "});"
+        "document.addEventListener('keydown',function(e){"
+        "if(e.key==='Escape'){"
+        "var lb=document.getElementById('lightbox');"
+        "lb.hidden=true;lb.querySelector('img').src='';"
+        "}});"
+        "</script>"
+    )
     body = (
         f"<h1>Review captured steps</h1>"
         '<p class="muted">Uncheck any wrong or accidental clicks before generating the '
         'document. Edit a step\'s position number to move it -- decimals (e.g. "2.5") '
-        "insert between two steps without renumbering the rest.</p>"
+        "insert between two steps without renumbering the rest. Click a screenshot to "
+        "see it full size.</p>"
         f'<form method="post" action="/ui/sessions/{sid}/confirm-steps">'
         + "".join(cards)
         + '<div class="actions"><button type="submit">'
         "Keep selected steps &amp; generate document</button></div></form>"
+        + lightbox
+        + lightbox_script
     )
     return _shell("SOPForge Review", body)
 
