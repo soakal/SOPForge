@@ -440,11 +440,16 @@ def render_session_page(session_id, title, date, report, config):
         for section, values in config.items()
     )
     sid = html.escape(session_id)
-    transcript_note = (
-        f'<p class="muted">Transcript: {html.escape(report["transcript"])}</p>'
-        if report.get("transcript")
-        else ""
-    )
+    transcript_text = report.get("transcript") or ""
+    if "WARNING" in transcript_text:
+        transcript_note = (
+            '<section class="card" data-status="yellow"><h2>Transcript placement</h2>'
+            f"<p>{html.escape(transcript_text)}</p></section>"
+        )
+    elif transcript_text:
+        transcript_note = f'<p class="muted">Transcript: {html.escape(transcript_text)}</p>'
+    else:
+        transcript_note = ""
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (

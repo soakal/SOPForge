@@ -212,6 +212,24 @@ def test_live_generation_reports_progress_on_the_processing_page(tmp_path, monke
     _wait_until_done(client, session_id)
 
 
+def test_transcript_collapse_warning_renders_as_a_flagged_card():
+    from pipeline.webui.pages import render_session_page
+
+    warned_report = {
+        "transcript": "1 transcript block(s) placed in order across 1 of 19 step(s) -- WARNING: the whole transcript landed on step 1."
+    }
+    page = render_session_page("sid", "Title", "date", warned_report, {})
+    assert '<section class="card" data-status="yellow"><h2>Transcript placement</h2>' in page
+    assert "WARNING" in page
+
+    # An ordinary (non-degenerate) placement note stays as plain muted text,
+    # not a flagged card.
+    normal_report = {"transcript": "2 transcript block(s) placed in order across 2 of 2 step(s)"}
+    normal_page = render_session_page("sid", "Title", "date", normal_report, {})
+    assert '<p class="muted">Transcript:' in normal_page
+    assert 'data-status="yellow"><h2>Transcript placement</h2>' not in normal_page
+
+
 def test_processing_page_shows_progress_bar_when_available():
     from pipeline.webui.pages import render_session_processing_page
 

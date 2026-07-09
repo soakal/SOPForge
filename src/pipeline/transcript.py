@@ -201,7 +201,26 @@ def align_transcript_to_steps(filename, content, manifest):
             raise ValueError("transcript contained no usable text")
         per_step = _place_text_blocks(manifest, blocks, labelled)
         how = "by step label" if labelled else "in order"
-        note = f"{len(blocks)} transcript block(s) placed {how} across {len(per_step)} step(s)"
+        note = (
+            f"{len(blocks)} transcript block(s) placed {how} across "
+            f"{len(per_step)} of {len(manifest.steps)} step(s)"
+        )
+        # The single most common way this silently goes wrong: an unlabelled
+        # transcript written as one run-on line/paragraph (no blank lines
+        # between what should be separate steps' narration, no "Step N:"
+        # labels) parses to exactly one block, which -- correctly, per how
+        # placement is documented to work -- lands entirely on step 1. That's
+        # not a bug in the placement logic; it's the transcript's own format
+        # giving the deterministic splitter nothing to split on. Flag it
+        # loudly rather than let it look like a normal 1-block transcript.
+        if not labelled and len(blocks) == 1 and len(manifest.steps) > 1:
+            note += (
+                " -- WARNING: the whole transcript landed on step 1 because it has "
+                "no blank lines between different steps' narration and no 'Step N:' "
+                "labels for the splitter to use. Add either (blank lines between "
+                "each step's narration, or a 'Step N:' label per block) and "
+                "re-upload to distribute it across the steps it actually describes."
+            )
     elif ext == "json":
         segments = _parse_json_segments(content)
         if not segments:

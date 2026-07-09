@@ -71,6 +71,44 @@ def test_paragraph_starting_with_year_is_not_a_label():
     assert per_step["step-002"] == "Second paragraph."
 
 
+def test_single_run_on_line_collapses_to_step_1_with_a_loud_warning():
+    """Regression from a real report: a transcript written as one unbroken
+    line (no blank lines between what should be separate steps' narration,
+    no 'Step N:' labels) parses to exactly one block, which -- correctly,
+    per how placement is documented -- lands entirely on step 1. That's not
+    a bug in the placement logic; the note must say so loudly rather than
+    read like an ordinary 1-block transcript."""
+    content = (
+        "open file explorer then open the c drive then goto users then select "
+        "the user that is on your system then goto the folder then rename the file"
+    )
+    per_step, note = align_transcript_to_steps("t.md", content, _manifest())
+    assert per_step == {"step-001": content}
+    assert "WARNING" in note
+    assert "step 1" in note
+
+
+def test_single_line_transcript_on_a_single_step_manifest_is_not_a_warning():
+    # One block landing on step 1 is entirely normal when there's only one
+    # step to begin with -- must not be flagged.
+    from pipeline.photo_build import synthetic_manifest_dict
+
+    md = synthetic_manifest_dict("T", ["001.png"], "2026-01-01T00:00:00Z")
+    md["session"]["id"] = "one-step-session"
+    manifest = load_manifest(md)
+    per_step, note = align_transcript_to_steps("t.md", "just one line of narration", manifest)
+    assert per_step == {manifest.steps[0].id: "just one line of narration"}
+    assert "WARNING" not in note
+
+
+def test_single_labelled_block_is_not_a_warning():
+    # An intentional single "Step 1: ..." label is a deliberate choice, not
+    # an accidental collapse -- must not be flagged even with multiple steps.
+    per_step, note = align_transcript_to_steps("t.md", "Step 1: just this one note.", _manifest())
+    assert per_step == {"step-001": "just this one note."}
+    assert "WARNING" not in note
+
+
 def test_more_paragraphs_than_steps_overflow_to_last_step():
     content = "one\n\ntwo\n\nthree\n\nfour\n\nfive"  # 5 blocks, 3 steps
     per_step, _ = align_transcript_to_steps("t.txt", content, _manifest())
