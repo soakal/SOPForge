@@ -114,3 +114,35 @@ def load_manifest(source):
         data = source
     _VALIDATOR.validate(data)
     return Manifest.model_validate(data)
+
+
+def filter_manifest_steps(manifest, keep_ids):
+    """Returns a new Manifest with only the steps whose id is in keep_ids, in
+    original manifest order (never reordered/renumbered) -- the one place a
+    step-removal review UI is allowed to shrink the manifest. IDs are NOT
+    renumbered; a gap (step-002 removed, step-001/step-003 remain) is fine --
+    nothing downstream assumes contiguous numbering, only that id/order is
+    preserved 1:1 with the resulting doc (assembler.py). No re-validation
+    against the JSON Schema is needed: dropping entries from an already-valid
+    manifest's steps list can't introduce a schema violation (no minItems on
+    steps)."""
+    keep = set(keep_ids)
+    kept_steps = [s for s in manifest.steps if s.id in keep]
+    return manifest.model_copy(update={"steps": kept_steps})
+
+
+def manifest_to_schema_dict(manifest):
+    """Serializes a Manifest back to schema-valid JSON -- the inverse of
+    load_manifest, used when a manifest built in memory (e.g. via
+    filter_manifest_steps) needs writing back to disk. by_alias restores
+    "class" from Window.class_. button/text_summary are popped when None:
+    the schema requires each ABSENT (not null) on the action it doesn't
+    apply to, unlike element.bounding_rect/session.narration_wav, which are
+    required-but-nullable and so are left as explicit `null`."""
+    data = manifest.model_dump(by_alias=True)
+    for step in data["steps"]:
+        if step.get("button") is None:
+            step.pop("button", None)
+        if step.get("text_summary") is None:
+            step.pop("text_summary", None)
+    return data

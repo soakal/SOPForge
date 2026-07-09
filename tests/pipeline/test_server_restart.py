@@ -7,6 +7,7 @@ inaccessible via the API/UI even though the persistent library index
 still listed it and its generated docs were still on disk."""
 
 import io
+import re
 import time
 from pathlib import Path
 
@@ -133,6 +134,19 @@ def test_ui_upload_form_creates_a_session_and_redirects(tmp_path):
     )
     assert resp.status_code == 303
     session_id = resp.headers["location"].removeprefix("/ui/sessions/")
+
+    # /ui/upload always stages (server.py's steps-review gate) -- confirm the
+    # full checklist to submit for generation, standing in for a user who
+    # reviewed it and didn't drop anything.
+    page = client.get(f"/ui/sessions/{session_id}")
+    step_ids = re.findall(r'name="keep" value="(step-\d+)"', page.text)
+    assert step_ids
+    confirm = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={"keep": step_ids},
+        follow_redirects=False,
+    )
+    assert confirm.status_code == 303
 
     for _ in range(200):
         status = client.get(f"/sessions/{session_id}/status").json()

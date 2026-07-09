@@ -65,7 +65,7 @@ from pipeline.library import remove_entry
 from pipeline.library import search as library_search
 from pipeline.library import upsert_entry
 from pipeline.llm_client import LLMClient
-from pipeline.manifest import load_manifest
+from pipeline.manifest import filter_manifest_steps, load_manifest, manifest_to_schema_dict
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
@@ -76,6 +76,7 @@ from pipeline.webui.pages import (
     render_library_page,
     render_session_page,
     render_session_processing_page,
+    render_steps_review_page,
 )
 from pipeline.webui.review import render_review_page
 
@@ -188,7 +189,19 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     )
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
+    # session_ids awaiting step-review confirmation -- staged by _ingest_session
+    # /_ingest_photo_session instead of being submitted to jobs immediately, so
+    # the user can drop mis-captured steps before generation ever runs.
+    staged = set()
     _restore_sessions_from_disk(sessions_root, sessions, jobs)
+
+    def _status_of(session_id):
+        """Like jobs.status(session_id)["status"], but safe for a staged
+        session that was never submitted to jobs (status() returns {} for
+        those) -- reports "staged" instead of KeyError-ing."""
+        if session_id in staged:
+            return "staged"
+        return jobs.status(session_id).get("status", "unknown")
 
     def _is_photo_mode(session_dir):
         mode = session_dir / "mode.txt"
@@ -400,11 +413,14 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
                 result["narration"] = narration
         return note
 
-    def _ingest_session(manifest_json, files, transcript=None):
+    def _ingest_session(manifest_json, files, transcript=None, stage=False):
         """Shared by the JSON API (POST /sessions) and the browser upload
         form (POST /ui/upload). `transcript`, if given, is a (filename,
-        text) tuple. Returns the new session_id, or raises HTTPException on
-        bad input."""
+        text) tuple. When `stage` is True, the session is registered but not
+        submitted for generation -- it's left in `staged` so the user can
+        drop mis-captured steps via the steps-review page before generation
+        runs (see POST .../confirm-steps). Returns the new session_id, or
+        raises HTTPException on bad input."""
         try:
             manifest = load_manifest(json.loads(manifest_json))
         except Exception as exc:
@@ -475,7 +491,10 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
             )
 
         sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
-        jobs.submit(session_id, lambda: _generate(session_id))
+        if stage:
+            staged.add(session_id)
+        else:
+            jobs.submit(session_id, lambda: _generate(session_id))
         return session_id
 
     def _read_transcript(upload):
@@ -497,9 +516,12 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         manifest_json: str = Form(...),
         files: list[UploadFile] = File(default=[]),
         transcript_file: UploadFile | None = File(default=None),
+        stage: bool = Form(False),
     ):
-        session_id = _ingest_session(manifest_json, files, _read_transcript(transcript_file))
-        return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
+        session_id = _ingest_session(
+            manifest_json, files, _read_transcript(transcript_file), stage=stage
+        )
+        return {"session_id": session_id, "status": _status_of(session_id)}
 
     @app.post("/ui/upload")
     def ui_upload(
@@ -513,16 +535,20 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
             raise HTTPException(
                 status_code=400, detail=f"invalid manifest encoding: {exc}"
             ) from exc
-        session_id = _ingest_session(manifest_json, files, _read_transcript(transcript_file))
+        session_id = _ingest_session(
+            manifest_json, files, _read_transcript(transcript_file), stage=True
+        )
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     _IMG_EXTS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
 
-    def _ingest_photo_session(title, files, transcript=None):
+    def _ingest_photo_session(title, files, transcript=None, stage=False):
         """Manifest-free build: each uploaded image becomes one step (in upload
         order), with the transcript supplying each step's text. Synthesizes a
         schema-valid manifest so the rest of the pipeline works unchanged.
-        Returns the new session_id or raises HTTPException on bad input."""
+        When `stage` is True, the session is registered but not submitted for
+        generation -- see _ingest_session. Returns the new session_id or
+        raises HTTPException on bad input."""
         images = [u for u in files if u.filename]
         if not images:
             raise HTTPException(status_code=400, detail="upload at least one screenshot/image")
@@ -585,7 +611,10 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
             raise
 
         sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
-        jobs.submit(session_id, lambda: _generate(session_id))
+        if stage:
+            staged.add(session_id)
+        else:
+            jobs.submit(session_id, lambda: _generate(session_id))
         return session_id
 
     @app.post("/ui/build")
@@ -594,7 +623,9 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         files: list[UploadFile] = File(default=[]),
         transcript_file: UploadFile | None = File(default=None),
     ):
-        session_id = _ingest_photo_session(title, files, _read_transcript(transcript_file))
+        session_id = _ingest_photo_session(
+            title, files, _read_transcript(transcript_file), stage=True
+        )
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")
@@ -652,11 +683,12 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         # Refuse to delete a session whose generation job is still running --
         # rmtree racing the worker thread mid-export would crash the job and
         # could leave a half-deleted directory.
-        if jobs.status(session_id)["status"] in ("queued", "processing"):
+        if _status_of(session_id) in ("queued", "processing"):
             raise HTTPException(
                 status_code=409, detail="session is still generating; try again once it's done"
             )
         session_dir = sessions[session_id][3]
+        staged.discard(session_id)
         del sessions[session_id]
         # report.json's absence is what _restore_sessions_from_disk actually
         # checks for -- delete it first (best-effort, ignoring a Windows
@@ -677,20 +709,18 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
 
     def _require_done(session_id):
         _require_known_session(session_id)
-        status = jobs.status(session_id)
-        if status["status"] != "done":
-            raise HTTPException(
-                status_code=409, detail=f"session not ready (status: {status['status']})"
-            )
+        status = _status_of(session_id)
+        if status != "done":
+            raise HTTPException(status_code=409, detail=f"session not ready (status: {status})")
         return sessions[session_id][3]  # session_dir
 
     @app.get("/sessions/{session_id}/status")
     def get_status(session_id: str):
         _require_known_session(session_id)
-        status = jobs.status(session_id)
-        body = {"status": status["status"]}
-        if status["status"] == "error":
-            body["error"] = status["error"]
+        status = _status_of(session_id)
+        body = {"status": status}
+        if status == "error":
+            body["error"] = jobs.status(session_id)["error"]
         return body
 
     @app.get("/sessions/{session_id}/report")
@@ -827,6 +857,9 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     @app.get("/ui/sessions/{session_id}")
     def ui_session(session_id: str):
         _require_known_session(session_id)
+        if session_id in staged:
+            manifest = sessions[session_id][0]
+            return HTMLResponse(render_steps_review_page(session_id, manifest))
         status = jobs.status(session_id)
         if status["status"] != "done":
             return HTMLResponse(render_session_processing_page(session_id, status))
@@ -837,6 +870,51 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         title = manifest.session.title or manifest.session.id
         date = manifest.session.started_utc
         return HTMLResponse(render_session_page(session_id, title, date, report, config))
+
+    @app.post("/ui/sessions/{session_id}/confirm-steps")
+    async def ui_confirm_steps(session_id: str, request: Request):
+        """Drops any steps the user unchecked on the steps-review page, then
+        submits the (possibly reduced) session for generation. The manifest on
+        disk is rewritten to the kept subset BEFORE jobs.submit runs, so
+        _generate/assemble_steps never sees a removed step -- the 1:1
+        manifest<->doc mapping invariant holds by construction, the same way
+        it would for a hand-edited manifest."""
+        _require_known_session(session_id)
+        if session_id not in staged:
+            raise HTTPException(status_code=409, detail="session already submitted for generation")
+        form = await request.form()
+        keep_ids = form.getlist("keep")
+        if not keep_ids:
+            raise HTTPException(status_code=400, detail="select at least one step to keep")
+        manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+        filtered = filter_manifest_steps(manifest, keep_ids)
+        (session_dir / "manifest.json").write_text(
+            json.dumps(manifest_to_schema_dict(filtered)), encoding="utf-8"
+        )
+        sessions[session_id] = (filtered, screenshots_dir, annotated_dir, session_dir)
+        staged.discard(session_id)
+        jobs.submit(session_id, lambda: _generate(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    @app.get("/sessions/{session_id}/raw/{filename}")
+    def get_raw_screenshot(session_id: str, filename: str):
+        """Serves pre-generation screenshots for the steps-review page's
+        thumbnails -- annotated_dir (get_annotated_image, below) is empty
+        until generation actually runs, so a staged session's only images
+        live in screenshots_dir. Registered before the single-segment
+        catch-all below regardless, since the extra /raw/ segment means the
+        two routes can never collide."""
+        _require_known_session(session_id)
+        screenshots_dir = sessions[session_id][1]
+        try:
+            name = Path(filename).name
+            dest = (screenshots_dir / name).resolve()
+        except (ValueError, OSError) as exc:
+            raise HTTPException(status_code=404, detail="file not found") from exc
+        if screenshots_dir.resolve() not in dest.parents or not dest.is_file():
+            raise HTTPException(status_code=404, detail="file not found")
+        mime, _ = mimetypes.guess_type(str(dest))
+        return Response(dest.read_bytes(), media_type=mime or "application/octet-stream")
 
     @app.get("/sessions/{session_id}/{filename}")
     def get_annotated_image(session_id: str, filename: str):

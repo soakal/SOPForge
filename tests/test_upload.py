@@ -37,6 +37,7 @@ def test_upload_session_posts_manifest_and_all_screenshots(tmp_path):
 
     def handler(request):
         captured["url"] = str(request.url)
+        captured["body"] = request.read()
         return httpx.Response(200, json={"session_id": "new-id-123"})
 
     session_id = upload_session(
@@ -45,6 +46,9 @@ def test_upload_session_posts_manifest_and_all_screenshots(tmp_path):
 
     assert session_id == "new-id-123"
     assert captured["url"] == "http://fake-server/sessions"
+    # Uploads staged, so the server holds generation until the user has
+    # confirmed the steps-review page -- see server.py's `stage` form field.
+    assert b'name="stage"\r\n\r\n1' in captured["body"]
 
 
 def test_upload_session_returns_none_when_manifest_missing(tmp_path):

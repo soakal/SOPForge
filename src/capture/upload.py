@@ -1,6 +1,8 @@
 """Auto-upload: after a recording stops, POST the manifest + screenshots to
-a running sopforge-server so the generated doc appears with zero manual
-steps -- no browser upload form, no hunting for the capture folder.
+a running sopforge-server so the steps-review page (and, once confirmed, the
+generated doc) appears with zero manual steps -- no browser upload form, no
+hunting for the capture folder. Uploads staged (stage=1) so the server holds
+generation until the user has had a chance to drop any mis-captured steps.
 
 Best-effort and non-blocking by design: if the server isn't running, or
 the upload fails for any reason, the capture is already safely on disk
@@ -60,7 +62,7 @@ def upload_session(output_dir, server_url=None, timeout=10.0, transport=None):
         with httpx.Client(transport=transport, timeout=timeout) as client:
             resp = client.post(
                 f"{server_url}/sessions",
-                data={"manifest_json": manifest_json},
+                data={"manifest_json": manifest_json, "stage": "1"},
                 files=files,
             )
         resp.raise_for_status()

@@ -183,6 +183,41 @@ def render_session_processing_page(session_id, status):
     return _shell("SOPForge Review", body)
 
 
+def render_steps_review_page(session_id, manifest):
+    # Shown once, right after upload/build and before generation: a checklist
+    # of every captured step so the user can drop mis-clicks (wrong element,
+    # accidental double-click) before the doc gets built from them. Checked by
+    # default -- this is an opt-out ("uncheck the wrong ones"), not opt-in.
+    sid = html.escape(session_id)
+    cards = []
+    for step in manifest.steps:
+        step_id = html.escape(step.id)
+        detail = step.button if step.action == "click" else step.text_summary
+        action_line = f"{html.escape(step.action)} ({html.escape(detail or '')})"
+        window_line = f"{html.escape(step.window.title)} &middot; {html.escape(step.element.name)}"
+        control_type = html.escape(step.element.control_type)
+        cards.append(
+            '<label class="card" style="display:flex;gap:14px;align-items:flex-start">'
+            f'<input type="checkbox" name="keep" value="{step_id}" checked '
+            'style="margin-top:4px">'
+            f'<img src="/sessions/{sid}/raw/{html.escape(step.screenshot)}" '
+            'style="max-width:220px;border-radius:8px;border:1px solid var(--border)">'
+            f"<span><strong>{step_id}</strong> &mdash; {action_line}"
+            f'<br><span class="muted">{window_line} ({control_type})</span></span>'
+            "</label>"
+        )
+    body = (
+        f"<h1>Review captured steps</h1>"
+        '<p class="muted">Uncheck any wrong or accidental clicks before generating the '
+        "document.</p>"
+        f'<form method="post" action="/ui/sessions/{sid}/confirm-steps">'
+        + "".join(cards)
+        + '<div class="actions"><button type="submit">'
+        "Keep selected steps &amp; generate document</button></div></form>"
+    )
+    return _shell("SOPForge Review", body)
+
+
 _PROVIDERS = ["ollama", "openrouter", "openai", "anthropic"]
 # Vision goes through the OpenAI-compatible image path, which excludes anthropic
 # (see config.VisionProvider) -- so the vision row offers only these three.

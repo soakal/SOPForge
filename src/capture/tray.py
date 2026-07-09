@@ -3,11 +3,13 @@ start/stop hotkey, and an Exit menu item, wired to a Recorder session.
 
 When a recording stops, its manifest + screenshots are auto-uploaded to a
 running sopforge-server (best-effort, on a background thread) and the
-browser opens straight to that session's review page on success -- zero
-manual steps between "stop recording" and seeing the generated doc. If the
-server isn't running, the capture is already safe on disk and can be
-uploaded later through the library page's upload form; nothing here ever
-blocks the tray or raises on a failed upload (see capture/upload.py)."""
+browser opens straight to that session's page on success -- zero manual
+steps between "stop recording" and reviewing the capture. The session is
+staged, so that page is first a steps-review checklist (drop any mis-clicked
+steps), then the generated doc once the user confirms. If the server isn't
+running, the capture is already safe on disk and can be uploaded later
+through the library page's upload form; nothing here ever blocks the tray or
+raises on a failed upload (see capture/upload.py)."""
 
 import logging
 import tempfile
@@ -172,10 +174,12 @@ class TrayApp:
             logger.info("tray notification not shown: %s", message)
 
     def _auto_upload(self, output_dir, upload_fn, server_url):
-        """Best-effort: uploads via upload_fn and opens the browser straight
-        to the review page on success. Never raises -- a failed upload just
-        means the user opens the browser and uses the library page's upload
-        form manually later; the capture is already safe on disk regardless.
+        """Best-effort: uploads via upload_fn (staged) and opens the browser
+        straight to the session page -- the steps-review checklist first,
+        then the generated doc once confirmed -- on success. Never raises --
+        a failed upload just means the user opens the browser and uses the
+        library page's upload form manually later; the capture is already
+        safe on disk regardless.
 
         On failure, a tray notification tells the user the recording is safe
         on disk and where it is -- so a capture is never silently lost when

@@ -9,7 +9,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from pipeline.assembler import assemble_steps, check_1to1_mapping
-from pipeline.manifest import load_manifest
+from pipeline.manifest import filter_manifest_steps, load_manifest
 from pipeline.template import render_step_template
 
 _WINDOWS = st.fixed_dictionaries(
@@ -96,3 +96,22 @@ def test_assemble_steps_never_drops_invents_or_reorders(manifest_data):
     assert set(doc_ids) == set(manifest_ids)
     assert len(doc_steps) == len(manifest.steps)
     assert check_1to1_mapping(manifest, doc_steps) is True
+
+
+@given(_manifest_strategy(), st.data())
+@settings(max_examples=300, deadline=None)
+def test_filter_manifest_steps_preserves_order_and_1to1_mapping(manifest_data, data):
+    """The steps-review page can drop an arbitrary, possibly non-contiguous
+    subset of steps before generation. Invariant L1 must keep holding against
+    whatever subset the user kept -- not just against the full manifest."""
+    manifest = load_manifest(manifest_data)
+    all_ids = manifest.step_ids()
+    keep_ids = data.draw(st.lists(st.sampled_from(all_ids), min_size=1, unique=True))
+
+    filtered = filter_manifest_steps(manifest, keep_ids)
+
+    expected_order = [step_id for step_id in all_ids if step_id in set(keep_ids)]
+    assert filtered.step_ids() == expected_order
+
+    doc_steps = assemble_steps(filtered, render_step_template)
+    assert check_1to1_mapping(filtered, doc_steps) is True

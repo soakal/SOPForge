@@ -74,6 +74,21 @@ def _create_and_wait(client, tmp_path, fixture="sample-manifest.json"):
     return session_id, status
 
 
+def _confirm_all_steps(client, session_id):
+    """/ui/upload and /ui/build always stage (see server.py's steps-review
+    gate) -- this keeps every step and submits for generation, standing in
+    for a user who reviewed the checklist and didn't drop anything."""
+    page = client.get(f"/ui/sessions/{session_id}")
+    step_ids = re.findall(r'name="keep" value="(step-\d+)"', page.text)
+    assert step_ids, "expected a steps-review checklist with at least one step"
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={"keep": step_ids},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+
 def test_create_session_and_check_status(tmp_path):
     client = _make_client(tmp_path)
     resp = _create_session(client, tmp_path)
@@ -263,6 +278,7 @@ def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monk
     )
     assert resp.status_code == 303
     session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
     status = _wait_for_terminal_status(client, session_id)
     assert status["status"] == "done"
 
@@ -311,6 +327,7 @@ def test_build_uses_vision_captions_when_available(tmp_path, monkeypatch):
         "/ui/build", data={"title": "Vision SOP"}, files=files, follow_redirects=False
     )
     session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
     status = _wait_for_terminal_status(client, session_id)
     assert status["status"] == "done"
 
