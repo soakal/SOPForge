@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader
 
+from pipeline.export_md import _slugify
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 
@@ -64,13 +65,16 @@ def _create_session(tmp_path):
 
 
 def test_doc_docx_endpoint(tmp_path):
-    client, session_id, _manifest = _create_session(tmp_path)
+    client, session_id, manifest = _create_session(tmp_path)
     resp = client.get(f"/sessions/{session_id}/doc.docx")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
-    assert 'filename="doc.docx"' in resp.headers["content-disposition"]
+    # Downloaded filename reflects the session's title/id, not a generic
+    # "doc.docx" every session would otherwise share.
+    slug = _slugify(manifest.session.title or manifest.session.id)
+    assert f'filename="{slug}.docx"' in resp.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         assert "word/document.xml" in zf.namelist()
 
@@ -80,17 +84,19 @@ def test_doc_pdf_endpoint(tmp_path):
     resp = client.get(f"/sessions/{session_id}/doc.pdf")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/pdf")
-    assert 'filename="doc.pdf"' in resp.headers["content-disposition"]
+    slug = _slugify(manifest.session.title or manifest.session.id)
+    assert f'filename="{slug}.pdf"' in resp.headers["content-disposition"]
     assert resp.content[:5] == b"%PDF-"
     assert len(PdfReader(io.BytesIO(resp.content)).pages) > len(manifest.steps)
 
 
 def test_doc_single_html_endpoint(tmp_path):
-    client, session_id, _manifest = _create_session(tmp_path)
+    client, session_id, manifest = _create_session(tmp_path)
     resp = client.get(f"/sessions/{session_id}/doc.single.html")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/html")
-    assert 'filename="doc.single.html"' in resp.headers["content-disposition"]
+    slug = _slugify(manifest.session.title or manifest.session.id)
+    assert f'filename="{slug}.html"' in resp.headers["content-disposition"]
     assert resp.text.startswith("<!doctype html>")
     assert "data:image/png;base64," in resp.text
 
@@ -100,7 +106,8 @@ def test_export_md_zip_endpoint(tmp_path):
     resp = client.get(f"/sessions/{session_id}/export.md.zip")
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("application/zip")
-    assert 'filename="export.md.zip"' in resp.headers["content-disposition"]
+    slug = _slugify(manifest.session.title or manifest.session.id)
+    assert f'filename="{slug}.zip"' in resp.headers["content-disposition"]
     with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
         names = zf.namelist()
         assert any(name.endswith(".md") for name in names)

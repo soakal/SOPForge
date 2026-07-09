@@ -58,7 +58,7 @@ from pipeline.config import (
 )
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
-from pipeline.export_md import export_markdown_bundle
+from pipeline.export_md import _slugify, export_markdown_bundle
 from pipeline.export_pdf import render_pdf
 from pipeline.jobs import JobRunner
 from pipeline.library import remove_entry
@@ -66,7 +66,9 @@ from pipeline.library import search as library_search
 from pipeline.library import upsert_entry
 from pipeline.llm_client import LLMClient
 from pipeline.manifest import filter_manifest_steps, load_manifest, manifest_to_schema_dict
+from pipeline.narration_polish import polish_narration
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
+from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import align_transcript_to_steps
@@ -97,6 +99,16 @@ def _synthesize_narration_from_steps(manifest, step_results):
     lines = [f"Windows involved: {', '.join(windows)}."] if windows else []
     lines.extend(result["text"] for result in step_results)
     return "\n".join(lines)
+
+
+def _download_filename(manifest, ext):
+    """The filename a browser saves a downloaded doc as -- derived from the
+    session's title (or id, if untitled) so it reads as what the SOP is
+    about instead of the generic "doc.docx" every session otherwise shares.
+    Reuses export_md.py's own slug so the whole app has one naming
+    convention, not two."""
+    slug = _slugify(manifest.session.title or manifest.session.id)
+    return f"{slug}.{ext}"
 
 
 def _zip_directory(directory):
@@ -140,7 +152,12 @@ def _restore_sessions_from_disk(sessions_root, sessions, jobs):
         jobs.seed_done(session_id)
 
 
-def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -> FastAPI:
+def create_app(
+    sessions_root: Path,
+    llm_client_factory=None,
+    config_path=None,
+    narrative_llm_client_factory=None,
+) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
     for every generation. Defaults to a real LLMClient built from the
@@ -149,7 +166,12 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     actually true). Tests override this to a fast, deterministic stub —
     without it, every session creation would make a real network attempt
     to the (usually unreachable in a dev/test environment) configured
-    endpoint before falling back, adding real seconds per step."""
+    endpoint before falling back, adding real seconds per step.
+
+    narrative_llm_client_factory: same shape, but built from config/models.toml's
+    `[narrative]` section (previously unused by any live code) -- used only for
+    the semantic transcript-placement/polish path (_apply_transcript), when a
+    transcript has no structure for the deterministic placement to split on."""
     app = FastAPI()
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -205,6 +227,9 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     make_llm_client = llm_client_factory or (
         lambda: LLMClient(load_models_config(resolved_config_path).steps)
     )
+    make_narrative_llm_client = narrative_llm_client_factory or (
+        lambda: LLMClient(load_models_config(resolved_config_path).narrative)
+    )
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
     # session_ids awaiting step-review confirmation -- staged by _ingest_session
@@ -254,10 +279,12 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
                 close()
 
         # Place an uploaded transcript's narration under each step (by step
-        # label / order for .txt/.md, by timestamp for .json). Best-effort: a
+        # label / order for .txt/.md, by timestamp for .json, or -- when
+        # neither gives the deterministic splitter anything to work with --
+        # the semantic LLM placement + polish pipeline). Best-effort: a
         # transcript is validated at upload time, but a problem here must never
         # break generation -- the doc is complete from the steps alone.
-        transcript_note = _apply_transcript(session_dir, manifest, step_results)
+        transcript_note, placement_meta = _apply_transcript(session_dir, manifest, step_results)
 
         # A real capture session's manifest almost never has a title (nothing
         # in the capture flow asks the user for one), so without this the
@@ -283,9 +310,20 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
                 if gen_title:
                     manifest.session.title = gen_title
 
-        report = build_sidecar_report(manifest, step_results, [], {})
+        # narration_polish's minted verify_claims (dropped clauses from a
+        # polished rewrite) finally give this hardcoded-empty parameter real
+        # content, the same [verify]-blockquote accounting the sidecar report
+        # has always supported for the (still-unwired) audio narration path.
+        verify_claims = (placement_meta or {}).get("verify_claims", [])
+        verify_claim_ids = [c["claim_id"] for c in verify_claims]
+        claims_by_id = {c["claim_id"]: c for c in verify_claims}
+        report = build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)
         if transcript_note:
             report["transcript"] = transcript_note
+        if placement_meta:
+            report["transcript_placement"] = {
+                k: v for k, v in placement_meta.items() if k != "verify_claims"
+            }
 
         _write_all_exports(
             session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
@@ -440,24 +478,62 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
 
     def _apply_transcript(session_dir, manifest, step_results):
         """If a transcript was uploaded (saved as transcript.<ext>), place its
-        narration onto each step_result's "narration" key and return a short
-        placement note for the report. Returns None when there's no transcript
-        or it can't be parsed -- never raises."""
+        narration onto each step_result's "narration" key and return
+        (placement_note, placement_meta) for the report. Returns (None, None)
+        when there's no transcript or it can't be parsed -- never raises.
+
+        When the deterministic placement (transcript.py) collapses onto a
+        single step despite there being multiple real steps -- its own loud
+        WARNING signature -- this tries the semantic LLM pipeline instead:
+        stage 1 (semantic_align) picks verbatim split points from the full
+        transcript + step contexts; stage 2 (polish_narration) then rewrites
+        each resulting segment for readability, gated so nothing invented or
+        dropped is ever trusted silently. Either stage failing just falls
+        back to what came before it -- semantic_align failing keeps the
+        original single-block deterministic result (with its warning);
+        polish_narration failing keeps stage 1's verbatim placement."""
         matches = sorted(session_dir.glob("transcript.*"))
         if not matches:
-            return None
+            return None, None
         tpath = matches[0]
+        content = tpath.read_text(encoding="utf-8")
         try:
-            per_step, note = align_transcript_to_steps(
-                tpath.name, tpath.read_text(encoding="utf-8"), manifest
-            )
+            per_step, note = align_transcript_to_steps(tpath.name, content, manifest)
         except Exception:  # noqa: BLE001 - a bad transcript must never break generation
-            return None
+            return None, None
+
+        placement_meta = None
+        if "WARNING" in note:
+            step_contexts = build_step_contexts(manifest, step_results)
+            narrative_llm = make_narrative_llm_client()
+            try:
+                aligned = semantic_align(content, manifest, step_contexts, narrative_llm)
+            finally:
+                close = getattr(narrative_llm, "close", None)
+                if callable(close):
+                    close()
+            if aligned:
+                per_step, placement_meta = aligned
+                polish_llm = make_narrative_llm_client()
+                try:
+                    per_step, polish_meta = polish_narration(
+                        per_step, manifest, step_contexts, polish_llm
+                    )
+                finally:
+                    close = getattr(polish_llm, "close", None)
+                    if callable(close):
+                        close()
+                placement_meta.update(polish_meta)
+                note = (
+                    f"{len(per_step)} of {len(manifest.steps)} step(s) narrated "
+                    "(semantic placement + polish)"
+                )
+
         for result in step_results:
             narration = per_step.get(result["step_id"])
             if narration:
                 result["narration"] = narration
-        return note
+        return note, placement_meta
 
     def _ingest_session(manifest_json, files, transcript=None, stage=False):
         """Shared by the JSON API (POST /sessions) and the browser upload
@@ -802,37 +878,41 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
     @app.get("/sessions/{session_id}/doc.docx")
     def get_doc_docx(session_id: str):
         session_dir = _require_done(session_id)
+        filename = _download_filename(sessions[session_id][0], "docx")
         return Response(
             (session_dir / "doc.docx").read_bytes(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={"Content-Disposition": 'attachment; filename="doc.docx"'},
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.get("/sessions/{session_id}/doc.pdf")
     def get_doc_pdf(session_id: str):
         session_dir = _require_done(session_id)
+        filename = _download_filename(sessions[session_id][0], "pdf")
         return Response(
             (session_dir / "doc.pdf").read_bytes(),
             media_type="application/pdf",
-            headers={"Content-Disposition": 'attachment; filename="doc.pdf"'},
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.get("/sessions/{session_id}/doc.single.html")
     def get_doc_single_html(session_id: str):
         session_dir = _require_done(session_id)
+        filename = _download_filename(sessions[session_id][0], "html")
         return Response(
             (session_dir / "doc.single.html").read_text(encoding="utf-8"),
             media_type="text/html",
-            headers={"Content-Disposition": 'attachment; filename="doc.single.html"'},
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.get("/sessions/{session_id}/export.md.zip")
     def get_export_md_zip(session_id: str):
         session_dir = _require_done(session_id)
+        filename = _download_filename(sessions[session_id][0], "zip")
         return Response(
             (session_dir / "export.md.zip").read_bytes(),
             media_type="application/zip",
-            headers={"Content-Disposition": 'attachment; filename="export.md.zip"'},
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.get("/library")

@@ -421,8 +421,10 @@ system fonts, no external assets — works fully offline).
   transcript & re-render** form (attach narration after the fact — see
   below), a **Re-render** button, a **Delete** button (removes the
   session's files, library entry, and everything — irreversible, no undo),
-  a **Downloads** list (docx/pdf/single-file-html/markdown-zip), and a
-  read-only panel showing the current `config/models.toml`.
+  a **Downloads** list (docx/pdf/single-file-html/markdown-zip — each
+  downloads named from the session's title, e.g. `configure-smartdeploy-
+  console.docx`, not a generic `doc.docx`), and a read-only panel showing
+  the current `config/models.toml`.
 
 No JavaScript is required — the search box, upload form, transcript form,
 re-render button, and delete button are all plain HTML forms.
@@ -446,6 +448,26 @@ plain text/markdown file has no timestamps, placement is by **order**, two ways:
 A timestamped `.json` transcript (the faster-whisper segment shape) is also
 accepted and aligned by time. Bad transcripts are rejected at upload with a
 clear message; placement is recorded in the sidecar report.
+
+**One continuous run-on transcript** — no blank lines, no labels, no
+timestamps, just everything typed/spoken as one block — has no structure for
+the rules above to split on, so it would otherwise land entirely on step 1.
+When that happens (on the capture flow, i.e. a real recording with a real
+manifest — not the screenshots-only build below), the server automatically
+tries an LLM-based placement instead: one call reads the whole transcript
+plus what each step actually is (window, element, action) and picks *where*
+each step's portion of the narration starts — the words themselves are never
+changed at this stage, only sliced at those points. A second pass then
+rewrites each step's narration into clearer prose (fixing run-on "then...
+then...then" phrasing and filler words), but only keeps a rewrite that
+passes a mechanical check that it didn't invent or drop anything; anything
+it can't confirm is called out as a `[verify]` blockquote rather than
+silently lost, and a step whose rewrite fails the check just keeps the
+verbatim (unpolished) text. Either stage can fail safely — if the LLM is
+unreachable or its answer isn't trustworthy, you get the original single-step
+placement back, with the same loud warning in the sidecar report. This uses
+the **Narration** row's model/provider on the Configuration page (§7), not
+the Steps row.
 
 ### Building without a capture — screenshots + transcript
 
@@ -479,13 +501,15 @@ listing three things a reviewer should check:
   the plain template sentence was used instead. Not wrong, just less fluent
   — worth a glance to see if they're worth polishing by hand or if your LLM
   endpoint needs attention.
-- **Verify claims** (yellow if non-empty) — narration claims (from an audio
-  transcript) that couldn't be matched to anything in the generated
-  narrative text. Appear in the doc as `> [verify] (claim-id): <original
-  claim text>` blockquotes — nothing from a recording is ever silently
-  dropped. (An uploaded `.txt`/`.md` transcript is placed verbatim under each
-  step by label/order, so it doesn't produce verify-claims; these come from the
-  claim-coverage narrative path.)
+- **Verify claims** (yellow if non-empty) — content from a transcript that
+  couldn't be confirmed as preserved. Appear in the doc as `> [verify]
+  (claim-id): <original text>` blockquotes — nothing from a recording is ever
+  silently dropped. Today this is populated by the semantic transcript
+  pipeline's polish stage (§5): if it rewrites a step's narration for
+  clarity but can't confirm every part of the original survived, the
+  uncertain part is flagged here rather than silently lost. (The
+  still-unwired audio claim-coverage narrative path would also report here if
+  it were live.)
 - **Empty-metadata steps** (yellow if non-empty) — steps where no UI
   Automation element info was captured at all. These render using screen
   coordinates instead of an element name — still factual, just less specific.

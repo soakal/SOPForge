@@ -8,6 +8,7 @@ Generation runs on a background job (task-05), so POST /sessions returns
 "queued"/"processing" immediately — tests poll /status until "done" (or a
 terminal "error") before asserting on downstream endpoints."""
 
+import json
 import re
 import shutil
 import time
@@ -275,6 +276,68 @@ def test_upload_with_transcript_places_narration_under_each_step(tmp_path):
 
     report = client.get(f"/sessions/{session_id}/report").json()
     assert "transcript" in report
+
+
+class _NarrativeStub:
+    """Stands in for the [narrative]-section LLM used by the semantic
+    transcript pipeline -- distinguishes stage 1's boundary-picking call
+    from stage 2's polish call by a marker only the boundary prompt
+    contains ("starts_with" appears in semantic_align's own JSON-shape
+    instructions, never in narration_polish's)."""
+
+    def chat(self, messages, **kwargs):
+        content = messages[0]["content"]
+        if "starts_with" in content:
+            return json.dumps(
+                [
+                    {"step": 1, "starts_with": "first click save"},
+                    {"step": 2, "starts_with": "then enter the computer name"},
+                    {"step": 3, "starts_with": "then click somewhere in chrome"},
+                ]
+            )
+        return json.dumps(
+            [
+                {"step_id": "step-001", "text": "First, click Save."},
+                {"step_id": "step-002", "text": "Then enter the computer name."},
+                {"step_id": "step-003", "text": "Then click somewhere in Chrome."},
+            ]
+        )
+
+
+def test_unstructured_transcript_gets_semantic_placement_and_polish(tmp_path):
+    """A transcript with no blank lines/labels -- the exact real-world shape
+    that collapses onto step 1 under deterministic placement -- gets picked
+    up by the semantic LLM pipeline instead: narration lands on all three
+    steps, polished, and the sidecar report records how."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _NarrativeStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    transcript = "first click save then enter the computer name then click somewhere in chrome"
+    files.append(("transcript_file", ("t.md", transcript.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "First, click Save." in md
+    assert "Then enter the computer name." in md
+    assert "Then click somewhere in Chrome." in md
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    placement = report["transcript_placement"]
+    assert placement["mode"] == "semantic-llm"
+    assert placement["boundaries_resolved"] == 3
+    assert set(placement["steps_polished"]) == {"step-001", "step-002", "step-003"}
 
 
 def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monkeypatch):
