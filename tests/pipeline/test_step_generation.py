@@ -5,7 +5,7 @@ pass rate on fixtures/ manifests with realistic mock step text."""
 
 from pathlib import Path
 
-from pipeline.generation import generate_all_steps, generate_step_text
+from pipeline.generation import _build_prompt, generate_all_steps, generate_step_text
 from pipeline.manifest import load_manifest
 from pipeline.template import render_step_template
 
@@ -128,3 +128,37 @@ def test_generate_all_steps_reports_progress_after_each_step():
     generate_all_steps(manifest, client, on_progress=lambda i, n: calls.append((i, n)))
     total = len(manifest.steps)
     assert calls == [(i, total) for i in range(1, total + 1)]
+
+
+def test_build_prompt_does_not_double_wrap_the_empty_window_fallback():
+    """Regression: a real qwen3:32b reply once echoed the prompt's own
+    "in the 'the current window' window" almost verbatim -- caused by this
+    prompt re-wrapping the already-worded fallback phrase in quotes +
+    "window" a second time. template.py's _location_phrase never made this
+    mistake; the prompt must match it."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[2].model_copy(
+        update={"window": manifest.steps[2].window.model_copy(update={"title": ""})}
+    )
+    prompt = _build_prompt(step)
+    assert "in the current window" in prompt
+    assert "the current window' window" not in prompt
+    assert "'the current window'" not in prompt
+
+
+def test_markdown_bold_is_stripped_from_a_passing_generation():
+    """Regression: a real qwen3:32b reply for a step that otherwise passed
+    round_trip_ok included raw **bold** markers around the element name,
+    which round_trip_ok doesn't check for -- they shipped straight into the
+    rendered doc untouched. generate_step_text must strip them so a
+    successful (non-fallback) generation is still plain prose."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]  # click, 'Save' Button, SmartDeploy Console
+
+    client = _RecordingClient(
+        lambda idx, s=step: f"The user clicks **{s.element.name}** in the {s.window.title} window."
+    )
+    text, used_fallback = generate_step_text(step, client)
+    assert used_fallback is False
+    assert "**" not in text
+    assert step.element.name in text
