@@ -126,7 +126,11 @@ $Port = 28420
 # sessions), which a test must never create/delete. Keeping it under $TestRoot
 # keeps this round trip fully isolated and self-cleaning.
 $SessionsRoot = Join-Path $TestRoot "sessions"
-& $InstallScript -InstallPath $TestRoot -Port $Port -SessionsRoot $SessionsRoot
+# -NoStart: this round trip's own Start-Process call below is what exercises
+# the server; without -NoStart, install.ps1's own start-after-install would
+# race it for the same port (see round trip 5 for what actually verifies
+# start-after-install).
+& $InstallScript -InstallPath $TestRoot -Port $Port -SessionsRoot $SessionsRoot -NoStart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 failed (exit $LASTEXITCODE)" }
 
 $Config1 = Get-Content (Join-Path $TestRoot "install-config.json") -Raw | ConvertFrom-Json
@@ -186,7 +190,7 @@ $TestRoot2 = Join-Path $env:TEMP "sopforge-install-test-autostart-$(Get-Random)"
 $TaskNames = @("SOPForge-Server", "SOPForge-Capture")
 $Port2 = $Port + 1
 
-& $InstallScript -InstallPath $TestRoot2 -Port $Port2 -Autostart -SessionsRoot (Join-Path $TestRoot2 "sessions")
+& $InstallScript -InstallPath $TestRoot2 -Port $Port2 -Autostart -SessionsRoot (Join-Path $TestRoot2 "sessions") -NoStart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 -Autostart failed (exit $LASTEXITCODE)" }
 
 if (-not (Test-Path (Join-Path $TestRoot2 "server\sopforge-server.exe"))) {
@@ -294,7 +298,7 @@ $Port3 = $Port + 2
 $TestRoot3 = Join-Path $env:TEMP "sopforge-install-test-extroot-$(Get-Random)"
 $ExtSessions = Join-Path $env:TEMP "sopforge-install-test-extdata-$(Get-Random)"
 
-& $InstallScript -InstallPath $TestRoot3 -Port $Port3 -SessionsRoot $ExtSessions -NoAutostart
+& $InstallScript -InstallPath $TestRoot3 -Port $Port3 -SessionsRoot $ExtSessions -NoAutostart -NoStart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 (ext sessions) failed (exit $LASTEXITCODE)" }
 $FakeSop = Join-Path $ExtSessions "session-xyz"
 New-Item -ItemType Directory -Force -Path $FakeSop | Out-Null
@@ -308,7 +312,7 @@ if (-not (Test-Path (Join-Path $FakeSop "report.json"))) {
 }
 Write-Output "Preserve verified: install dir removed, external session data kept."
 
-& $InstallScript -InstallPath $TestRoot3 -Port $Port3 -SessionsRoot $ExtSessions -NoAutostart
+& $InstallScript -InstallPath $TestRoot3 -Port $Port3 -SessionsRoot $ExtSessions -NoAutostart -NoStart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 (ext sessions, reinstall) failed (exit $LASTEXITCODE)" }
 & $UninstallScript -InstallPath $TestRoot3 -RemoveData
 if ($LASTEXITCODE -ne 0) { throw "uninstall.ps1 (ext, RemoveData) failed (exit $LASTEXITCODE)" }
@@ -328,7 +332,7 @@ $Port4 = $Port + 3
 $TestRoot4 = Join-Path $env:TEMP "sopforge-install-test-upgrade-$(Get-Random)"
 $Sess4 = Join-Path $TestRoot4 "sessions"
 
-& $InstallScript -InstallPath $TestRoot4 -Port $Port4 -SessionsRoot $Sess4 -NoAutostart
+& $InstallScript -InstallPath $TestRoot4 -Port $Port4 -SessionsRoot $Sess4 -NoAutostart -NoStart
 if ($LASTEXITCODE -ne 0) { throw "install.ps1 (upgrade base install) failed (exit $LASTEXITCODE)" }
 
 $ServerExe4 = Join-Path $TestRoot4 "server\sopforge-server.exe"
@@ -341,7 +345,7 @@ Start-Sleep -Seconds 3  # let it start and lock its _internal files
 
 $UpgradeError = $null
 try {
-    & $InstallScript -InstallPath $TestRoot4 -Port $Port4 -SessionsRoot $Sess4 -NoAutostart
+    & $InstallScript -InstallPath $TestRoot4 -Port $Port4 -SessionsRoot $Sess4 -NoAutostart -NoStart
     if ($LASTEXITCODE -ne 0) {
         throw "FAIL: upgrade-in-place over a running install failed (exit $LASTEXITCODE)"
     }
@@ -360,6 +364,129 @@ try {
 if ($UpgradeError) { throw $UpgradeError }
 if (Test-Path $TestRoot4) { throw "FAIL: $TestRoot4 still exists after uninstall" }
 Write-Output "PASS: upgrade-in-place over a running install."
+
+# --- Round trip 5: apps actually start immediately after install ---
+# The feature this proves: install.ps1 no longer only configures autostart
+# for the NEXT logon -- it also starts both apps THIS session (Start-
+# InstalledApp), regardless of which mechanism ends up wiring autostart
+# (scheduled task, Startup-folder shortcut fallback, or a direct launch if
+# autostart itself failed). Deliberately mechanism-agnostic: whichever one
+# fired, the resulting process's ExecutablePath is under $TestRoot5 either
+# way, so this checks process presence rather than which path was taken.
+Write-Output ""
+Write-Output "=== Round trip 5: apps start immediately after install (no -NoStart) ==="
+$Port5 = $Port + 4
+$TestRoot5 = Join-Path $env:TEMP "sopforge-install-test-autostart-now-$(Get-Random)"
+$Sess5 = Join-Path $TestRoot5 "sessions"
+
+function Get-SopforgeProcessUnder($ExeName, $Path) {
+    $Prefix = $Path.TrimEnd('\') + '\'
+    return @(
+        Get-CimInstance Win32_Process -Filter "Name='$ExeName'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($Prefix, [StringComparison]::OrdinalIgnoreCase) }
+    )
+}
+
+& $InstallScript -InstallPath $TestRoot5 -Port $Port5 -SessionsRoot $Sess5
+if ($LASTEXITCODE -ne 0) { throw "install.ps1 (start-after-install) failed (exit $LASTEXITCODE)" }
+
+$Round5Error = $null
+try {
+    if (-not (Wait-ForHealthy -Port $Port5)) {
+        throw "FAIL: server did not come up on its own after install (this test never called Start-Process itself) -- start-after-install did not actually start it"
+    }
+    Write-Output "Server auto-started and became healthy on port $Port5."
+
+    $ServerProcs = Get-SopforgeProcessUnder "sopforge-server.exe" $TestRoot5
+    if ($ServerProcs.Count -eq 0) {
+        throw "FAIL: no sopforge-server.exe process found running from $TestRoot5"
+    }
+
+    # sopforge.exe (capture) has no HTTP endpoint to poll -- give it a moment
+    # to actually launch, then check by process presence only.
+    $CaptureProcs = @()
+    $Deadline = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $Deadline) {
+        $CaptureProcs = Get-SopforgeProcessUnder "sopforge.exe" $TestRoot5
+        if ($CaptureProcs.Count -gt 0) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    if ($CaptureProcs.Count -eq 0) {
+        throw "FAIL: no sopforge.exe (capture) process found running from $TestRoot5"
+    }
+    Write-Output "Capture agent auto-started."
+} catch {
+    $Round5Error = $_
+} finally {
+    # Kill by path prefix (not specific PIDs) so a start-after-install path
+    # that spawned via a different mechanism than expected is still cleaned
+    # up, and so uninstall.ps1 below never trips over a locked file.
+    Get-SopforgeProcessUnder "sopforge-server.exe" $TestRoot5 | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Get-SopforgeProcessUnder "sopforge.exe" $TestRoot5 | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 300
+}
+
+& $UninstallScript -InstallPath $TestRoot5 -RemoveData
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "uninstall.ps1 (round trip 5) failed (exit $LASTEXITCODE) while cleaning up"
+}
+if ($Round5Error) { throw $Round5Error }
+if (Test-Path $TestRoot5) { throw "FAIL: $TestRoot5 still exists after uninstall" }
+Write-Output "PASS: apps start immediately after install."
+
+# --- Round trip 6: start-after-install's direct-launch fallback branch ---
+# Round trip 5 above can land on any of Start-InstalledApp's three branches
+# depending on machine state (it happened to hit the Startup-shortcut
+# fallback on this VM, since a real install already owns the scheduled task
+# names) -- -NoAutostart forces the OTHER two branches out entirely (no task
+# gets started per the $AutostartEffective gate, no shortcut gets created),
+# deterministically exercising the plain Start-Process direct-launch path.
+Write-Output ""
+Write-Output "=== Round trip 6: start-after-install direct-launch fallback (-NoAutostart) ==="
+$Port6 = $Port + 5
+$TestRoot6 = Join-Path $env:TEMP "sopforge-install-test-directlaunch-$(Get-Random)"
+$Sess6 = Join-Path $TestRoot6 "sessions"
+
+& $InstallScript -InstallPath $TestRoot6 -Port $Port6 -SessionsRoot $Sess6 -NoAutostart
+if ($LASTEXITCODE -ne 0) { throw "install.ps1 (direct-launch) failed (exit $LASTEXITCODE)" }
+
+$Round6Error = $null
+try {
+    if (-not (Wait-ForHealthy -Port $Port6)) {
+        throw "FAIL: server did not come up via the direct-launch fallback (-NoAutostart, no scheduled task/shortcut possible)"
+    }
+    Write-Output "Server auto-started (direct launch) and became healthy on port $Port6."
+
+    if ((Get-SopforgeProcessUnder "sopforge-server.exe" $TestRoot6).Count -eq 0) {
+        throw "FAIL: no sopforge-server.exe process found running from $TestRoot6"
+    }
+
+    $CaptureProcs6 = @()
+    $Deadline6 = (Get-Date).AddSeconds(10)
+    while ((Get-Date) -lt $Deadline6) {
+        $CaptureProcs6 = Get-SopforgeProcessUnder "sopforge.exe" $TestRoot6
+        if ($CaptureProcs6.Count -gt 0) { break }
+        Start-Sleep -Milliseconds 200
+    }
+    if ($CaptureProcs6.Count -eq 0) {
+        throw "FAIL: no sopforge.exe (capture) process found running from $TestRoot6"
+    }
+    Write-Output "Capture agent auto-started (direct launch)."
+} catch {
+    $Round6Error = $_
+} finally {
+    Get-SopforgeProcessUnder "sopforge-server.exe" $TestRoot6 | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Get-SopforgeProcessUnder "sopforge.exe" $TestRoot6 | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 300
+}
+
+& $UninstallScript -InstallPath $TestRoot6 -RemoveData
+if ($LASTEXITCODE -ne 0) {
+    Write-Warning "uninstall.ps1 (round trip 6) failed (exit $LASTEXITCODE) while cleaning up"
+}
+if ($Round6Error) { throw $Round6Error }
+if (Test-Path $TestRoot6) { throw "FAIL: $TestRoot6 still exists after uninstall" }
+Write-Output "PASS: start-after-install direct-launch fallback."
 
 Write-Output ""
 Write-Output "ALL PASS"
@@ -403,6 +530,18 @@ exit 0
             Write-Output "Cleanup: removed test-owned scheduled task '$TaskName'."
         }
     }
+
+    # Safety net for round trip 5 (and any future round trip that lets
+    # install.ps1 start real processes): sweep any sopforge-server.exe/
+    # sopforge.exe still running from under a test root, regardless of which
+    # inline cleanup path ran or whether this run threw before reaching it.
+    $TestTempPrefix = Join-Path $env:TEMP "sopforge-install-test"
+    Get-CimInstance Win32_Process -Filter "Name='sopforge-server.exe' OR Name='sopforge.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($TestTempPrefix, [StringComparison]::OrdinalIgnoreCase) } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Output "Cleanup: stopped stray '$($_.Name)' (PID $($_.ProcessId)) from a test root."
+        }
 
     # Remove every test root/data dir this run may have created (some may not
     # exist if it threw early) plus the captured stdout/stderr logs. The logs

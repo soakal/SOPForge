@@ -82,7 +82,12 @@ param(
     # user's profile, not the admin's.
     [string]$SessionsRoot = "$env:USERPROFILE\SOPForge\sessions",
     [switch]$Autostart,
-    [switch]$NoAutostart
+    [switch]$NoAutostart,
+    # Internal: skips starting the apps immediately after install (see
+    # Start-InstalledApp below). Not documented for end users -- it exists so
+    # scripts/test_install.ps1's process-free round trips can opt out of
+    # spawning real sopforge.exe/sopforge-server.exe instances.
+    [switch]$NoStart
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,6 +141,7 @@ if (-not (Test-IsElevated)) {
         # account's %USERPROFILE%.
         $ElevatedArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$PSCommandPath`"", "-InstallPath", "`"$InstallPath`"", "-Port", "$Port", "-SessionsRoot", "`"$SessionsRoot`"")
         if ($NoAutostart) { $ElevatedArgs += "-NoAutostart" }
+        if ($NoStart) { $ElevatedArgs += "-NoStart" }
         try {
             $ElevatedProc = Start-Process -FilePath "powershell.exe" -ArgumentList $ElevatedArgs -Verb RunAs -Wait -PassThru -ErrorAction Stop
             exit $ElevatedProc.ExitCode
@@ -360,18 +366,22 @@ function Register-Autostart {
     }
 }
 
+# Computed unconditionally (not just under -Autostart) since Start-InstalledApp
+# below needs them regardless of whether autostart registration ran/succeeded.
+$ServerExe = Join-Path $ServerInstallPath "sopforge-server.exe"
+$ServerArgs = "--port $Port --sessions-root `"$SessionsRoot`""
+$CaptureExe = Join-Path $CaptureInstallPath "sopforge.exe"
+
 $StartupShortcuts = @()
 if ($AutostartEffective) {
     # Each entry is attempted independently -- the base install (files +
     # config, above) already succeeded regardless of what happens here, and
     # one entry's Task Scheduler permission restriction must not block the
     # other from being attempted.
-    $ServerExe = Join-Path $ServerInstallPath "sopforge-server.exe"
     $ServerShortcut = Register-Autostart -TaskName $ServerTaskName -Exe $ServerExe `
-        -Arguments "--port $Port --sessions-root `"$SessionsRoot`"" -OwnInstallPath $InstallPath
+        -Arguments $ServerArgs -OwnInstallPath $InstallPath
     if ($ServerShortcut) { $StartupShortcuts += $ServerShortcut }
 
-    $CaptureExe = Join-Path $CaptureInstallPath "sopforge.exe"
     $CaptureShortcut = Register-Autostart -TaskName $CaptureTaskName -Exe $CaptureExe -Arguments $null -OwnInstallPath $InstallPath
     if ($CaptureShortcut) { $StartupShortcuts += $CaptureShortcut }
 }
@@ -402,4 +412,78 @@ $InstallConfig = [ordered]@{
 $InstallConfig | ConvertTo-Json | Set-Content -Path (Join-Path $InstallPath "install-config.json") -Encoding utf8
 
 Write-Output "Installed SOPForge to $InstallPath (port $Port)."
+
+function Test-TaskOwnedByThisInstall([string]$TaskName, [string]$OwnInstallPath) {
+    $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if (-not $Task) { return $false }
+    $Exe = ($Task.Actions | Select-Object -First 1).Execute
+    return [bool]($Exe -and $Exe.StartsWith((ConvertTo-PathPrefix $OwnInstallPath), [StringComparison]::OrdinalIgnoreCase))
+}
+
+function Start-InstalledApp {
+    <#
+    Starts one app immediately, in addition to whatever autostart got
+    configured above for future logons -- so a fresh install is usable right
+    away instead of only working after the next reboot/sign-in. Branches on
+    however this entry's autostart actually ended up wired: a scheduled task
+    owned by this install (Start-ScheduledTask -- the same path logon
+    autostart itself uses, runs unelevated as the task principal), this
+    run's own Startup-folder shortcut fallback (launched via explorer.exe so
+    it de-elevates out of this UAC-elevated installer, same as double-
+    clicking it would), or -- if neither exists, e.g. -NoAutostart was
+    passed -- a direct process launch as a last resort. Never throws: a
+    failure here must not fail an otherwise-successful install, only warn.
+    #>
+    param(
+        [string]$TaskName,
+        [string]$Exe,
+        [string]$Arguments,
+        [string]$ShortcutName
+    )
+    try {
+        # Only trust a same-name/same-path task when THIS run's own
+        # Register-Autostart just (re-)registered it -- Register-ScheduledTask
+        # -Force there always rewrites the action with this run's current
+        # -Port/-SessionsRoot, so ownership by itself isn't enough: if
+        # -NoAutostart was passed, an existing task from a PRIOR run at this
+        # same -InstallPath could still be sitting there with STALE
+        # arguments (an old port/sessions root), and starting it would
+        # silently bring up the wrong config instead of what this run asked
+        # for. $AutostartEffective gates that: no autostart branch ran this
+        # time -> never start via a task, fall through to a direct launch
+        # with this run's own arguments instead.
+        if ($AutostartEffective -and (Test-TaskOwnedByThisInstall -TaskName $TaskName -OwnInstallPath $InstallPath)) {
+            Start-ScheduledTask -TaskName $TaskName
+            Write-Output "Started '$TaskName'."
+            return
+        }
+        if ($StartupShortcuts -contains $ShortcutName) {
+            $ShortcutPath = Join-Path ([Environment]::GetFolderPath("Startup")) $ShortcutName
+            Start-Process -FilePath "explorer.exe" -ArgumentList "`"$ShortcutPath`""
+            Write-Output "Started '$TaskName' via its Startup-folder shortcut."
+            return
+        }
+        if ($Arguments) {
+            Start-Process -FilePath $Exe -ArgumentList $Arguments | Out-Null
+        } else {
+            Start-Process -FilePath $Exe | Out-Null
+        }
+        Write-Output "Started '$TaskName' directly."
+    } catch {
+        Write-Warning "Could not start '$TaskName' after install: $_"
+        Write-Warning "It will still start automatically at next logon (if autostart is enabled), or launch $Exe by hand."
+    }
+}
+
+if (-not $NoStart) {
+    Start-InstalledApp -TaskName $ServerTaskName -Exe $ServerExe -Arguments $ServerArgs -ShortcutName "$ServerTaskName.lnk"
+    # A short, best-effort head start for the server so an immediate first
+    # recording's auto-upload (capture.upload) has a better chance of landing
+    # -- not a hard dependency (capture never calls the server at startup,
+    # only on session stop, and that call has its own 10s timeout), just a
+    # nicety.
+    Start-Sleep -Milliseconds 500
+    Start-InstalledApp -TaskName $CaptureTaskName -Exe $CaptureExe -Arguments $null -ShortcutName "$CaptureTaskName.lnk"
+}
+
 exit 0
