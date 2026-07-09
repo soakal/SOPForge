@@ -102,6 +102,37 @@ def test_create_session_and_check_status(tmp_path):
     assert status == {"status": "done"}
 
 
+def test_capture_session_gets_an_auto_generated_title(tmp_path):
+    """A real capture session's manifest almost never has a title (nothing in
+    the capture flow asks the user for one) -- without an auto-title the
+    library/session page would show the raw session id, a timestamp+uuid
+    blob. Proves generate_title_and_overview gets called from window titles
+    + generated step text (server.py's _synthesize_narration_from_steps) and
+    the result lands on manifest.session.title."""
+
+    class _TitleGeneratingClient:
+        def chat(self, messages, **kwargs):
+            return '{"title": "Configure SmartDeploy Console", "overview": "Sets it up."}'
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=lambda: _TitleGeneratingClient(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    page = client.get(f"/ui/sessions/{session_id}")
+    assert "Configure SmartDeploy Console" in page.text
+
+
 def test_get_report_lists_expected_categories(tmp_path):
     client = _make_client(tmp_path)
     session_id, status = _create_and_wait(client, tmp_path)

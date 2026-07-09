@@ -81,6 +81,24 @@ from pipeline.webui.pages import (
 from pipeline.webui.review import render_review_page
 
 
+def _synthesize_narration_from_steps(manifest, step_results):
+    """Builds a lightweight text summary of a capture session -- the distinct
+    window titles clicked through, plus each step's generated text, in order
+    -- so generate_title_and_overview (normally fed a real narration
+    transcript) can produce a session title from what the screenshots
+    actually show, even when there's no user-supplied narration at all."""
+    windows = []
+    seen = set()
+    for step in manifest.steps:
+        title = step.window.title
+        if title and title not in seen:
+            seen.add(title)
+            windows.append(title)
+    lines = [f"Windows involved: {', '.join(windows)}."] if windows else []
+    lines.extend(result["text"] for result in step_results)
+    return "\n".join(lines)
+
+
 def _zip_directory(directory):
     directory = Path(directory)
     buf = io.BytesIO()
@@ -240,6 +258,30 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         # transcript is validated at upload time, but a problem here must never
         # break generation -- the doc is complete from the steps alone.
         transcript_note = _apply_transcript(session_dir, manifest, step_results)
+
+        # A real capture session's manifest almost never has a title (nothing
+        # in the capture flow asks the user for one), so without this the
+        # library page shows the raw session id -- a timestamp+uuid blob,
+        # not what the SOP is about. Auto-title from what the screenshots
+        # actually show: the window titles clicked through plus each step's
+        # generated text, the same generate_title_and_overview call
+        # manifest-free photo builds already use for narration-based titles.
+        # Fills the title only if one isn't already set, so a manifest that
+        # DOES carry a title (or a previous run's title) is never overwritten.
+        if not manifest.session.title:
+            synthetic_narration = _synthesize_narration_from_steps(manifest, step_results)
+            if synthetic_narration.strip():
+                title_llm = make_llm_client()
+                try:
+                    gen_title, _overview = generate_title_and_overview(
+                        synthetic_narration, title_llm
+                    )
+                finally:
+                    close = getattr(title_llm, "close", None)
+                    if callable(close):
+                        close()
+                if gen_title:
+                    manifest.session.title = gen_title
 
         report = build_sidecar_report(manifest, step_results, [], {})
         if transcript_note:
