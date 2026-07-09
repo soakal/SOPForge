@@ -68,6 +68,15 @@ class SectionConfig(BaseModel):
     # Legacy: older configs used `anthropic = true` instead of provider.
     anthropic: bool = False
     passes: int = Field(default=1, ge=1)
+    # Only meaningful for [steps] (generation.py's per-step LLM calls are
+    # independent; [narrative]'s draft->critique->revise passes are not, so
+    # this field is simply never dumped for that section -- see
+    # dump_models_config_toml). Defaults to 1 (strictly sequential): an
+    # untuned Ollama instance just queues concurrent requests server-side,
+    # and a queued step can then blow its own per-request timeout into a
+    # template fallback it didn't need -- so any speedup from a
+    # multi-GPU/parallel-capable Ollama server is opt-in, not assumed.
+    max_concurrency: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
     def _legacy_anthropic(self):
@@ -85,6 +94,7 @@ class VisionConfig(BaseModel):
     endpoint: str = "http://192.168.200.60:11434/v1"
     model: str = "qwen2.5vl:7b"
     provider: VisionProvider = "ollama"
+    max_concurrency: int = Field(default=4, ge=1)
 
 
 class ModelsConfig(BaseModel):
@@ -155,11 +165,21 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         "# environment variables, never stored here:",
         "#   openrouter -> OPENROUTER_API_KEY   openai -> OPENAI_API_KEY",
         "#   anthropic  -> ANTHROPIC_API_KEY",
+        "#",
+        "# max_concurrency (steps/vision only): how many LLM calls this section",
+        "# dispatches at once. Raising it only helps if the Ollama server itself",
+        "# is tuned for concurrent requests (OLLAMA_NUM_PARALLEL > 1, optionally",
+        "# OLLAMA_SCHED_SPREAD=1 on the Ollama host to spread load across multiple",
+        "# GPUs) -- that's server-side configuration this app cannot set remotely.",
+        "# Against an untuned single-slot server, raising this just queues",
+        "# requests and risks a queued step's own timeout expiring into a",
+        "# template fallback it didn't need. Default 1 (steps) is safe/sequential.",
         "",
         "[steps]",
         f"provider = {_toml_str(cfg.steps.provider)}",
         f"endpoint = {_toml_str(cfg.steps.endpoint)}",
         f"model = {_toml_str(cfg.steps.model)}",
+        f"max_concurrency = {_toml_str(cfg.steps.max_concurrency)}",
         "",
         "[narrative]",
         f"provider = {_toml_str(cfg.narrative.provider)}",
@@ -172,6 +192,7 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         f"provider = {_toml_str(cfg.vision.provider)}",
         f"endpoint = {_toml_str(cfg.vision.endpoint)}",
         f"model = {_toml_str(cfg.vision.model)}",
+        f"max_concurrency = {_toml_str(cfg.vision.max_concurrency)}",
         "",
     ]
     return "\n".join(lines)

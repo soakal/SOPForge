@@ -23,6 +23,8 @@ def test_loads_committed_config():
     assert config.steps.anthropic is False
     assert config.narrative.anthropic is False
     assert config.narrative.passes == 3
+    assert config.steps.max_concurrency == 1
+    assert config.vision.max_concurrency == 4
 
 
 def test_anthropic_flag_defaults_off_when_omitted(tmp_path):
@@ -86,6 +88,37 @@ def test_toml_writer_escapes_control_chars_and_roundtrips(tmp_path):
     reloaded = load_models_config(path)
     assert reloaded.steps.model == 'weird\nmodel\twith\\control"chars'
     assert "[steps]" in dump_models_config_toml(cfg)
+
+
+def test_max_concurrency_defaults_to_one_when_omitted_legacy_config(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.steps.max_concurrency == 1
+    assert config.vision.max_concurrency == 4
+
+
+def test_max_concurrency_round_trips(tmp_path):
+    data = _base_cfg()
+    data["steps"]["max_concurrency"] = 6
+    data["vision"]["max_concurrency"] = 2
+    cfg = ModelsConfig.model_validate(data)
+    path = tmp_path / "models.toml"
+    save_models_config(cfg, path)
+    reloaded = load_models_config(path)
+    assert reloaded.steps.max_concurrency == 6
+    assert reloaded.vision.max_concurrency == 2
+
+
+def test_max_concurrency_rejects_zero():
+    data = _base_cfg()
+    data["steps"]["max_concurrency"] = 0
+    with pytest.raises(ValidationError):
+        ModelsConfig.model_validate(data)
 
 
 def test_rejects_missing_required_field(tmp_path):

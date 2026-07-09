@@ -5,11 +5,22 @@
 #   anthropic  -> ANTHROPIC_API_KEY
 # Ollama is local & private (no key). Edit this from the tray's Configuration
 # page, or here directly. The runtime copy lives at ~/SOPForge/models.toml.
+#
+# max_concurrency (steps/vision only): how many LLM calls this section
+# dispatches at once. Multi-GPU Ollama hosts auto-split a model's layers
+# across GPUs already -- that's about fitting a model, not speed. Raising
+# max_concurrency is the actual lever for a speedup, and only helps if the
+# Ollama server itself is tuned for concurrent requests (OLLAMA_NUM_PARALLEL
+# > 1, optionally OLLAMA_SCHED_SPREAD=1 to spread load across GPUs) -- that's
+# server-side config this app cannot set remotely. Against an untuned
+# single-slot server, raising this just queues requests and risks a queued
+# step's own timeout expiring into a template fallback it didn't need.
 
 [steps]
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen3:32b"
+max_concurrency = 1
 
 [narrative]
 provider = "ollama"
@@ -22,3 +33,4 @@ enabled = true
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen2.5vl:7b"
+max_concurrency = 4

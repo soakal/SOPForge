@@ -37,6 +37,21 @@ To build the release bundle yourself: `py -3.12 scripts/build_release.py --zip`
 # Stop anytime:  ni STOP
 ```
 
+## Multi-GPU / parallel generation
+
+An Ollama host with multiple GPUs already auto-splits a model's layers across
+them when it doesn't fit on one card — that's about *fitting* a model, not
+*speed*. The actual speedup lever is `[steps] max_concurrency` in
+`config/models.toml` (or the Steps card's "Max concurrency" field on
+**Configuration**): it controls how many step-generation LLM calls SOPForge
+dispatches at once. Raising it only helps if the Ollama **server itself** is
+tuned for concurrent requests — set `OLLAMA_NUM_PARALLEL` (and optionally
+`OLLAMA_SCHED_SPREAD=1` to spread load across GPUs) on the Ollama host; that's
+server-side configuration this app can't set remotely. Against an untuned,
+single-slot Ollama server, raising `max_concurrency` just queues requests and
+risks a queued step's own per-request timeout expiring into a template
+fallback it didn't need — so it defaults to `1` (strictly sequential).
+
 ## SOP Factory 2 dependency
 
 The docx assembler (Phase 2, task-15) extends the existing `SOPBuilder` engine

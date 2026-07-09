@@ -3,13 +3,81 @@ template fallback (invariants L1/L2/L3), exactly one generation attempt per
 step, never retried (CLAUDE.md: "never a retry loop"). AC2: >=95% round-trip
 pass rate on fixtures/ manifests with realistic mock step text."""
 
+import threading
+import time
 from pathlib import Path
 
 from pipeline.generation import _build_prompt, generate_all_steps, generate_step_text
-from pipeline.manifest import load_manifest
+from pipeline.manifest import Element, Manifest, Screen, Session, Step, Window, load_manifest
 from pipeline.template import render_step_template
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
+
+
+def _make_manifest(n):
+    """A synthetic manifest with n steps, each carrying a distinct element
+    name -- lets concurrency tests key a stub client's per-step delay/reply
+    off the prompt text without depending on any fixture file's step count."""
+    session = Session(
+        id="sess-concurrency-test",
+        title="",
+        started_utc="2026-01-01T00:00:00.000Z",
+        ended_utc="2026-01-01T00:01:00.000Z",
+        machine="",
+        os_build="",
+        narration_wav=None,
+    )
+    steps = [
+        Step(
+            id=f"step-{i + 1:03d}",
+            ts_utc="2026-01-01T00:00:00.000Z",
+            action="click",
+            button="left",
+            screen=Screen(x=0, y=0, monitor=1),
+            screenshot=f"{i + 1:03d}.png",
+            window=Window(title="Test Window", process="test.exe", class_="win32"),
+            element=Element(
+                name=f"el-{i}", control_type="Button", automation_id="", framework="win32"
+            ),
+            redactions=[],
+        )
+        for i in range(n)
+    ]
+    return Manifest(schema_version="1.0", session=session, steps=steps)
+
+
+class _StaggeredClient:
+    """Thread-safe stub whose reply delay/text is keyed by the step's element
+    name embedded in the prompt (_build_prompt always includes it) -- lets a
+    test control completion order independently of submission order, and
+    tracks peak concurrent in-flight calls."""
+
+    def __init__(self, delay_for_name, reply_for_name=None):
+        self.delay_for_name = delay_for_name
+        self.reply_for_name = reply_for_name
+        self._lock = threading.Lock()
+        self.in_flight = 0
+        self.peak_in_flight = 0
+
+    def _name_in(self, content):
+        for name in self.delay_for_name:
+            if name in content:
+                return name
+        raise AssertionError(f"no known element name found in prompt: {content!r}")
+
+    def chat(self, messages, **kwargs):
+        name = self._name_in(messages[0]["content"])
+        with self._lock:
+            self.in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self.in_flight)
+        try:
+            time.sleep(self.delay_for_name[name])
+            if self.reply_for_name:
+                return self.reply_for_name[name]
+            return "irrelevant text triggering fallback"
+        finally:
+            with self._lock:
+                self.in_flight -= 1
 
 
 class _RecordingClient:
@@ -162,3 +230,72 @@ def test_markdown_bold_is_stripped_from_a_passing_generation():
     assert used_fallback is False
     assert "**" not in text
     assert step.element.name in text
+
+
+def test_concurrent_generation_preserves_manifest_order_despite_staggered_completion():
+    """The as_completed-append footgun this guards against: collecting
+    results in completion order instead of index order would land a fast
+    LATER step's text at an EARLIER position. Reverse-staggered delays (later
+    steps reply fastest) make that failure mode visible if it existed."""
+    manifest = _make_manifest(6)
+    delays = {
+        step.element.name: (len(manifest.steps) - i) * 0.03 for i, step in enumerate(manifest.steps)
+    }
+    replies = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+    client = _StaggeredClient(delays, replies)
+
+    results = generate_all_steps(manifest, client, max_concurrency=4)
+
+    assert [r["step_id"] for r in results] == [s.id for s in manifest.steps]
+    for step, result in zip(manifest.steps, results):
+        assert result["used_fallback"] is False
+        assert step.element.name in result["text"]
+
+
+def test_concurrency_cap_respected():
+    manifest = _make_manifest(8)
+    client = _StaggeredClient({step.element.name: 0.05 for step in manifest.steps})
+    generate_all_steps(manifest, client, max_concurrency=3)
+    assert client.peak_in_flight <= 3
+
+
+def test_default_is_sequential():
+    manifest = _make_manifest(5)
+    client = _StaggeredClient({step.element.name: 0.01 for step in manifest.steps})
+    generate_all_steps(manifest, client)  # max_concurrency defaults to 1
+    assert client.peak_in_flight == 1
+
+
+def test_per_step_fallback_isolated_under_concurrency():
+    manifest = _make_manifest(5)
+    failing_name = manifest.steps[2].element.name
+    delays = {step.element.name: 0.01 for step in manifest.steps}
+    replies = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+
+    class _FailingOneClient(_StaggeredClient):
+        def chat(self, messages, **kwargs):
+            name = self._name_in(messages[0]["content"])
+            if name == failing_name:
+                raise RuntimeError("simulated LLM outage for this one step")
+            return super().chat(messages, **kwargs)
+
+    client = _FailingOneClient(delays, replies)
+    progress = []
+    results = generate_all_steps(
+        manifest, client, max_concurrency=3, on_progress=lambda i, n: progress.append((i, n))
+    )
+
+    assert [r["step_id"] for r in results] == [s.id for s in manifest.steps]
+    for i, (step, result) in enumerate(zip(manifest.steps, results)):
+        if i == 2:
+            assert result["used_fallback"] is True
+            assert result["text"] == render_step_template(step)
+        else:
+            assert result["used_fallback"] is False
+
+    total = len(manifest.steps)
+    assert progress == [(i, total) for i in range(1, total + 1)]

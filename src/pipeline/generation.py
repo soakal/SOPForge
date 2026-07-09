@@ -8,6 +8,7 @@ nothing is ever retried, and the failure mode never propagates to the
 caller — a broken LLM must never take down doc generation."""
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from pipeline.roundtrip import round_trip_ok
 from pipeline.template import render_step_template
@@ -65,17 +66,44 @@ def generate_step_text(step, llm_client):
     return reply, False
 
 
-def generate_all_steps(manifest, llm_client, on_progress=None):
+def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1):
     """Returns [{"step_id", "text", "used_fallback"}, ...] in manifest order
-    — one generation attempt per step, invariant L1's 1:1 mapping preserved.
-    `on_progress`, if given, is called as `on_progress(completed, total)`
-    after each step so a caller (e.g. the session's job status) can report
-    how far along a long generation run is."""
-    results = []
+    — one generation attempt per step, invariant L1's 1:1 mapping preserved
+    regardless of max_concurrency. `on_progress`, if given, is called as
+    `on_progress(completed, total)` after each step so a caller (e.g. the
+    session's job status) can report how far along a long generation run is.
+
+    max_concurrency=1 (default) keeps the original strictly sequential loop
+    — safest against an Ollama instance that isn't tuned for concurrent
+    requests (an untuned server just queues them, and a queued step can then
+    blow its own per-request timeout into a template fallback it didn't
+    need). >1 dispatches steps to a bounded thread pool, the same
+    order-preserving pattern vision.py's caption_images already uses:
+    results are placed by index into a pre-sized list, never appended in
+    completion order, so a step that happens to finish first can never land
+    in the wrong position."""
     total = len(manifest.steps)
-    for i, step in enumerate(manifest.steps, start=1):
-        text, used_fallback = generate_step_text(step, llm_client)
-        results.append({"step_id": step.id, "text": text, "used_fallback": used_fallback})
-        if on_progress:
-            on_progress(i, total)
+    if max_concurrency <= 1 or total <= 1:
+        results = []
+        for i, step in enumerate(manifest.steps, start=1):
+            text, used_fallback = generate_step_text(step, llm_client)
+            results.append({"step_id": step.id, "text": text, "used_fallback": used_fallback})
+            if on_progress:
+                on_progress(i, total)
+        return results
+
+    results = [None] * total
+    with ThreadPoolExecutor(max_workers=min(max_concurrency, total)) as pool:
+        futures = {
+            pool.submit(generate_step_text, step, llm_client): (i, step)
+            for i, step in enumerate(manifest.steps)
+        }
+        done = 0
+        for future in as_completed(futures):
+            i, step = futures[future]
+            text, used_fallback = future.result()
+            results[i] = {"step_id": step.id, "text": text, "used_fallback": used_fallback}
+            done += 1
+            if on_progress:
+                on_progress(done, total)
     return results

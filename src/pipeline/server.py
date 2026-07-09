@@ -46,6 +46,7 @@ from fastapi.responses import (
 from PIL import Image
 
 from pipeline import __version__
+from pipeline.assembler import check_1to1_mapping
 from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import (
     ModelsConfig,
@@ -99,6 +100,19 @@ def _synthesize_narration_from_steps(manifest, step_results):
     lines = [f"Windows involved: {', '.join(windows)}."] if windows else []
     lines.extend(result["text"] for result in step_results)
     return "\n".join(lines)
+
+
+def _assert_1to1_mapping(manifest, step_results):
+    """Enforces CLAUDE.md invariant L1 at doc-build time instead of trusting
+    step generation to have stayed sequential/order-preserving -- raises so
+    the job ends in `error` (jobs.py's worker loop) rather than silently
+    shipping a doc whose steps don't match the manifest 1:1."""
+    if not check_1to1_mapping(manifest, step_results):
+        raise RuntimeError(
+            "step generation produced a mismatched step list "
+            f"(expected {[s.id for s in manifest.steps]}, "
+            f"got {[r['step_id'] for r in step_results]})"
+        )
 
 
 def _download_filename(manifest, ext):
@@ -272,11 +286,13 @@ def create_app(
                 annotated_dir,
                 llm_client,
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
+                max_concurrency=load_models_config(resolved_config_path).steps.max_concurrency,
             )
         finally:
             close = getattr(llm_client, "close", None)
             if callable(close):
                 close()
+        _assert_1to1_mapping(manifest, step_results)
 
         # Place an uploaded transcript's narration under each step (by step
         # label / order for .txt/.md, by timestamp for .json, or -- when
@@ -382,6 +398,7 @@ def create_app(
                 vision_cfg.model,
                 api_key=provider_api_key(vision_cfg.provider),
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
+                max_workers=vision_cfg.max_concurrency,
             )
             vision_note = (
                 f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
@@ -415,6 +432,7 @@ def create_app(
                     "used_fallback": caption is None,
                 }
             )
+        _assert_1to1_mapping(manifest, step_results)
 
         # A title + one-line overview from the narration (best-effort). Fill the
         # title only if the user didn't provide one, so a UUID never shows.
@@ -996,6 +1014,7 @@ def create_app(
                 "provider": form.get("steps_provider", "ollama"),
                 "endpoint": form.get("steps_endpoint", ""),
                 "model": _model_or_existing(form.get("steps_model", ""), existing.steps.model),
+                "max_concurrency": form.get("steps_max_concurrency") or "1",
             },
             "narrative": {
                 "provider": form.get("narrative_provider", "ollama"),

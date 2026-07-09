@@ -371,6 +371,12 @@ def render_config_page(config, keystatus, saved=False):
         f'<div class="field"><label>Passes</label>'
         f'<input type="text" name="narrative_passes" value="{narr.get("passes", 1)}"></div>'
     )
+    steps_extra = (
+        f'<div class="field"><label>Max concurrency <small>(concurrent LLM calls — see '
+        "config/models.toml's comment; raising this only helps against an Ollama server "
+        "tuned for parallel requests)</small></label>"
+        f'<input type="text" name="steps_max_concurrency" value="{steps.get("max_concurrency", 1)}"></div>'
+    )
 
     key_rows = "".join(
         f"<li>{html.escape(_KEY_ENV.get(p, p))}: "
@@ -409,7 +415,7 @@ def render_config_page(config, keystatus, saved=False):
         "<strong>Ollama</strong> is local and private (no key, nothing leaves your network). "
         "Other providers use an API key from an environment variable.</p>"
         '<form method="post" action="/ui/config">'
-        f"{_config_row('steps', 'Steps', steps)}"
+        f"{_config_row('steps', 'Steps', steps, extra=steps_extra)}"
         f"{_config_row('narrative', 'Narration', narr, extra=passes_extra)}"
         f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra, providers=_VISION_PROVIDERS)}"
         '<button type="submit">Save configuration</button></form>'

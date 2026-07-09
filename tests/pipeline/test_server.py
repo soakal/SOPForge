@@ -148,6 +148,31 @@ def test_get_report_lists_expected_categories(tmp_path):
     assert "step-003" in report["empty_metadata_steps"]
 
 
+def test_step_mismatch_after_generation_fails_the_job_loudly(tmp_path, monkeypatch):
+    """assembler.check_1to1_mapping is wired into _generate as defense in
+    depth for CLAUDE.md invariant L1 -- generation.py stays sequential in
+    normal operation, but a mismatched step list must still fail the job
+    loudly (status: error) instead of silently shipping a doc whose steps
+    don't match the manifest."""
+    import pipeline.server as server_module
+
+    def _dropping_render_steps_llm_mode(
+        manifest, screenshots_dir, annotated_dir, llm_client, on_progress=None, max_concurrency=1
+    ):
+        kept = manifest.steps[1:]  # deliberately drop the first step
+        results = [{"step_id": s.id, "text": "x", "used_fallback": False} for s in kept]
+        annotated = [annotated_dir / s.screenshot for s in kept]
+        return results, annotated
+
+    monkeypatch.setattr(server_module, "render_steps_llm_mode", _dropping_render_steps_llm_mode)
+
+    client = _make_client(tmp_path)
+    session_id, status = _create_and_wait(client, tmp_path)
+
+    assert status["status"] == "error"
+    assert "mismatched step list" in status["error"]
+
+
 def test_get_doc_md_and_html(tmp_path):
     client = _make_client(tmp_path)
     session_id, status = _create_and_wait(client, tmp_path)
@@ -616,6 +641,52 @@ def test_photo_build_caption_beats_placed_narration_and_informs_context(tmp_path
     assert "A caption for the first screen." in seen_prompts[0]  # caption fed as context
 
 
+def test_photo_build_caption_length_mismatch_fails_the_job_loudly(tmp_path, monkeypatch):
+    """Same invariant-L1 defense as the capture-flow test above, exercised on
+    the manifest-free photo-build path: if caption_images ever returned the
+    wrong number of captions, the zip(manifest.steps, captions) in
+    _generate_photo would silently truncate step_results -- the wired-in
+    check_1to1_mapping call must catch that and fail the job loudly instead."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(
+        server_module,
+        "caption_images",
+        lambda paths, *a, **k: ["only one caption"],  # wrong length: one per image expected
+    )
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "Mismatch SOP"}, files=files, follow_redirects=False
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+
+    assert status["status"] == "error"
+    assert "mismatched step list" in status["error"]
+
+
 def test_add_transcript_to_existing_session_then_rerender(tmp_path):
     """A transcript can be attached from the review page after the fact: POST
     /ui/sessions/{id}/transcript saves it and re-renders, and the narration
@@ -750,6 +821,7 @@ def test_config_page_renders_and_saves(tmp_path):
     assert page.status_code == 200
     assert "Configuration" in page.text
     assert "qwen3:32b" in page.text  # current steps model shown
+    assert 'name="steps_max_concurrency"' in page.text
 
     resp = client.post(
         "/ui/config",
@@ -757,6 +829,7 @@ def test_config_page_renders_and_saves(tmp_path):
             "steps_provider": "openrouter",
             "steps_endpoint": "http://x/v1",
             "steps_model": "anthropic/claude-3.5-haiku",
+            "steps_max_concurrency": "5",
             "narrative_provider": "ollama",
             "narrative_endpoint": "http://192.168.200.60:11434/v1",
             "narrative_model": "qwen3:32b",
@@ -773,6 +846,7 @@ def test_config_page_renders_and_saves(tmp_path):
     cfg = client.get("/config").json()
     assert cfg["steps"]["provider"] == "openrouter"
     assert cfg["steps"]["model"] == "anthropic/claude-3.5-haiku"
+    assert cfg["steps"]["max_concurrency"] == 5
     assert cfg["vision"]["enabled"] is True
 
 
