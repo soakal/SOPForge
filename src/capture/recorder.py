@@ -129,14 +129,35 @@ class Recorder:
         deterministic, synchronous behavior."""
         with self._lock:
             x, y = event["x"], event["y"]
+            # resolve_at needs the raw global point (pywinauto's Desktop.from_point
+            # looks up elements in virtual-desktop coordinates); the screenshot it
+            # resolves against is monitor-LOCAL, so both the click point and the
+            # element's bounding_rect must be translated into that same local frame
+            # before anything is drawn/blurred onto the image or stored on the
+            # manifest step -- otherwise a monitor that isn't at the desktop origin
+            # (any secondary monitor in a typical multi-monitor setup) gets a
+            # mis-placed click marker and a mis-placed (or entirely missed)
+            # password-field redaction blur.
             element, window = resolve_at(x, y)
-            filename, monitor_idx, is_placeholder = self._shots.capture(x, y)
+            filename, monitor_idx, is_placeholder, (origin_x, origin_y) = self._shots.capture(x, y)
+            screen_x, screen_y = x - origin_x, y - origin_y
+            if element.get("bounding_rect"):
+                left, top, right, bottom = element["bounding_rect"]
+                element = {
+                    **element,
+                    "bounding_rect": [
+                        left - origin_x,
+                        top - origin_y,
+                        right - origin_x,
+                        bottom - origin_y,
+                    ],
+                }
             redactions = self._redact(self.output_dir / filename, element)
 
             kwargs = {
                 "ts_utc": _utc_iso(event["ts"]),
                 "action": event["action"],
-                "screen": {"x": x, "y": y, "monitor": monitor_idx},
+                "screen": {"x": screen_x, "y": screen_y, "monitor": monitor_idx},
                 "screenshot": filename,
                 "screenshot_placeholder": is_placeholder,
                 "window": window,

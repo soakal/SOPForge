@@ -15,6 +15,7 @@ from pathlib import Path
 import jsonschema
 
 import capture.recorder as recorder_module
+import capture.shots as shots_module
 from capture.recorder import Recorder
 
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
@@ -133,6 +134,88 @@ def test_redaction_result_is_attached_to_its_manifest_step(
 
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert data["steps"][0]["redactions"] == fake_result
+
+
+class _FakeShot:
+    def __init__(self, width, height):
+        self.size = (width, height)
+        self.rgb = bytes([120, 120, 120]) * (width * height)
+
+
+class _TwoMonitorSct:
+    """monitors[0] is mss's virtual "all monitors" union (unused for
+    selection -- ScreenshotWriter.monitor_for_point starts at index 1).
+    Monitor 1 sits at the desktop origin; monitor 2 is offset to the right,
+    the exact case the multi-monitor coordinate bug missed (see
+    [[project_multimonitor_coordinate_bug]])."""
+
+    monitors = [
+        {"left": 0, "top": 0, "width": 3840, "height": 1080},
+        {"left": 0, "top": 0, "width": 1920, "height": 1080},
+        {"left": 1920, "top": 0, "width": 1920, "height": 1080},
+    ]
+
+    def grab(self, monitor):
+        return _FakeShot(monitor["width"], monitor["height"])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame(tmp_path, monkeypatch):
+    """The multi-monitor coordinate bug: pynput's click coords and UIA's
+    bounding_rect are GLOBAL (virtual-desktop) coordinates, but the
+    screenshot is captured as just the clicked monitor's own LOCAL image
+    (pixel (0,0) = that monitor's own left/top). Before the fix, a click on
+    any monitor not sitting at the desktop origin got a mis-placed click
+    marker and a mis-placed (or entirely missed) password-field redaction
+    blur. This proves the fix: both screen.x/y and element.bounding_rect end
+    up translated into the same local frame as the screenshot they'll be
+    drawn/blurred onto."""
+    monkeypatch.setattr(
+        recorder_module,
+        "resolve_at",
+        lambda x, y: (
+            {
+                "name": "txtPassword",
+                "control_type": "Edit",
+                "automation_id": "txtPassword",
+                "framework": "Win32",
+                "bounding_rect": [2000, 100, 2100, 130],  # global coords, on monitor 2
+            },
+            {"title": "Some Window", "process": "some.exe", "class": "win32"},
+        ),
+    )
+    monkeypatch.setattr(shots_module.mss, "mss", lambda: _TwoMonitorSct())
+    captured_elements = []
+
+    def fake_redact(image_path, element=None, config=None, out_path=None):
+        captured_elements.append(element)
+        return []
+
+    monkeypatch.setattr(recorder_module, "_redact_screenshot_tagged", fake_redact)
+
+    recorder = Recorder(tmp_path)
+    recorder.start()
+    try:
+        # (2500, 400) is global -- inside monitor 2 (left=1920..3840), whose
+        # own local origin is (1920, 0).
+        recorder._process_event(
+            {"action": "click", "button": "left", "x": 2500, "y": 400, "ts": 1_700_000_000.0}
+        )
+    finally:
+        manifest_path = recorder.stop()
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    step = data["steps"][0]
+    assert step["screen"] == {"x": 580, "y": 400, "monitor": 2}
+    assert step["element"]["bounding_rect"] == [80, 100, 180, 130]
+    # Redaction must see the SAME translated rect, not the raw global one --
+    # otherwise the password blur lands in the wrong place on this monitor.
+    assert captured_elements[0]["bounding_rect"] == [80, 100, 180, 130]
 
 
 def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, monkeypatch):

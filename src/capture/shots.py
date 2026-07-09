@@ -36,11 +36,17 @@ class ScreenshotWriter:
         return 1
 
     def capture(self, x, y):
-        """Returns (filename, monitor_idx, is_placeholder). is_placeholder
+        """Returns (filename, monitor_idx, is_placeholder, origin). is_placeholder
         is True when real GDI capture failed and a solid-color placeholder
         was written instead — the caller must record this on the manifest
         step so a downstream review report (Phase 2) can flag it rather than
-        it being silently indistinguishable from a real screenshot."""
+        it being silently indistinguishable from a real screenshot. `origin`
+        is the captured monitor's (left, top) in virtual-desktop coordinates
+        -- the written image is monitor-LOCAL (pixel (0,0) = that corner), so
+        the caller must subtract this offset from any global coordinate (a
+        click point, a UIA bounding_rect) before it means anything drawn onto
+        this image; a monitor other than the one at the desktop origin has a
+        nonzero offset, which is the one previously-missed step here."""
         self._count += 1
         filename = f"{self._count:03d}.png"
         path = self.output_dir / filename
@@ -48,6 +54,7 @@ class ScreenshotWriter:
         is_placeholder = False
         with mss.mss() as sct:
             monitor = sct.monitors[monitor_idx]
+            origin = (monitor["left"], monitor["top"])
             try:
                 shot = sct.grab(monitor)
                 mss.tools.to_png(shot.rgb, shot.size, output=str(path))
@@ -58,7 +65,7 @@ class ScreenshotWriter:
                 )
                 self._write_placeholder(path, monitor["width"], monitor["height"])
                 is_placeholder = True
-        return filename, monitor_idx, is_placeholder
+        return filename, monitor_idx, is_placeholder, origin
 
     @staticmethod
     def _write_placeholder(path, width, height):

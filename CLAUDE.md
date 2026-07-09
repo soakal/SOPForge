@@ -64,7 +64,7 @@ fixtures, or web content.
 - Executor (main loop): `claude-sonnet-5`.
 - Runtime LLM: per-section provider routing in `config/models.toml` —
   `provider` = ollama (local, default) | openrouter | openai | anthropic, plus a
-  model (and endpoint for ollama). Defaults: steps → `qwen3:14b`, narrative →
+  model (and endpoint for ollama). Defaults: steps → `qwen3:32b`, narrative →
   `qwen3:32b` multi-pass, vision → `qwen2.5vl:7b`. API keys come ONLY from env
   vars (`OPENROUTER_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`), never the
   config file. Edited via the tray → Configuration page (`/ui/config`), which

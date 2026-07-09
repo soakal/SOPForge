@@ -471,7 +471,7 @@ def test_config_page_renders_and_saves(tmp_path):
     page = client.get("/ui/config")
     assert page.status_code == 200
     assert "Configuration" in page.text
-    assert "qwen3:14b" in page.text  # current steps model shown
+    assert "qwen3:32b" in page.text  # current steps model shown
 
     resp = client.post(
         "/ui/config",
@@ -514,7 +514,7 @@ def test_config_page_model_datalists(tmp_path):
     text = page.text
 
     for key, default_model in (
-        ("steps", "qwen3:14b"),
+        ("steps", "qwen3:32b"),
         ("narrative", "qwen3:32b"),
         ("vision", "qwen2.5vl:7b"),
     ):

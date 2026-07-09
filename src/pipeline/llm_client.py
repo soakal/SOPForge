@@ -31,13 +31,16 @@ class AnthropicAPIKeyMissingError(RuntimeError):
 
 
 class LLMClient:
-    def __init__(self, section_config, transport=None, timeout=60.0, connect_timeout=5.0):
+    def __init__(self, section_config, transport=None, timeout=120.0, connect_timeout=5.0):
         """timeout applies to read/write/pool phases (generous, since a
-        real model genuinely thinking can take a while); connect_timeout
-        is capped much shorter (default 5s) since "can we even reach this
-        host" is a network-level question, not a model-latency one — an
-        unreachable/misconfigured endpoint must fail fast, not eat up to
-        `timeout` seconds *per step*."""
+        real model genuinely thinking can take a while -- steps generate
+        one call per step with no batching, and a 32b-class local model is
+        meaningfully slower per call than 14b, so this needs enough room for
+        a whole multi-step session, not just a single quick completion);
+        connect_timeout is capped much shorter (default 5s) since "can we
+        even reach this host" is a network-level question, not a
+        model-latency one — an unreachable/misconfigured endpoint must fail
+        fast, not eat up to `timeout` seconds *per step*."""
         self.config = section_config
         self.provider = getattr(section_config, "provider", "ollama")
         # ollama uses the section's own endpoint; openrouter/openai have fixed

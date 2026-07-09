@@ -102,12 +102,13 @@ def test_capture_against_real_gdi_never_raises(tmp_path):
     always produces a valid file either way (the deterministic mocked test
     below proves the fallback logic itself)."""
     writer = ScreenshotWriter(tmp_path)
-    filename, monitor_idx, is_placeholder = writer.capture(100, 100)
+    filename, monitor_idx, is_placeholder, origin = writer.capture(100, 100)
     path = tmp_path / filename
     assert path.exists()
     assert path.stat().st_size > 0
     assert monitor_idx >= 1
     assert isinstance(is_placeholder, bool)
+    assert len(origin) == 2
 
 
 def test_capture_falls_back_to_placeholder_on_mocked_grab_failure(tmp_path, monkeypatch):
@@ -122,7 +123,7 @@ def test_capture_falls_back_to_placeholder_on_mocked_grab_failure(tmp_path, monk
     monkeypatch.setattr(shots_module.mss, "mss", lambda: RaisingSct())
 
     writer = ScreenshotWriter(tmp_path)
-    filename, _, is_placeholder = writer.capture(100, 100)
+    filename, _, is_placeholder, _origin = writer.capture(100, 100)
     path = tmp_path / filename
     assert path.exists()
     assert is_placeholder is True

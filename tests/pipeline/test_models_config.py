@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from pipeline.config import (
     ModelsConfig,
+    default_config_path,
     dump_models_config_toml,
     load_models_config,
     save_models_config,
@@ -12,8 +13,12 @@ from pipeline.config import (
 
 
 def test_loads_committed_config():
-    config = load_models_config()
-    assert config.steps.model == "qwen3:14b"
+    # Explicit path, not the no-arg call -- that falls through to the
+    # per-user runtime copy (config.py's runtime_config_path, seeded once
+    # from this same file), which on a machine that already has one can be
+    # stale relative to the repo's own committed default.
+    config = load_models_config(default_config_path())
+    assert config.steps.model == "qwen3:32b"
     assert config.narrative.model == "qwen3:32b"
     assert config.steps.anthropic is False
     assert config.narrative.anthropic is False

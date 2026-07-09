@@ -229,7 +229,7 @@ _KEY_ENV = {
 }
 _RECOMMENDED = {
     "steps": {
-        "ollama": "qwen3:14b",
+        "ollama": "qwen3:32b",
         "openrouter": "anthropic/claude-haiku-4.5",
         "openai": "gpt-5.4-mini",
         "anthropic": "claude-haiku-4-5-20251001",
@@ -248,10 +248,20 @@ _RECOMMENDED = {
 }
 _MODEL_SUGGESTIONS = {
     "steps": {
-        "ollama": ["qwen3:14b"],
-        "openrouter": ["anthropic/claude-haiku-4.5", "openai/gpt-5.4-mini"],
+        "ollama": ["qwen3:32b", "qwen3:14b"],
+        "openrouter": [
+            "anthropic/claude-haiku-4.5",
+            "anthropic/claude-sonnet-5",
+            "anthropic/claude-opus-4.8",
+            "openai/gpt-5.4-mini",
+        ],
         "openai": ["gpt-5.4-mini", "gpt-5.4-nano"],
-        "anthropic": ["claude-haiku-4-5-20251001", "claude-sonnet-5", "claude-fable-5"],
+        "anthropic": [
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+            "claude-fable-5",
+        ],
     },
     "narrative": {
         "ollama": ["qwen3:32b"],
