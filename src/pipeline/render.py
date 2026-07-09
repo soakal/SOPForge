@@ -44,14 +44,15 @@ def render_steps_template_mode(manifest, screenshot_dir, annotated_dir):
     return step_results, annotated_paths
 
 
-def render_steps_llm_mode(manifest, screenshot_dir, annotated_dir, llm_client):
+def render_steps_llm_mode(manifest, screenshot_dir, annotated_dir, llm_client, on_progress=None):
     """Renders every manifest step via the LLM with a round-trip gate and
     per-step template fallback (task-06's generate_all_steps — one
     generation attempt per step, never retried), and writes an annotated
     copy of each step's screenshot. Returns (step_results, annotated_paths);
     each step_result also carries "used_fallback" (bool), unlike
-    render_steps_template_mode's plain {"step_id", "text"} shape."""
-    step_results = generate_all_steps(manifest, llm_client)
+    render_steps_template_mode's plain {"step_id", "text"} shape.
+    `on_progress`, if given, is passed straight through to generate_all_steps."""
+    step_results = generate_all_steps(manifest, llm_client, on_progress=on_progress)
     annotated_paths = _annotate_all(manifest, screenshot_dir, annotated_dir)
     return step_results, annotated_paths
 

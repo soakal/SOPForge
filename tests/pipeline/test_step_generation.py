@@ -119,3 +119,12 @@ def test_generate_all_steps_preserves_order_and_ids():
     client = _RecordingClient(lambda idx: "irrelevant text triggering fallback")
     results = generate_all_steps(manifest, client)
     assert [r["step_id"] for r in results] == [s.id for s in manifest.steps]
+
+
+def test_generate_all_steps_reports_progress_after_each_step():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    client = _RecordingClient(lambda idx: "irrelevant text triggering fallback")
+    calls = []
+    generate_all_steps(manifest, client, on_progress=lambda i, n: calls.append((i, n)))
+    total = len(manifest.steps)
+    assert calls == [(i, total) for i in range(1, total + 1)]

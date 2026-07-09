@@ -165,6 +165,68 @@ def test_processing_page_refreshes_while_pending_but_not_on_error():
     assert "boom" in err
 
 
+def test_live_generation_reports_progress_on_the_processing_page(tmp_path, monkeypatch):
+    """End-to-end wiring check: generate_all_steps' on_progress callback ->
+    JobRunner.set_progress -> GET /ui/sessions/{id}'s live processing page,
+    not just each layer in isolation."""
+    import threading
+
+    import pipeline.generation as generation_module
+
+    reached_second_step = threading.Event()
+    release = threading.Event()
+    real_generate_step_text = generation_module.generate_step_text
+    call_count = {"n": 0}
+
+    def gated_generate_step_text(step, llm_client):
+        call_count["n"] += 1
+        # Pause going into the SECOND call so step 1's progress (1 of 3) has
+        # already been reported by the time this test inspects the page.
+        if call_count["n"] == 2:
+            reached_second_step.set()
+            release.wait(timeout=5)
+        return real_generate_step_text(step, llm_client)
+
+    monkeypatch.setattr(generation_module, "generate_step_text", gated_generate_step_text)
+
+    client = _make_client(tmp_path)
+    manifest_path = FIXTURES / "sample-manifest.json"
+    manifest = load_manifest(manifest_path)
+    shots_dir = tmp_path / "shots"
+    shots_dir.mkdir()
+    files = []
+    for step in manifest.steps:
+        p = shots_dir / step.screenshot
+        Image.new("RGB", (1920, 1080), (255, 255, 255)).save(p)
+        files.append(("files", (step.screenshot, p.open("rb"), "image/png")))
+    resp = client.post(
+        "/sessions", data={"manifest_json": manifest_path.read_text(encoding="utf-8")}, files=files
+    )
+    session_id = resp.json()["session_id"]
+
+    assert reached_second_step.wait(timeout=5)
+    page = client.get(f"/ui/sessions/{session_id}")
+    assert "1 / 3 steps (33%)" in page.text
+
+    release.set()
+    _wait_until_done(client, session_id)
+
+
+def test_processing_page_shows_progress_bar_when_available():
+    from pipeline.webui.pages import render_session_processing_page
+
+    page = render_session_processing_page(
+        "sid", {"status": "processing", "progress": {"current": 3, "total": 10}}
+    )
+    assert '<progress value="3" max="10">' in page
+    assert "3 / 10 steps (30%)" in page
+
+    # No progress reported yet (e.g. still queued, or hasn't reached the
+    # per-step loop) -- falls back to the plain spinner, no broken markup.
+    queued = render_session_processing_page("sid", {"status": "queued", "progress": None})
+    assert "<progress" not in queued
+
+
 def test_doc_preview_iframe_image_references_actually_resolve(tmp_path):
     """Regression: doc.html's images are relative filenames (task-12's
     base_dir=annotated_dir), so a browser rendering the /ui iframe would

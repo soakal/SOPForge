@@ -27,14 +27,25 @@ class JobRunner:
         """Registers job_id as "queued" and enqueues fn (a zero-arg
         callable) to run on the worker thread. Returns immediately."""
         with self._lock:
-            self._statuses[job_id] = {"status": "queued", "error": None}
+            self._statuses[job_id] = {"status": "queued", "error": None, "progress": None}
         self._queue.put((job_id, fn))
 
     def status(self, job_id):
-        """Returns {"status": ..., "error": ...} or {} if job_id was never
-        submitted."""
+        """Returns {"status": ..., "error": ..., "progress": ...} or {} if
+        job_id was never submitted. `progress` is None until the running job
+        reports one via set_progress, then {"current": ..., "total": ...}."""
         with self._lock:
             return dict(self._statuses.get(job_id, {}))
+
+    def set_progress(self, job_id, current, total):
+        """Called from inside a running job (fn, on the worker thread) to
+        report how far along it is -- e.g. "step 3 of 10 generated". A no-op
+        if job_id isn't currently tracked (defensive: a job must never crash
+        the pipeline just because it tried to report progress after being
+        removed)."""
+        with self._lock:
+            if job_id in self._statuses:
+                self._statuses[job_id]["progress"] = {"current": current, "total": total}
 
     def seed_done(self, job_id):
         """Marks job_id as done without running anything -- used at server

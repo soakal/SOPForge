@@ -64,6 +64,7 @@ iframe{width:100%;height:460px;border:1px solid var(--border);border-radius:var(
 .spin{display:inline-block;width:13px;height:13px;margin-right:7px;vertical-align:-1px;
 border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:s .8s linear infinite}
 @keyframes s{to{transform:rotate(360deg)}}
+progress{width:100%;height:14px;border-radius:7px;accent-color:var(--accent);margin:10px 0 4px}
 footer{margin-top:44px;color:var(--muted);font-size:.85em}
 """
 
@@ -167,10 +168,20 @@ def render_session_processing_page(session_id, status):
         if status["status"] == "error"
         else ""
     )
+    progress = status.get("progress")
+    progress_bar = ""
+    if is_pending and progress and progress.get("total"):
+        current, total = progress["current"], progress["total"]
+        pct = round(100 * current / total)
+        progress_bar = (
+            f'<progress value="{current}" max="{total}"></progress>'
+            f'<p class="muted">{current} / {total} steps ({pct}%)</p>'
+        )
     body = (
         '<p><a href="/ui">&larr; Back to library</a></p>'
         f"<h1>Session {html.escape(session_id)}</h1>"
         f'<p data-status="{state}"><span class="pill {state}">{spin}Status: {state}</span></p>'
+        + progress_bar
         + pending_note
         + err
     )

@@ -224,7 +224,11 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         llm_client = make_llm_client()
         try:
             step_results, annotated_paths = render_steps_llm_mode(
-                manifest, screenshots_dir, annotated_dir, llm_client
+                manifest,
+                screenshots_dir,
+                annotated_dir,
+                llm_client,
+                on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
             )
         finally:
             close = getattr(llm_client, "close", None)
@@ -719,8 +723,15 @@ def create_app(sessions_root: Path, llm_client_factory=None, config_path=None) -
         _require_known_session(session_id)
         status = _status_of(session_id)
         body = {"status": status}
+        job_status = jobs.status(session_id)
         if status == "error":
-            body["error"] = jobs.status(session_id)["error"]
+            body["error"] = job_status["error"]
+        # Only surface progress while genuinely mid-run -- the last reported
+        # {current, total} lingers in the job dict after "done", and adding
+        # it there would be redundant (100% is implied) as well as changing
+        # this endpoint's shape for callers who only expect {"status": ...}.
+        if status == "processing" and job_status.get("progress"):
+            body["progress"] = job_status["progress"]
         return body
 
     @app.get("/sessions/{session_id}/report")

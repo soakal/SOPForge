@@ -41,11 +41,17 @@ def generate_step_text(step, llm_client):
     return reply, False
 
 
-def generate_all_steps(manifest, llm_client):
+def generate_all_steps(manifest, llm_client, on_progress=None):
     """Returns [{"step_id", "text", "used_fallback"}, ...] in manifest order
-    — one generation attempt per step, invariant L1's 1:1 mapping preserved."""
+    — one generation attempt per step, invariant L1's 1:1 mapping preserved.
+    `on_progress`, if given, is called as `on_progress(completed, total)`
+    after each step so a caller (e.g. the session's job status) can report
+    how far along a long generation run is."""
     results = []
-    for step in manifest.steps:
+    total = len(manifest.steps)
+    for i, step in enumerate(manifest.steps, start=1):
         text, used_fallback = generate_step_text(step, llm_client)
         results.append({"step_id": step.id, "text": text, "used_fallback": used_fallback})
+        if on_progress:
+            on_progress(i, total)
     return results

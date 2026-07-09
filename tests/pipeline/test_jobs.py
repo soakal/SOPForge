@@ -84,6 +84,29 @@ def test_unknown_job_id_returns_empty_status():
     assert runner.status("does-not-exist") == {}
 
 
+def test_set_progress_is_reflected_in_status_while_running():
+    runner = JobRunner()
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_job():
+        started.set()
+        runner.set_progress("job-1", 1, 3)
+        release.wait(timeout=5)
+
+    runner.submit("job-1", slow_job)
+    assert started.wait(timeout=5)
+    assert _poll_until(lambda: runner.status("job-1").get("progress") == {"current": 1, "total": 3})
+    release.set()
+    assert _poll_until(lambda: runner.status("job-1")["status"] == "done")
+
+
+def test_set_progress_on_unknown_job_is_a_noop():
+    runner = JobRunner()
+    runner.set_progress("does-not-exist", 1, 3)  # must not raise
+    assert runner.status("does-not-exist") == {}
+
+
 def test_jobs_run_in_submission_order():
     runner = JobRunner()
     order = []
