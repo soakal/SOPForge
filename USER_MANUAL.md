@@ -181,7 +181,7 @@ See §9 below.
   If cloned elsewhere, set `SOPFORGE_SOP_FACTORY_2_DIR` to that path.
 - (Optional, for LLM-phrased steps) Either an Ollama server reachable at the
   endpoint in `config/models.toml` (default `http://192.168.200.60:11434/v1`,
-  with the `qwen3:14b` model pulled), or Anthropic routing configured with
+  with the `qwen3:32b` model pulled), or Anthropic routing configured with
   `ANTHROPIC_API_KEY` set (§7). Everything works without either — steps just
   render via the deterministic template fallback instead (§4/§6).
 - (Optional, for narration/transcription) faster-whisper downloads its own model
@@ -205,8 +205,15 @@ Run the tray app (`dist\sopforge\sopforge.exe`, or from source: `.\.venv\Scripts
   actual keystrokes' content), switch windows as needed.
 - Press **Ctrl+Alt+R** again (or the tray menu) to stop. The icon returns to gray.
 - **That's it.** If a pipeline server is running (default: `http://127.0.0.1:8420`),
-  the capture is uploaded automatically and your browser opens straight to the
-  finished doc's review page once it's done. Nothing to click, nothing to upload.
+  the capture is uploaded automatically and your browser opens straight to
+  that session's page. First you'll see a **steps-review checklist** — a
+  thumbnail per captured click, so you can uncheck anything mis-clicked
+  before the doc is generated (see §5) — then, once you confirm, the page
+  turns into the finished doc's review page on its own. Nothing to click
+  besides that one confirmation, nothing to upload by hand. The session's
+  title is auto-generated from the window titles clicked through and the
+  generated step text, so it shows something like "Configure SmartDeploy
+  Console" instead of a raw timestamp+id.
 - Right-click → **Exit** closes the tray app.
 
 If no server was running, or the upload failed for any reason, nothing is
@@ -265,16 +272,23 @@ The response is `{"session_id": "...", "status": "queued"}`. Generation runs
 in the background — poll `GET /sessions/{id}/status` until `"status": "done"`
 (or `"error"`, with an `"error"` detail message) before fetching any doc.
 
+Add `-F "stage=1"` to hold the session at `status: "staged"` instead — the
+same steps-review gate the web UI uses (§5) — then `POST
+/sessions/{id}/confirm-steps` with one `-F "keep=step-001"` per step you want
+to keep once you've reviewed the thumbnails at `GET /sessions/{id}/raw/{filename}`.
+
 ### Endpoints
 
 | Method | Path | Returns |
 |---|---|---|
-| `POST` | `/sessions` | Uploads + queues a session for processing. `multipart/form-data`: `manifest_json` + one `files` part per screenshot (named exactly as the manifest's `screenshot` field), plus an **optional** `transcript_file` (`.txt`/`.md`/`.json`). Returns immediately with `status: "queued"`. Missing screenshots or a bad transcript → `400`. |
+| `POST` | `/sessions` | Uploads a session. `multipart/form-data`: `manifest_json` + one `files` part per screenshot (named exactly as the manifest's `screenshot` field), an **optional** `transcript_file` (`.txt`/`.md`/`.json`), and an **optional** `stage` field (any truthy value). By default (`stage` omitted), queues for processing immediately with `status: "queued"`. With `stage` set, the session is held — same steps-review gate the web UI uses (see below) — with `status: "staged"` until confirmed. Missing screenshots or a bad transcript → `400`. |
+| `POST` | `/ui/sessions/{id}/confirm-steps` | Confirms a staged session's steps-review page: `keep` (one or more step ids) selects which steps survive; the manifest is rewritten to just those, in original order, and generation is queued. `400` if `keep` is empty; `409` if the session isn't currently staged. |
+| `GET` | `/sessions/{id}/raw/{filename}` | A staged session's original (pre-generation) screenshot — what the steps-review checklist's thumbnails point at. |
 | `POST` | `/sessions/{id}/rerender` | Re-runs generation + all exports for an already-uploaded session. |
-| `POST` | `/ui/build` | Manifest-free build: `multipart/form-data` with an optional `title`, one `files` part per image (each becomes a step, in order), and an optional `transcript_file`. Redirects to the session page. |
+| `POST` | `/ui/build` | Manifest-free build: `multipart/form-data` with an optional `title`, one `files` part per image (each becomes a step, in order), and an optional `transcript_file`. Always stages (see `stage` above) — redirects to the steps-review page. |
 | `POST` | `/ui/sessions/{id}/transcript` | Attach/replace a narration `transcript_file` on an existing session and re-render (used by the review page's transcript form). |
 | `GET` | `/version` | `{"version": "..."}` — the running build's version. |
-| `GET` | `/sessions/{id}/status` | `{"status": "queued"\|"processing"\|"done"\|"error", ["error": "..."]}` |
+| `GET` | `/sessions/{id}/status` | `{"status": "staged"\|"queued"\|"processing"\|"done"\|"error", ["error": "..."], ["progress": {"current": N, "total": M}]}` — `progress` only appears while genuinely mid-run. |
 | `GET` | `/sessions/{id}/report` | The sidecar review report (JSON) — see §6. 409 until done. |
 | `GET` | `/sessions/{id}/doc.md` | Markdown, relative image paths. |
 | `GET` | `/sessions/{id}/doc.html` | HTML, relative image paths (served alongside it, so it previews correctly). |
@@ -296,6 +310,13 @@ port. All examples use `curl.exe` (PowerShell's built-in `curl` is an alias for
 
 ```powershell
 # POST /sessions -- see "Uploading a session via the API" above for the full form.
+
+# POST /ui/sessions/{id}/confirm-steps -- confirm a staged session's steps-review page
+curl.exe -X POST http://127.0.0.1:8420/ui/sessions/$id/confirm-steps `
+  -F "keep=step-001" -F "keep=step-003"   # one -F "keep=..." per step to KEEP
+
+# GET /sessions/{id}/raw/{filename} -- a staged session's pre-generation screenshot
+curl.exe http://127.0.0.1:8420/sessions/$id/raw/001.png -o 001.png
 
 # POST /sessions/{id}/rerender -- re-run generation + all exports
 curl.exe -X POST http://127.0.0.1:8420/sessions/$id/rerender
@@ -358,10 +379,12 @@ attempt, round-trip-checked against the manifest's own facts — if the
 configured endpoint is unreachable, the API key is missing, or the reply
 doesn't hold up, that one step falls back to the template automatically.
 Nothing ever retries, and a single broken/unreachable LLM can never take
-down doc generation. Narration/claim-coverage (audio transcripts, `[verify]`
-blockquotes) is still not wired into the live server — there's no transcript
-upload endpoint yet, so `verify_claims` in the sidecar report (§6) is always
-empty for now.
+down doc generation. An uploaded transcript (§5) is placed verbatim under
+each step by label/order or timestamp — that's live. The separate
+atomic-claim-extraction narrative path (extracting timestamped claims and
+flagging any that don't appear in generated narrative text as `[verify]`
+blockquotes) isn't wired into the live server yet, so `verify_claims` in the
+sidecar report (§6) is always empty for now.
 
 ---
 
@@ -376,18 +399,30 @@ system fonts, no external assets — works fully offline).
   plus an **upload form** for the fallback path — if the server wasn't
   running when you stopped a recording (§3), pick that capture's
   `manifest.json` and its screenshots here, hit Upload, and it lands you on
-  that session's processing page. The form also has an **optional narration
-  transcript** field (see below). No `curl`/API calls needed (§4's API
-  walkthrough still works too, e.g. for scripting).
-- **Session page**: a back-to-library link, the session's real title and
-  date, an iframe preview of the generated doc, the sidecar report as three
-  color-coded sections (see §6), an **Add transcript & re-render** form (attach
-  narration after the fact — see below), a **Re-render** button, a **Delete**
-  button (removes the session's files, library entry, and everything —
-  irreversible, no undo), a **Downloads** list
-  (docx/pdf/single-file-html/markdown-zip), and a read-only panel showing
-  the current `config/models.toml`. While a session is still generating, this
-  page auto-refreshes and turns into the finished review page on its own.
+  that session's **steps-review page** (see below). The form also has an
+  **optional narration transcript** field (see below). No `curl`/API calls
+  needed (§4's API walkthrough still works too, e.g. for scripting).
+- **Steps-review page**: shown once, right after a recording is uploaded (or
+  a screenshots+transcript build is submitted), before any document is
+  generated. A checklist of every captured step — a thumbnail, the action,
+  and the window/element it was on — checked by default. Uncheck any wrong
+  or accidental clicks, then hit **Keep selected steps & generate document**
+  to drop them and start generation with only what's left. This is the same
+  URL as the session page (`/ui/sessions/{id}`) — it just shows this
+  checklist first, then the processing/finished states below, once you
+  confirm.
+- **Session page**: while a session is still generating, this page shows a
+  **percentage progress bar** ("N / M steps") and auto-refreshes, turning
+  into the finished review page on its own once done. The finished page has
+  a back-to-library link, the session's title (auto-generated from the
+  window titles clicked through and each step's text if you didn't set one
+  yourself — see §3) and date, an iframe preview of the generated doc, the
+  sidecar report as three color-coded sections (see §6), an **Add
+  transcript & re-render** form (attach narration after the fact — see
+  below), a **Re-render** button, a **Delete** button (removes the
+  session's files, library entry, and everything — irreversible, no undo),
+  a **Downloads** list (docx/pdf/single-file-html/markdown-zip), and a
+  read-only panel showing the current `config/models.toml`.
 
 No JavaScript is required — the search box, upload form, transcript form,
 re-render button, and delete button are all plain HTML forms.
@@ -419,10 +454,12 @@ library page has a second form, **"Build from screenshots + transcript (no
 capture)"** (`POST /ui/build`): give it an optional title, your images (each
 image becomes one step, in the order you select them), and an optional
 `.txt`/`.md` transcript that supplies each step's text (same label/order rules
-as above). It produces the same docx/pdf/html/md outputs — just without the
-recorded click metadata (no click marker on the images). Use the capture flow
-when you want the clicks/UIA captured automatically; use this when you already
-have the pictures and want a formatted document fast.
+as above). Like the capture flow, this lands on the steps-review checklist
+first (see §5) — uncheck any images you don't want as a step — then produces
+the same docx/pdf/html/md outputs, just without the recorded click metadata
+(no click marker on the images). Use the capture flow when you want the
+clicks/UIA captured automatically; use this when you already have the
+pictures and want a formatted document fast.
 
 Sessions survive a server restart: a session's manifest is saved to its own
 folder on disk, and the server rebuilds its session list from disk at
@@ -488,9 +525,15 @@ Recommended models per provider are shown on the page. Sensible defaults:
 
 | Task | ollama | openrouter | openai | anthropic |
 |---|---|---|---|---|
-| Steps | `qwen3:14b` | `anthropic/claude-haiku-4.5` | `gpt-5.4-mini` | `claude-haiku-4-5-20251001` |
+| Steps | `qwen3:32b` | `anthropic/claude-haiku-4.5` | `gpt-5.4-mini` | `claude-haiku-4-5-20251001` |
 | Narration | `qwen3:32b` | `anthropic/claude-sonnet-5` | `gpt-5.5` | `claude-sonnet-5` |
 | Vision | `qwen2.5vl:7b` | `anthropic/claude-sonnet-5` | `gpt-4o` | — |
+
+The model box's suggestion dropdown offers more than just the recommended
+default per provider — e.g. Steps' ollama suggestions include both `qwen3:32b`
+and `qwen3:14b` (faster, lower quality), and its openrouter/anthropic
+suggestions include higher-tier options (Sonnet 5, Opus 4.8, Fable 5) if you
+want more consistent phrasing than a local model reliably gives.
 
 Saving writes to a **per-user** config at `%USERPROFILE%\SOPForge\models.toml`
 (seeded from the bundled default). Changes take effect on the next generation —
@@ -526,10 +569,11 @@ form posts.
 
 ## 8. Known limitations
 
-- Narration/transcription (audio transcripts, claim-coverage, `[verify]`
-  blockquotes) is built and unit-tested but not wired into the live server —
-  there's no transcript upload endpoint. Step generation itself (§4) is now
-  LLM-backed (Ollama or Anthropic, per `config/models.toml`).
+- A staged session (uploaded/built but not yet confirmed on the steps-review
+  page, §5) only exists in memory plus its manifest on disk — a server
+  restart before you confirm makes it unreachable until you re-upload it
+  (the same class of limitation as restarting mid-generation, not a
+  regression this introduced).
 - A configured LLM endpoint that's unreachable adds real latency per step
   (a short connect-timeout wait before falling back), not just an instant
   fallback — a misconfigured/down endpoint will make generation slower, not
