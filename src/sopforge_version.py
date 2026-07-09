@@ -8,4 +8,4 @@ Bump this on every user-facing release so the version shown in the tray
 tooltip, the library page footer, `--version`, and GET /version all move
 together. Keep pyproject.toml's version in sync with it."""
 
-__version__ = "1.4.15"
+__version__ = "1.4.16"
