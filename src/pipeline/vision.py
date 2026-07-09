@@ -9,7 +9,7 @@ transcript text, never crashing generation."""
 
 import base64
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
@@ -79,11 +79,15 @@ def caption_images(
     timeout=120.0,
     max_workers=4,
     transport=None,
+    on_progress=None,
 ):
     """Caption each image, in parallel. Returns a list the same length as
     image_paths; each entry is the caption string or None on failure. Order is
-    preserved. `api_key` (Bearer) is used for non-ollama providers; `transport`
-    is injectable for tests (no network)."""
+    preserved regardless of completion order. `api_key` (Bearer) is used for
+    non-ollama providers; `transport` is injectable for tests (no network).
+    `on_progress`, if given, is called as `on_progress(completed, total)` as
+    each image's caption finishes (mirroring generate_all_steps' callback) --
+    a plain count, so out-of-order completion doesn't matter."""
     total = len(image_paths)
     if total == 0:
         return []
@@ -94,5 +98,13 @@ def caption_images(
             path, narration, index, total, endpoint, model, timeout, transport, api_key
         )
 
+    results = [None] * total
     with ThreadPoolExecutor(max_workers=max(1, min(max_workers, total))) as pool:
-        return list(pool.map(work, [(i + 1, p) for i, p in enumerate(image_paths)]))
+        futures = {pool.submit(work, (i + 1, p)): i for i, p in enumerate(image_paths)}
+        done = 0
+        for future in as_completed(futures):
+            results[futures[future]] = future.result()
+            done += 1
+            if on_progress:
+                on_progress(done, total)
+    return results

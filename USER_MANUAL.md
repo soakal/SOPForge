@@ -452,22 +452,23 @@ clear message; placement is recorded in the sidecar report.
 **One continuous run-on transcript** — no blank lines, no labels, no
 timestamps, just everything typed/spoken as one block — has no structure for
 the rules above to split on, so it would otherwise land entirely on step 1.
-When that happens (on the capture flow, i.e. a real recording with a real
-manifest — not the screenshots-only build below), the server automatically
-tries an LLM-based placement instead: one call reads the whole transcript
-plus what each step actually is (window, element, action) and picks *where*
-each step's portion of the narration starts — the words themselves are never
-changed at this stage, only sliced at those points. A second pass then
-rewrites each step's narration into clearer prose (fixing run-on "then...
-then...then" phrasing and filler words), but only keeps a rewrite that
-passes a mechanical check that it didn't invent or drop anything; anything
-it can't confirm is called out as a `[verify]` blockquote rather than
-silently lost, and a step whose rewrite fails the check just keeps the
-verbatim (unpolished) text. Either stage can fail safely — if the LLM is
-unreachable or its answer isn't trustworthy, you get the original single-step
-placement back, with the same loud warning in the sidecar report. This uses
-the **Narration** row's model/provider on the Configuration page (§7), not
-the Steps row.
+When that happens, the server automatically tries an LLM-based placement
+instead, on both the capture flow (a real recording with a real manifest) and
+the screenshots-only build below: one call reads the whole transcript plus
+what each step actually is — window, element, and action on the capture
+flow; each step's own vision caption on the screenshots-only build, which has
+no window/element data of its own — and picks *where* each step's portion of
+the narration starts — the words themselves are never changed at this stage,
+only sliced at those points. A second pass then rewrites each step's
+narration into clearer prose (fixing run-on "then...then...then" phrasing and
+filler words), but only keeps a rewrite that passes a mechanical check that
+it didn't invent or drop anything; anything it can't confirm is called out as
+a `[verify]` blockquote rather than silently lost, and a step whose rewrite
+fails the check just keeps the verbatim (unpolished) text. Either stage can
+fail safely — if the LLM is unreachable or its answer isn't trustworthy, you
+get the original single-step placement back, with the same loud warning in
+the sidecar report. This uses the **Narration** row's model/provider on the
+Configuration page (§7), not the Steps row.
 
 ### Building without a capture — screenshots + transcript
 
@@ -479,9 +480,12 @@ image becomes one step, in the order you select them), and an optional
 as above). Like the capture flow, this lands on the steps-review checklist
 first (see §5) — uncheck any images you don't want as a step — then produces
 the same docx/pdf/html/md outputs, just without the recorded click metadata
-(no click marker on the images). Use the capture flow when you want the
-clicks/UIA captured automatically; use this when you already have the
-pictures and want a formatted document fast.
+(no click marker on the images). The progress bar (§5) tracks vision
+captions completing instead of step generations here — with vision disabled,
+there's nothing per-step to count, so you'll just see the plain spinner
+(everything else about the build still works). Use the capture flow when you
+want the clicks/UIA captured automatically; use this when you already have
+the pictures and want a formatted document fast.
 
 Sessions survive a server restart: a session's manifest is saved to its own
 folder on disk, and the server rebuilds its session list from disk at

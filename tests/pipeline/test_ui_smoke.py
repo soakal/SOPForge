@@ -69,7 +69,9 @@ class _ServerThread:
 @pytest.fixture
 def running_server(tmp_path):
     app = create_app(
-        sessions_root=tmp_path / "sessions", llm_client_factory=stub_llm_client_factory
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
     )
     server = _ServerThread(app)
     server.start()

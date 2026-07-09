@@ -35,6 +35,7 @@ def _make_client(tmp_path):
     app = create_app(
         sessions_root=tmp_path / "sessions",
         llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
         config_path=cfg,
     )
     return TestClient(app)
@@ -430,6 +431,189 @@ def test_build_uses_vision_captions_when_available(tmp_path, monkeypatch):
     assert "Vision caption for image 2." in md
     report = client.get(f"/sessions/{session_id}/report").json()
     assert "vision" in report
+
+
+def test_photo_build_reports_caption_progress(tmp_path, monkeypatch):
+    """Photo-mode's processing page shows a progress bar too, driven by
+    caption completions instead of step generations."""
+    import io
+    import threading
+
+    import pipeline.server as server_module
+
+    reached = threading.Event()
+    release = threading.Event()
+
+    def gated_caption_images(paths, narration, endpoint, model, on_progress=None, **kwargs):
+        if on_progress:
+            on_progress(1, len(paths))
+        reached.set()
+        release.wait(timeout=5)
+        return [f"Caption {i}." for i in range(len(paths))]
+
+    monkeypatch.setattr(server_module, "caption_images", gated_caption_images)
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "Progress SOP"}, files=files, follow_redirects=False
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+
+    assert reached.wait(timeout=5)
+    page = client.get(f"/ui/sessions/{session_id}")
+    assert "1 / 2 steps (50%)" in page.text
+
+    release.set()
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+
+def test_photo_build_unstructured_transcript_gets_semantic_placement(tmp_path, monkeypatch):
+    """Photo-mode's synthetic manifest has no real window/element data (see
+    photo_build.py), so there's no UIA context for the semantic pipeline to
+    use -- but an unstructured transcript (no blank lines/labels) must still
+    distribute across steps instead of collapsing onto step 1, same as the
+    real-capture flow."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    class _PhotoNarrativeStub:
+        def chat(self, messages, **kwargs):
+            content = messages[0]["content"]
+            if "starts_with" in content:
+                return json.dumps(
+                    [
+                        {"step": 1, "starts_with": "first open the file"},
+                        {"step": 2, "starts_with": "then save it"},
+                    ]
+                )
+            return json.dumps(
+                [
+                    {"step_id": "step-001", "text": "First, open the file."},
+                    {"step_id": "step-002", "text": "Then save it."},
+                ]
+            )
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _PhotoNarrativeStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        ("transcript_file", ("t.md", b"first open the file then save it", "text/markdown")),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "Photo Semantic SOP"}, files=files, follow_redirects=False
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "First, open the file." in md
+    assert "Then save it." in md
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["transcript_placement"]["mode"] == "semantic-llm"
+
+
+def test_photo_build_caption_beats_placed_narration_and_informs_context(tmp_path, monkeypatch):
+    """When a caption succeeds for one image, it wins as that step's text;
+    the successful caption is also passed through as that step's own
+    context to the semantic aligner (there's no real window/element data
+    in a synthetic manifest for it to use instead)."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(
+        server_module,
+        "caption_images",
+        lambda paths, *a, **k: ["A caption for the first screen.", None],
+    )
+
+    seen_prompts = []
+
+    class _PhotoNarrativeStub:
+        def chat(self, messages, **kwargs):
+            content = messages[0]["content"]
+            seen_prompts.append(content)
+            if "starts_with" in content:
+                return json.dumps(
+                    [
+                        {"step": 1, "starts_with": "first thing happens"},
+                        {"step": 2, "starts_with": "second thing happens"},
+                    ]
+                )
+            return json.dumps([{"step_id": "step-002", "text": "Second thing happens."}])
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _PhotoNarrativeStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.md", b"first thing happens then second thing happens", "text/markdown"),
+        ),
+    ]
+    resp = client.post(
+        "/ui/build",
+        data={"title": "Photo Caption Context SOP"},
+        files=files,
+        follow_redirects=False,
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "A caption for the first screen." in md  # vision caption wins for step 1
+    assert "Second thing happens." in md  # placed + polished narration for step 2
+
+    assert seen_prompts  # the boundary-picking call actually happened
+    assert "A caption for the first screen." in seen_prompts[0]  # caption fed as context
 
 
 def test_add_transcript_to_existing_session_then_rerender(tmp_path):

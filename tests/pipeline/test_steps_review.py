@@ -25,6 +25,7 @@ def _make_client(tmp_path):
     app = create_app(
         sessions_root=tmp_path / "sessions",
         llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
         config_path=cfg,
     )
     return TestClient(app)

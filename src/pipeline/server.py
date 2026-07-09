@@ -333,7 +333,13 @@ def create_app(
         """Manifest-free mode: one step per uploaded image, in order. When
         [vision] is enabled, a vision model captions each screenshot from the
         image + narration; otherwise the transcript's own placement supplies the
-        text. A title + short overview are generated from the narration."""
+        text. A title + short overview are generated from the narration.
+
+        This manifest is SYNTHETIC (photo_build.py: one step per image,
+        placeholder click, empty window/element) -- there's no real UIA
+        context for the semantic transcript pipeline to use, so it uses each
+        step's own vision caption as context instead (see below); that's also
+        why captioning must run BEFORE any semantic-placement attempt."""
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
         annotated_dir.mkdir(parents=True, exist_ok=True)
 
@@ -362,6 +368,9 @@ def create_app(
         # narration and writes that step's instruction (in parallel). The steps
         # are still the images (one each, in order) -- the model only phrases
         # them. Any failed caption falls back to the transcript placement.
+        # Progress is reported per completed caption -- with vision disabled
+        # there's nothing per-step to count, so the processing page just shows
+        # its plain spinner (same as before this feature existed).
         captions = [None] * len(manifest.steps)
         vision_note = None
         vision_cfg = load_models_config(resolved_config_path).vision
@@ -372,10 +381,29 @@ def create_app(
                 provider_endpoint(vision_cfg.provider, vision_cfg.endpoint),
                 vision_cfg.model,
                 api_key=provider_api_key(vision_cfg.provider),
+                on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
             )
             vision_note = (
                 f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
                 f"screenshots ({vision_cfg.model})"
+            )
+
+        # If the deterministic placement above collapsed the transcript onto a
+        # single step, try the same semantic LLM pipeline the real-capture flow
+        # uses -- fed each step's own caption (the closest thing to real
+        # per-step context this synthetic manifest has) instead of window/
+        # element metadata, which doesn't exist here.
+        placement_meta = None
+        if transcript_note and "WARNING" in transcript_note:
+            step_contexts = build_step_contexts(
+                manifest,
+                [
+                    {"step_id": step.id, "text": caption or ""}
+                    for step, caption in zip(manifest.steps, captions)
+                ],
+            )
+            per_step, transcript_note, placement_meta = _run_semantic_pipeline(
+                narration, manifest, step_contexts, per_step, transcript_note
             )
 
         step_results = []
@@ -402,14 +430,21 @@ def create_app(
             if gen_title and not manifest.session.title:
                 manifest.session.title = gen_title
 
+        verify_claims = (placement_meta or {}).get("verify_claims", [])
         report = {
             "template_fallback_steps": [],
-            "verify_claims": [],
+            "verify_claims": [
+                {"claim_id": c["claim_id"], "text": c.get("text")} for c in verify_claims
+            ],
             "empty_metadata_steps": [],
             "docx_warnings": [],
         }
         if transcript_note:
             report["transcript"] = transcript_note
+        if placement_meta:
+            report["transcript_placement"] = {
+                k: v for k, v in placement_meta.items() if k != "verify_claims"
+            }
         if vision_note:
             report["vision"] = vision_note
         _write_all_exports(
@@ -476,22 +511,57 @@ def create_app(
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
 
+    def _run_semantic_pipeline(content, manifest, step_contexts, per_step, note):
+        """Shared by the real-capture flow (_apply_transcript) and the photo
+        build flow (_generate_photo): when the deterministic placement
+        (transcript.py) collapses onto a single step despite there being
+        multiple real steps -- its own loud WARNING signature -- this tries
+        the semantic LLM pipeline instead: stage 1 (semantic_align) picks
+        verbatim split points from the full transcript + step contexts;
+        stage 2 (polish_narration) then rewrites each resulting segment for
+        readability, gated so nothing invented or dropped is ever trusted
+        silently. Either stage failing just falls back to what came before
+        it -- semantic_align failing keeps the original single-block
+        deterministic result (with its warning); polish_narration failing
+        keeps stage 1's verbatim placement. Returns (per_step, note,
+        placement_meta) -- placement_meta is None if semantic_align declined
+        or "WARNING" wasn't in `note` to begin with (nothing to try)."""
+        if "WARNING" not in note:
+            return per_step, note, None
+
+        placement_meta = None
+        narrative_llm = make_narrative_llm_client()
+        try:
+            aligned = semantic_align(content, manifest, step_contexts, narrative_llm)
+        finally:
+            close = getattr(narrative_llm, "close", None)
+            if callable(close):
+                close()
+        if aligned:
+            per_step, placement_meta = aligned
+            polish_llm = make_narrative_llm_client()
+            try:
+                per_step, polish_meta = polish_narration(
+                    per_step, manifest, step_contexts, polish_llm
+                )
+            finally:
+                close = getattr(polish_llm, "close", None)
+                if callable(close):
+                    close()
+            placement_meta.update(polish_meta)
+            note = (
+                f"{len(per_step)} of {len(manifest.steps)} step(s) narrated "
+                "(semantic placement + polish)"
+            )
+        return per_step, note, placement_meta
+
     def _apply_transcript(session_dir, manifest, step_results):
         """If a transcript was uploaded (saved as transcript.<ext>), place its
         narration onto each step_result's "narration" key and return
         (placement_note, placement_meta) for the report. Returns (None, None)
-        when there's no transcript or it can't be parsed -- never raises.
-
-        When the deterministic placement (transcript.py) collapses onto a
-        single step despite there being multiple real steps -- its own loud
-        WARNING signature -- this tries the semantic LLM pipeline instead:
-        stage 1 (semantic_align) picks verbatim split points from the full
-        transcript + step contexts; stage 2 (polish_narration) then rewrites
-        each resulting segment for readability, gated so nothing invented or
-        dropped is ever trusted silently. Either stage failing just falls
-        back to what came before it -- semantic_align failing keeps the
-        original single-block deterministic result (with its warning);
-        polish_narration failing keeps stage 1's verbatim placement."""
+        when there's no transcript or it can't be parsed -- never raises. See
+        _run_semantic_pipeline for what happens when the deterministic
+        placement collapses onto a single step."""
         matches = sorted(session_dir.glob("transcript.*"))
         if not matches:
             return None, None
@@ -502,32 +572,10 @@ def create_app(
         except Exception:  # noqa: BLE001 - a bad transcript must never break generation
             return None, None
 
-        placement_meta = None
-        if "WARNING" in note:
-            step_contexts = build_step_contexts(manifest, step_results)
-            narrative_llm = make_narrative_llm_client()
-            try:
-                aligned = semantic_align(content, manifest, step_contexts, narrative_llm)
-            finally:
-                close = getattr(narrative_llm, "close", None)
-                if callable(close):
-                    close()
-            if aligned:
-                per_step, placement_meta = aligned
-                polish_llm = make_narrative_llm_client()
-                try:
-                    per_step, polish_meta = polish_narration(
-                        per_step, manifest, step_contexts, polish_llm
-                    )
-                finally:
-                    close = getattr(polish_llm, "close", None)
-                    if callable(close):
-                        close()
-                placement_meta.update(polish_meta)
-                note = (
-                    f"{len(per_step)} of {len(manifest.steps)} step(s) narrated "
-                    "(semantic placement + polish)"
-                )
+        step_contexts = build_step_contexts(manifest, step_results)
+        per_step, note, placement_meta = _run_semantic_pipeline(
+            content, manifest, step_contexts, per_step, note
+        )
 
         for result in step_results:
             narration = per_step.get(result["step_id"])
