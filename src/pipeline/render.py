@@ -16,21 +16,24 @@ from pathlib import Path
 
 import html
 
-from pipeline.annotate import annotate_click
-from pipeline.assembler import assemble_steps
+from pipeline.annotate import annotate_click, crop_to_element
+from pipeline.assembler import assemble_steps, step_heading
 from pipeline.generation import generate_all_steps
 from pipeline.template import render_step_template
 
 
 def _annotate_all(manifest, screenshot_dir, annotated_dir):
-    """Writes an annotated copy of each step's screenshot. Returns
-    annotated_paths in manifest order."""
+    """Writes an annotated copy of each step's screenshot -- marker drawn
+    first, then cropped to the clicked element's neighborhood (a no-op-sized
+    full-frame "crop" when the step has no bounding_rect, e.g. an
+    empty-UIA-metadata step). Returns annotated_paths in manifest order."""
     annotated_dir.mkdir(parents=True, exist_ok=True)
     annotated_paths = []
     for step in manifest.steps:
         src = screenshot_dir / step.screenshot
         out = annotated_dir / step.screenshot
         annotate_click(src, step.screen.x, step.screen.y, out_path=out)
+        crop_to_element(out, step.element.bounding_rect, (step.screen.x, step.screen.y))
         annotated_paths.append(out)
     return annotated_paths
 
@@ -83,14 +86,15 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
-        lines.append(f"## Step {n}")
+        heading = step_heading(n, step)
+        lines.append(f"## {heading}")
         lines.append("")
         lines.append(result["text"])
         lines.append("")
         if result.get("narration"):
             lines.append(f"> **Narration:** {result['narration']}")
             lines.append("")
-        lines.append(f"![{step.id}]({_image_ref(shot, base_dir)})")
+        lines.append(f"![{heading}]({_image_ref(shot, base_dir)})")
         lines.append("")
     return "\n".join(lines)
 
@@ -134,7 +138,8 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
-        parts.append(f"<h2>Step {n}</h2>")
+        heading = step_heading(n, step)
+        parts.append(f"<h2>{html.escape(heading)}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         if result.get("narration"):
             parts.append(
@@ -142,6 +147,6 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
                 f"{html.escape(result['narration'])}</blockquote>"
             )
         img_ref = _image_ref(shot, base_dir)
-        parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(step.id)}">')
+        parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(heading)}">')
     parts.append("</body></html>")
     return "\n".join(parts)

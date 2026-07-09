@@ -34,3 +34,10 @@ provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen2.5vl:7b"
 max_concurrency = 4
+
+# Document metadata: stamped on every generated SOP's title page / revision
+# table. doc_no_prefix, if set, becomes e.g. "SOP-001" for session 1 -- leave
+# blank to omit the document-number line entirely.
+[document]
+author = "SOPForge"
+doc_no_prefix = ""

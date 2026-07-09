@@ -82,8 +82,13 @@ def test_pdf_contains_verify_blockquote_claim_text(tmp_path):
     render_pdf(manifest, step_results, annotated_paths, output_path, narrative_text=final_text)
 
     text = _normalize_whitespace(_extract_text(output_path))
-    assert "[verify] (claim-001)" in text
+    # The raw "[verify] (claim-id)" marker is intentionally NOT shown in the
+    # rendered doc (it reads as debug scaffolding) -- it's styled as a
+    # "Needs verification" callout instead; the claim id stays meaningful in
+    # the sidecar report only.
+    assert "Needs verification:" in text
     assert "Something not in the narrative at all." in text
+    assert "claim-001" not in text
 
 
 def test_pdf_export_never_crashes_on_non_latin1_text(tmp_path):

@@ -11,6 +11,9 @@ import os
 import sys
 from pathlib import Path
 
+from docx.shared import RGBColor
+
+from pipeline.assembler import step_heading
 from pipeline.resource_path import resource_path
 
 DEFAULT_SOP_FACTORY_2_DIR = Path(r"C:\Users\Brian\Documents\SOP_Factory_2\template")
@@ -41,6 +44,43 @@ def _import_sop_builder():
     return SOPBuilder
 
 
+def _narrative_body(sop, narrative_text):
+    """Writes narrative_text as one or more paragraphs, rendering any
+    "> [verify] (claim-id): ..." line (claim_coverage.py's
+    render_verify_blockquote) as a distinct styled callout instead of raw
+    "> [verify] (claim-...)" text that reads as debug scaffolding in a
+    shipped document. The claim id itself is dropped from what's *shown* —
+    it stays meaningful in the sidecar report, not the reader-facing doc."""
+    for line in narrative_text.splitlines():
+        if line.startswith("> [verify]"):
+            _, _, claim_text = line.partition(":")
+            p = sop.bullet_rich(
+                [("Needs verification: ", True), (claim_text.strip() or "(unspecified)", False)]
+            )
+            label_run = p.runs[1]  # runs[0] is the bullet_rich "•  " marker
+            label_run.italic = True
+            label_run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+        elif line.strip():
+            sop.paragraph(line)
+
+
+def _step_bullet(sop, step, result):
+    """A step's own generated text as a bullet, with its target element's
+    name bolded inline (bullet_rich) when that name appears verbatim in the
+    text -- e.g. "Click **Save** in the SmartDeploy Console window." Falls
+    back to a plain bullet whenever there's no element name, or the
+    generated text doesn't literally contain it (an LLM reply that
+    paraphrased instead of quoting), since bolding a substring that isn't
+    actually there would either crash or silently do nothing useful."""
+    text = result["text"]
+    name = step.element.name
+    if name and name in text:
+        before, _, after = text.partition(name)
+        sop.bullet_rich([(before, False), (name, True), (after, False)])
+    else:
+        sop.bullet(text)
+
+
 def assemble_docx(
     manifest,
     step_results,
@@ -49,6 +89,7 @@ def assemble_docx(
     revision="1.0",
     date="01/01/2026",
     author="SOPForge",
+    doc_no=None,
     narrative_text=None,
 ):
     """Builds a complete docx from a manifest's steps (already rendered via
@@ -56,7 +97,12 @@ def assemble_docx(
     and their annotated screenshots (already written by task-10's
     annotate_click into annotated_dir, one file per step named
     step.screenshot). Returns (output_path, warnings) — warnings is
-    SOPBuilder's own missing-image/unpatched-header list."""
+    SOPBuilder's own missing-image/unpatched-header list.
+
+    `date`/`author`/`doc_no` are meant to be the caller's real, computed
+    values (assembler.py's format_doc_date/doc_number, config.py's
+    DocumentConfig) -- the defaults here exist only for direct/test callers
+    that don't care, never as production fallbacks."""
     sop_builder_cls = _import_sop_builder()
     factory_dir = sop_factory_2_dir()
 
@@ -68,17 +114,32 @@ def assemble_docx(
         date=date,
     )
     title = manifest.session.title or manifest.session.id
-    sop.title_page(title.upper(), author=author)
+    sop.title_page(title.upper(), author=author, doc_no=doc_no)
+
+    section = 0
+    toc_lines = []
+    if narrative_text:
+        section += 1
+        toc_lines.append(f"{section}.  Overview")
+    section += 1
+    toc_lines.append(f"{section}.  Procedure")
+    toc_lines.extend(f"      {step_heading(n, step)}" for n, step in enumerate(manifest.steps, 1))
+    section += 1
+    toc_lines.append(f"{section}.  Revision History")
+    sop.toc(toc_lines)
+
     if narrative_text:
         sop.heading1("Overview")
-        sop.paragraph(narrative_text)
-    sop.heading1("Steps")
+        _narrative_body(sop, narrative_text)
+    sop.heading1("Procedure")
     for n, (step, result) in enumerate(zip(manifest.steps, step_results, strict=True), start=1):
-        sop.heading2(f"Step {n}")
-        sop.bullet(result["text"])
+        heading = step_heading(n, step)
+        sop.heading2(heading)
+        _step_bullet(sop, step, result)
         if result.get("narration"):
             sop.bullet(f"Narration: {result['narration']}", sub=True)
-        sop.image(step.screenshot, caption=f"Step {n}")
+        sop.image(step.screenshot, caption=heading)
+    sop.heading1("Revision History")
     sop.revision_history([(date, revision, "Initial generation", author)])
     out = sop.save()
     return out, sop.warnings

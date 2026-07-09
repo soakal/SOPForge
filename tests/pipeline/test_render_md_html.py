@@ -69,9 +69,8 @@ def test_render_markdown_contains_every_step_and_screenshot(tmp_path):
 
     md = render_markdown(manifest, step_results, annotated_paths)
 
-    for step, result in zip(manifest.steps, step_results):
+    for result in step_results:
         assert result["text"] in md
-        assert step.id in md
     for path in annotated_paths:
         assert str(path) in md
 
@@ -86,11 +85,12 @@ def test_render_html_contains_every_step_and_screenshot(tmp_path):
     doc = render_html(manifest, step_results, annotated_paths)
 
     assert doc.startswith("<!doctype html>")
-    for step, result in zip(manifest.steps, step_results):
+    for result in step_results:
         # Template text has apostrophe-quoted names (e.g. 'Save'), which
         # html.escape() correctly turns into &#x27; — check the escaped form.
         assert html.escape(result["text"]) in doc
-        assert step.id in doc
+    for path in annotated_paths:
+        assert str(path) in doc
 
 
 def test_image_refs_are_relative_when_base_dir_given_even_with_a_space_in_path(tmp_path):

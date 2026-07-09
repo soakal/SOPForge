@@ -9,6 +9,7 @@ import html
 import mimetypes
 from pathlib import Path
 
+from pipeline.assembler import step_heading
 from pipeline.render import narrative_html_blocks
 
 _STYLE = (
@@ -42,11 +43,12 @@ def render_single_file_html(manifest, step_results, annotated_paths, narrative_t
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
-        parts.append(f"<h2>Step {n}</h2>")
+        heading = step_heading(n, step)
+        parts.append(f"<h2>{html.escape(heading)}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         # Guard a missing annotated image (like render_pdf does) so one absent
         # file doesn't crash the job after docx/pdf were already written.
         if shot is not None and Path(shot).exists():
-            parts.append(f'<img src="{_data_uri(shot)}" alt="Step {n}">')
+            parts.append(f'<img src="{_data_uri(shot)}" alt="{html.escape(heading)}">')
     parts.append("</body></html>")
     return "\n".join(parts)

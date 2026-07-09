@@ -12,16 +12,41 @@ from pathlib import Path
 
 from fpdf import FPDF
 
+from pipeline.assembler import format_doc_date, step_heading
+
 _INK = (33, 37, 41)
 _MUTED = (110, 116, 124)
 _ACCENT = (37, 99, 235)
+_VERIFY = (192, 0, 0)
+
+# fpdf2's core Helvetica font only supports Latin-1 -- which already covers
+# accented Latin letters (é, ñ, ü, ...) fine, but NOT "smart" typography
+# punctuation (curly quotes, en/em dashes, ellipsis, bullets), which live
+# outside Latin-1 in Unicode's General Punctuation block. Rather than bundle
+# a Unicode TTF (no legitimately redistributable one -- DejaVu et al. --
+# was available to source in this environment, and a Windows system font
+# like Arial isn't freely redistributable in a release zip), transliterate
+# exactly the characters that actually break to their closest ASCII/Latin-1
+# equivalent before falling back to Latin-1 replace for anything else. This
+# is the practical fix for what fable's review actually flagged ("curly
+# quotes/accents survive") -- accents already worked; curly quotes didn't.
+_TRANSLITERATIONS = {
+    "‘": "'",
+    "’": "'",
+    "“": '"',
+    "”": '"',
+    "–": "-",
+    "—": "--",
+    "…": "...",
+    "•": "*",
+}
 
 
 def _safe_text(text):
-    """fpdf2's core Helvetica font only supports Latin-1; replace anything
-    outside that range so a PDF export never crashes on transcribed speech
-    text (curly quotes, accented names, etc.) -- the export path must always
-    succeed, the same way invariant L3's template fallback always succeeds."""
+    """Never raises; the export path must always succeed, the same way
+    invariant L3's template fallback always succeeds."""
+    for src, dst in _TRANSLITERATIONS.items():
+        text = text.replace(src, dst)
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
@@ -45,18 +70,64 @@ class _SOPPdf(FPDF):
 
 
 def _bullet(pdf, text):
+    """fpdf2's multi_cell defaults to new_x=XPos.RIGHT -- leaving the cursor
+    at the page's right margin, not the left, regardless of how much text
+    was actually drawn (even a single short line). Every multi_cell call in
+    this module passes new_x="LMARGIN", new_y="NEXT" explicitly so the next
+    operation (another multi_cell, a cell(), an image placed at the current
+    cursor) never silently starts from the wrong side of the page."""
     pdf.set_font("Helvetica", "", 11)
     pdf.set_text_color(*_INK)
     x = pdf.get_x()
     pdf.cell(6, 6, chr(149))  # bullet dot
     pdf.set_x(x + 6)
-    pdf.multi_cell(0, 6, _safe_text(text))
+    pdf.multi_cell(0, 6, _safe_text(text), new_x="LMARGIN", new_y="NEXT")
 
 
-def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_text=None):
-    """Builds a PDF mirroring the docx layout. step_results may carry an
-    optional "narration" key per step (placed under the step, matching the
-    docx/markdown/html exports). Returns output_path."""
+def _narrative_body(pdf, narrative_text):
+    """Mirrors docx_assembler.py's _narrative_body: a "> [verify] (claim-id):
+    ..." line (claim_coverage.py's render_verify_blockquote) renders as a
+    distinct red/italic callout instead of raw debug-looking text; the claim
+    id itself is dropped from what's shown (it stays meaningful in the
+    sidecar report, not the reader-facing doc)."""
+    for line in narrative_text.splitlines():
+        if line.startswith("> [verify]"):
+            _, _, claim_text = line.partition(":")
+            pdf.set_font("Helvetica", "BI", 10)
+            pdf.set_text_color(*_VERIFY)
+            pdf.multi_cell(
+                0,
+                6,
+                _safe_text(f"Needs verification: {claim_text.strip() or '(unspecified)'}"),
+                new_x="LMARGIN",
+                new_y="NEXT",
+            )
+            pdf.set_text_color(*_INK)
+        elif line.strip():
+            pdf.set_font("Helvetica", "", 11)
+            pdf.multi_cell(0, 6, _safe_text(line), new_x="LMARGIN", new_y="NEXT")
+
+
+def render_pdf(
+    manifest,
+    step_results,
+    annotated_paths,
+    output_path,
+    narrative_text=None,
+    revision="1.0",
+    date=None,
+    author="SOPForge",
+    doc_no=None,
+):
+    """Builds a PDF mirroring the docx layout (docx_assembler.py): a title
+    page (with doc number/author/revision when given), a table of contents,
+    a "Procedure" section with a descriptive heading per step, and a closing
+    revision-history table. step_results may carry an optional "narration"
+    key per step (placed under the step, matching the docx/markdown/html
+    exports). `date`, if not given, is the manifest's own real session date
+    (never a hardcoded placeholder). Returns output_path."""
+    date = date or format_doc_date(manifest.session.started_utc)
+
     pdf = _SOPPdf()
     title = manifest.session.title or manifest.session.id
     pdf._running_title = _safe_text(title)
@@ -64,36 +135,76 @@ def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_t
 
     # --- Title page ---
     pdf.add_page()
-    pdf.ln(60)
+    pdf.ln(50)
     pdf.set_font("Helvetica", "B", 26)
     pdf.set_text_color(*_INK)
-    pdf.multi_cell(0, 14, _safe_text(title.upper()), align="C")
-    pdf.ln(4)
+    pdf.multi_cell(0, 14, _safe_text(title.upper()), align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(6)
     pdf.set_font("Helvetica", "", 12)
     pdf.set_text_color(*_MUTED)
+    pdf.multi_cell(0, 7, "Standard Operating Procedure", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+    meta_lines = []
+    if doc_no:
+        meta_lines.append(f"Document No: {doc_no}")
+    meta_lines.append(f"Revision {revision}  —  Released {date}")
+    if author:
+        meta_lines.append(f"Author: {author}")
     pdf.multi_cell(
-        0, 7, _safe_text(f"Standard Operating Procedure\n{manifest.session.started_utc}"), align="C"
+        0, 7, _safe_text("\n".join(meta_lines)), align="C", new_x="LMARGIN", new_y="NEXT"
     )
-    if narrative_text:
-        pdf.ln(8)
-        pdf.set_font("Helvetica", "", 11)
-        pdf.set_text_color(*_INK)
-        pdf.multi_cell(0, 6, _safe_text(narrative_text))
 
-    # --- Steps section ---
+    # --- Table of contents ---
+    pdf.add_page()
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.set_text_color(*_ACCENT)
+    pdf.cell(0, 11, "Table of Contents", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*_INK)
+    pdf.ln(2)
+    section = 0
+    if narrative_text:
+        section += 1
+        pdf.set_font("Helvetica", "", 11)
+        pdf.multi_cell(0, 7, _safe_text(f"{section}.  Overview"), new_x="LMARGIN", new_y="NEXT")
+    section += 1
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 7, _safe_text(f"{section}.  Procedure"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(*_MUTED)
+    for n, step in enumerate(manifest.steps, start=1):
+        pdf.multi_cell(
+            0, 6, _safe_text(f"      {step_heading(n, step)}"), new_x="LMARGIN", new_y="NEXT"
+        )
+    pdf.set_text_color(*_INK)
+    section += 1
+    pdf.set_font("Helvetica", "", 11)
+    pdf.multi_cell(0, 7, _safe_text(f"{section}.  Revision History"), new_x="LMARGIN", new_y="NEXT")
+
+    # --- Overview ---
+    if narrative_text:
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 16)
+        pdf.set_text_color(*_ACCENT)
+        pdf.cell(0, 11, "Overview", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*_INK)
+        pdf.ln(2)
+        _narrative_body(pdf, narrative_text)
+
+    # --- Procedure ---
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 18)
     pdf.set_text_color(*_ACCENT)
-    pdf.cell(0, 12, "Steps", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 12, "Procedure", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*_INK)
     pdf.ln(2)
 
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
-        pdf.set_font("Helvetica", "B", 14)
+        heading = step_heading(n, step)
+        pdf.set_font("Helvetica", "BI", 13)
         pdf.set_text_color(*_INK)
-        pdf.cell(0, 10, _safe_text(f"Step {n}"), new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 9, _safe_text(heading), new_x="LMARGIN", new_y="NEXT")
 
         _bullet(pdf, result["text"])
 
@@ -101,7 +212,13 @@ def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_t
             pdf.ln(1)
             pdf.set_font("Helvetica", "I", 10)
             pdf.set_text_color(*_MUTED)
-            pdf.multi_cell(0, 5.5, _safe_text(f"Narration: {result['narration']}"))
+            pdf.multi_cell(
+                0,
+                5.5,
+                _safe_text(f"Narration: {result['narration']}"),
+                new_x="LMARGIN",
+                new_y="NEXT",
+            )
             pdf.set_text_color(*_INK)
 
         if shot is not None and Path(shot).exists():
@@ -109,7 +226,7 @@ def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_t
             pdf.image(str(shot), w=130)
             pdf.set_font("Helvetica", "I", 9)
             pdf.set_text_color(*_MUTED)
-            pdf.multi_cell(0, 5, _safe_text(f"Step {n}"), align="C")
+            pdf.multi_cell(0, 5, _safe_text(heading), align="C", new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*_INK)
         pdf.ln(6)
 
@@ -126,9 +243,7 @@ def render_pdf(manifest, step_results, annotated_paths, output_path, narrative_t
         pdf.cell(w, 8, label, border=1)
     pdf.ln(8)
     pdf.set_font("Helvetica", "", 10)
-    for value, w in zip(
-        (manifest.session.started_utc[:10], "1.0", "Initial generation", "SOPForge"), widths
-    ):
+    for value, w in zip((date, revision, "Initial generation", author), widths):
         pdf.cell(w, 8, _safe_text(value), border=1)
     pdf.ln(8)
 

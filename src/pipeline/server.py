@@ -46,7 +46,7 @@ from fastapi.responses import (
 from PIL import Image
 
 from pipeline import __version__
-from pipeline.assembler import check_1to1_mapping
+from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
 from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import (
     ModelsConfig,
@@ -506,14 +506,34 @@ def create_app(
         )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
 
+        doc_cfg = load_models_config(resolved_config_path).document
+        doc_date = format_doc_date(manifest.session.started_utc)
+        doc_no = doc_number(doc_cfg.doc_no_prefix, manifest.session.id)
+
         docx_path = session_dir / "doc.docx"
         _out, docx_warnings = assemble_docx(
-            manifest, step_results, annotated_dir, docx_path, narrative_text=narrative_text
+            manifest,
+            step_results,
+            annotated_dir,
+            docx_path,
+            date=doc_date,
+            author=doc_cfg.author,
+            doc_no=doc_no,
+            narrative_text=narrative_text,
         )
         report["docx_warnings"] = docx_warnings
 
         pdf_path = session_dir / "doc.pdf"
-        render_pdf(manifest, step_results, annotated_paths, pdf_path, narrative_text=narrative_text)
+        render_pdf(
+            manifest,
+            step_results,
+            annotated_paths,
+            pdf_path,
+            narrative_text=narrative_text,
+            date=doc_date,
+            author=doc_cfg.author,
+            doc_no=doc_no,
+        )
 
         single_html = render_single_file_html(
             manifest, step_results, annotated_paths, narrative_text=narrative_text

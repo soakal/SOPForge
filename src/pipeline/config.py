@@ -97,12 +97,25 @@ class VisionConfig(BaseModel):
     max_concurrency: int = Field(default=4, ge=1)
 
 
+class DocumentConfig(BaseModel):
+    """Metadata stamped on every generated SOP's title page / revision table
+    (docx_assembler.py, export_pdf.py) — the only fields a real org's
+    document actually varies per-deployment; the date itself is always the
+    session's own started_utc, never configured here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    author: str = "SOPForge"
+    doc_no_prefix: str = ""
+
+
 class ModelsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     steps: SectionConfig
     narrative: SectionConfig
     vision: VisionConfig = Field(default_factory=VisionConfig)
+    document: DocumentConfig = Field(default_factory=DocumentConfig)
 
 
 def provider_endpoint(provider, configured_endpoint):
@@ -193,6 +206,13 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         f"endpoint = {_toml_str(cfg.vision.endpoint)}",
         f"model = {_toml_str(cfg.vision.model)}",
         f"max_concurrency = {_toml_str(cfg.vision.max_concurrency)}",
+        "",
+        "# Document metadata: stamped on every generated SOP's title page /",
+        '# revision table. doc_no_prefix, if set, becomes e.g. "SOP-001" for',
+        "# session 1 -- leave blank to omit the document-number line entirely.",
+        "[document]",
+        f"author = {_toml_str(cfg.document.author)}",
+        f"doc_no_prefix = {_toml_str(cfg.document.doc_no_prefix)}",
         "",
     ]
     return "\n".join(lines)

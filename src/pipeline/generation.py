@@ -36,15 +36,24 @@ def _build_prompt(step):
     confusing "in the 'the current window' window" in the prompt itself,
     which a weaker model would sometimes echo almost verbatim instead of
     smoothing over (template.py's own _location_phrase already avoids this
-    exact trap; the prompt needs to match it)."""
-    action_word = "clicking" if step.action == "click" else "typing into"
+    exact trap; the prompt needs to match it).
+
+    Requests imperative second-person instructions ("Click the X button...")
+    rather than third-person description ("a user clicks...") -- matching
+    template.py's own render_step_template phrasing, so a document that mixes
+    LLM-generated and template-fallback steps (any single LLM failure/
+    round-trip miss) doesn't read as visibly stitched together from two
+    different voices."""
+    action_word = "Click" if step.action == "click" else "Enter a value into"
     target = step.element.name or step.element.control_type or "an element"
     location = (
         f"in the '{step.window.title}' window" if step.window.title else "in the current window"
     )
     return (
-        f"Write one sentence describing a user {action_word} '{target}' "
-        f"{location}. Plain prose only, no markdown formatting (no **bold**, "
+        f"Write one short imperative instruction telling the reader to "
+        f"{action_word.lower()} '{target}' {location} -- second-person imperative "
+        f'voice (e.g. "Click the Save button..."), not a description of what a '
+        f"user does. Plain prose only, no markdown formatting (no **bold**, "
         f"no asterisks). Be factual and concise."
     )
 
