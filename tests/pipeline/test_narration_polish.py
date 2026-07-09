@@ -39,6 +39,19 @@ class _RaisingClient:
         raise RuntimeError("simulated outage")
 
 
+def test_gate_rejects_degenerate_cjk_rewrite_that_would_otherwise_pass():
+    """Regression: a CJK-flood rewrite has no a-z0-9 tokens at all, so the
+    existing no-invented-content check (Latin-only _WORD_RE) passes it
+    vacuously, and if its length happens to land in-band the length-ratio
+    check misses it too. The shared degenerate_reason check (added after a
+    real vision-caption bug hit this exact failure mode) closes the gap."""
+    original = "open the settings menu then confirm the change"
+    rewrite = "自动生成" * 8  # plausible-length flood, no Latin tokens to invent
+    ok, reason, _dropped = _gate(original, rewrite, "")
+    assert not ok
+    assert reason is not None
+
+
 def test_gate_accepts_a_faithful_rewrite_using_only_source_words():
     original = "open file explorer then open the c drive then goto users then select vrsi"
     rewrite = "Open File Explorer, open the C drive, then go to Users and select VRSI."

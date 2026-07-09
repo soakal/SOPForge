@@ -13,6 +13,7 @@ import json
 import re
 
 from pipeline.claim_coverage import render_verify_blockquote
+from pipeline.textgate import degenerate_reason
 
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.S)
 _WORD_RE = re.compile(r"[a-z0-9]+")
@@ -58,6 +59,15 @@ def _gate(original, rewrite, support_text):
     """Returns (ok, reason, dropped_clauses). `support_text` is everything
     the rewrite is allowed to draw on beyond the original segment itself
     (the step's element name, window title, and its own generated text)."""
+    # 0. Degenerate decoding (a repetition loop, a leaked chat-template
+    # token) -- checks 1/2 below would already catch a Latin-script version
+    # of this (novel tokens with nothing to trace back to), but they're
+    # blind to a non-Latin-script flood that happens to land inside the
+    # length-ratio band, since _WORD_RE only recognizes [a-z0-9]+ tokens.
+    reason = degenerate_reason(rewrite)
+    if reason:
+        return False, reason, []
+
     orig_norm = _normalize(original)
     rewrite_norm = _normalize(rewrite)
     support_norm = _normalize(original + " " + support_text)

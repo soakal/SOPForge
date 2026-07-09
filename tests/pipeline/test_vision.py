@@ -56,6 +56,21 @@ def test_empty_caption_becomes_none(tmp_path):
     assert caps == [None]
 
 
+def test_degenerate_caption_becomes_none(tmp_path):
+    """Regression: a real caption came back as a leaked chat-template token
+    plus a repetition loop (<|im_start|> addCriterion addCriterion ...) and
+    was used verbatim as a step's text -- caption_images must treat this
+    exactly like an HTTP failure, not trust it."""
+    imgs = [_png(tmp_path, "1.png")]
+    garbage = "<|im_start|> addCriterion addCriterion addCriterion addCriterion"
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": garbage}}]})
+
+    caps = caption_images(imgs, "", "http://x/v1", "m", transport=httpx.MockTransport(handler))
+    assert caps == [None]
+
+
 def test_reports_progress_as_each_caption_completes(tmp_path):
     imgs = [_png(tmp_path, f"{i}.png") for i in range(3)]
 

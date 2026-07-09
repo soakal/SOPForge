@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
+from pipeline.textgate import degenerate_reason
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM = "You write clear, concise, imperative steps for a Standard Operating Procedure."
@@ -33,7 +35,11 @@ def _prompt(narration, index, total):
 
 
 def _caption_one(path, narration, index, total, endpoint, model, timeout, transport, api_key):
-    """Returns the caption text, or None on any failure. Never raises."""
+    """Returns the caption text, or None on any failure -- including a
+    degenerate reply (a repetition loop, a leaked chat-template special
+    token) treated exactly like an HTTP failure, since the caller's
+    fallback chain (caption or per_step.get(...) or a placeholder) already
+    handles a missing caption safely. Never raises."""
     try:
         data = base64.b64encode(path.read_bytes()).decode("ascii")
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
@@ -64,7 +70,14 @@ def _caption_one(path, narration, index, total, endpoint, model, timeout, transp
                 },
             )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"].strip() or None
+        text = resp.json()["choices"][0]["message"]["content"].strip()
+        if not text:
+            return None
+        reason = degenerate_reason(text)
+        if reason:
+            logger.warning("vision caption for %s rejected as degenerate (%s)", path, reason)
+            return None
+        return text
     except Exception:  # noqa: BLE001 - captioning is best-effort; caller falls back
         logger.warning("vision caption failed for %s", path, exc_info=True)
         return None

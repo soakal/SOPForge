@@ -487,6 +487,13 @@ there's nothing per-step to count, so you'll just see the plain spinner
 want the clicks/UIA captured automatically; use this when you already have
 the pictures and want a formatted document fast.
 
+A local vision model occasionally "degenerates" — repeating the same token
+dozens of times, or leaking a raw chat-template marker like `<|im_start|>` —
+instead of writing a real caption. A caption that looks like this is
+discarded automatically (treated the same as a network failure), falling
+back to placed narration or a plain placeholder rather than shipping the
+garbage text into the document.
+
 Sessions survive a server restart: a session's manifest is saved to its own
 folder on disk, and the server rebuilds its session list from disk at
 startup — restarting (or a crash) never makes a past session's docs

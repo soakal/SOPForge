@@ -1,0 +1,22 @@
+{
+  "garbage": [
+    "addCriterion addCriterion addCriterion addCriterion addCriterion addCriterion addCriterion 自动生成 自动生成 addCriterion 自动生成 自动生成 的",
+    "<|im_start|> addCriterion addCriterion addCriterion addCriterion 自动生成 addCriterion addCriterion 自动生成 addCriterion addCriterion 自动生成Ensure UEFI network or PXE is selected in the One-Time Boot Menu.",
+    "addCriterion addCriterion addCriterion addCriterion addCriterion 自动生成 wireType<|im_start|>sPidGuidId<|im_start|> iParam<|im_start|><|im_start|> 自动生成 iParam 自动生成 自动生成<|im_start|><|im_start|> 自动生成<|im_start|> 自动生成<|im_start|> 自动生成 自动生成<|im_start|><|im_start|><|im_start|> 自动生成 自动生成<|im_start|><|im_start|><|im_start|><|im_start|> 自动生成<|im_start|><|im_start|> uLocal<|im_start|> 自动生成<|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|> 自动生成<|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|><|im_start|> uLocal<|im_start|><|im_start|><|im_start|><|im_start|><|im_start|> 自动生成"
+  ],
+  "good": [
+    "Select 'VRSI-Corp' in the list and click 'Connect'.",
+    "Open the batch file 'VRSI-IT-Software-Update.bat' in the Scripts folder.",
+    "Ensure UEFI network or PXE is selected in the One-Time Boot Menu.",
+    "Open the FortiClient_VPN folder to access the necessary scripts.",
+    "When the Dell logo appears, press `F12` repeatedly to access the One-Time Boot Menu, then select the USB drive from the menu to boot from it.",
+    "Press the F12 key repeatedly to open the Dell One Time Boot Menu.",
+    "Power off the laptop completely then power it on. Press F12 repeatedly at the Dell logo until the One Time Boot Menu appears.",
+    "Click the FortiClient icon at the bottom right of your desktop to connect to the VPN before signing in.",
+    "Type the domain username in the username field and press Tab to move to the password field.",
+    "Type the provided VPN username and password in the respective fields. Enter the Duo MFA enrollment code when prompted. Click \"Connect\" to establish the connection.",
+    "Enter the new computer name as `INOS-LAPT-####` if different from the current name, then press Enter.",
+    "Press 'Y' to restart and complete the domain join.",
+    "Click Next, then click Next again."
+  ]
+}
