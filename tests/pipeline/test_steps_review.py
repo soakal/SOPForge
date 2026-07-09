@@ -88,6 +88,12 @@ def test_ui_sessions_page_renders_checklist_for_staged_session(tmp_path):
         assert step_id in page.text
     assert page.text.count('type="checkbox" name="keep"') == 3
     assert f"/sessions/{session_id}/raw/001.png" in page.text
+    # Each card also carries an editable position number, pre-filled with
+    # its current 1-based position, so steps can be reordered before
+    # confirming.
+    assert 'name="pos-step-001" value="1"' in page.text
+    assert 'name="pos-step-002" value="2"' in page.text
+    assert 'name="pos-step-003" value="3"' in page.text
 
 
 def test_raw_screenshot_route_serves_staged_image(tmp_path):
@@ -121,6 +127,133 @@ def test_confirm_steps_drops_unchecked_steps_before_generation(tmp_path):
     # flagged, proving the sidecar report reflects the reduced manifest.
     assert "step-002" not in report["empty_metadata_steps"]
     assert "step-003" in report["empty_metadata_steps"]
+
+
+def test_confirm_steps_reorders_steps_before_generation(tmp_path):
+    """The position number, not just the keep checkbox, controls the
+    manifest's final step order -- here moving step-003 to the front."""
+    client = _make_client(tmp_path)
+    session_id = _create_staged_session(client, tmp_path).json()["session_id"]
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={
+            "keep": ["step-001", "step-002", "step-003"],
+            "pos-step-001": "2",
+            "pos-step-002": "3",
+            "pos-step-003": "1",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    manifest = load_manifest(tmp_path / "sessions" / session_id / "manifest.json")
+    assert manifest.step_ids() == ["step-003", "step-001", "step-002"]
+
+
+def test_confirm_steps_decimal_position_inserts_without_renumbering(tmp_path):
+    """A decimal position ("1.5") inserts a step between two others without
+    needing to renumber every other card -- the review page's whole point."""
+    client = _make_client(tmp_path)
+    session_id = _create_staged_session(client, tmp_path).json()["session_id"]
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={
+            "keep": ["step-001", "step-002", "step-003"],
+            "pos-step-001": "1",
+            "pos-step-002": "3",
+            "pos-step-003": "1.5",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _wait_for_terminal_status(client, session_id)
+
+    manifest = load_manifest(tmp_path / "sessions" / session_id / "manifest.json")
+    assert manifest.step_ids() == ["step-001", "step-003", "step-002"]
+
+
+def test_confirm_steps_reorder_without_position_keeps_submission_order(tmp_path):
+    """No pos-* fields at all (the documented curl API shape, and every
+    caller that predates the reorder feature) must keep working exactly as
+    before -- steps land in whatever order `keep` was submitted in."""
+    client = _make_client(tmp_path)
+    session_id = _create_staged_session(client, tmp_path).json()["session_id"]
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={"keep": ["step-003", "step-001"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _wait_for_terminal_status(client, session_id)
+
+    manifest = load_manifest(tmp_path / "sessions" / session_id / "manifest.json")
+    assert manifest.step_ids() == ["step-003", "step-001"]
+
+
+def test_confirm_steps_rejects_non_numeric_position(tmp_path):
+    client = _make_client(tmp_path)
+    session_id = _create_staged_session(client, tmp_path).json()["session_id"]
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={"keep": ["step-001"], "pos-step-001": "not-a-number"},
+    )
+    assert resp.status_code == 400
+
+
+def test_confirm_steps_reorders_photo_build_session(tmp_path, monkeypatch):
+    """Same reorder mechanism, proven on the manifest-free screenshots-only
+    build (POST /ui/build) -- confirms the shared confirm-steps route needs
+    no per-flow branching to support reordering."""
+    import io
+
+    import pipeline.server as server_module
+
+    # Vision is enabled by default; stub it so this never attempts a real
+    # network call to the (unreachable in tests) default Ollama endpoint --
+    # this test is about reordering, not captioning.
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        ("files", ("c.png", png((30, 30, 30)), "image/png")),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "Reorder Photo SOP"}, files=files, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={
+            "keep": ["step-001", "step-002", "step-003"],
+            "pos-step-001": "3",
+            "pos-step-002": "2",
+            "pos-step-003": "1",
+        },
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    manifest = load_manifest(tmp_path / "sessions" / session_id / "manifest.json")
+    assert manifest.step_ids() == ["step-003", "step-002", "step-001"]
 
 
 def test_confirm_steps_rejects_empty_selection(tmp_path):

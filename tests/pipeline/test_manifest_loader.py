@@ -8,7 +8,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from pipeline.manifest import Manifest, load_manifest
+from pipeline.manifest import Manifest, load_manifest, select_manifest_steps
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 
@@ -49,3 +49,27 @@ def test_rejects_click_step_without_button():
     del data["steps"][0]["button"]
     with pytest.raises(jsonschema.ValidationError):
         load_manifest(data)
+
+
+def test_select_manifest_steps_reorders_without_dropping():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    selected = select_manifest_steps(manifest, ["step-003", "step-001", "step-002"])
+    assert selected.step_ids() == ["step-003", "step-001", "step-002"]
+
+
+def test_select_manifest_steps_reorders_and_drops():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    selected = select_manifest_steps(manifest, ["step-003", "step-001"])
+    assert selected.step_ids() == ["step-003", "step-001"]
+
+
+def test_select_manifest_steps_rejects_unknown_id():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    with pytest.raises(ValueError, match="unknown step id"):
+        select_manifest_steps(manifest, ["step-001", "step-999"])
+
+
+def test_select_manifest_steps_rejects_duplicate_id():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    with pytest.raises(ValueError, match="duplicate step id"):
+        select_manifest_steps(manifest, ["step-001", "step-002", "step-001"])

@@ -116,25 +116,38 @@ def load_manifest(source):
     return Manifest.model_validate(data)
 
 
-def filter_manifest_steps(manifest, keep_ids):
-    """Returns a new Manifest with only the steps whose id is in keep_ids, in
-    original manifest order (never reordered/renumbered) -- the one place a
-    step-removal review UI is allowed to shrink the manifest. IDs are NOT
-    renumbered; a gap (step-002 removed, step-001/step-003 remain) is fine --
-    nothing downstream assumes contiguous numbering, only that id/order is
-    preserved 1:1 with the resulting doc (assembler.py). No re-validation
-    against the JSON Schema is needed: dropping entries from an already-valid
-    manifest's steps list can't introduce a schema violation (no minItems on
-    steps)."""
-    keep = set(keep_ids)
-    kept_steps = [s for s in manifest.steps if s.id in keep]
-    return manifest.model_copy(update={"steps": kept_steps})
+def select_manifest_steps(manifest, ordered_keep_ids):
+    """Returns a new Manifest containing exactly the steps named in
+    `ordered_keep_ids`, IN THAT ORDER -- the one place a step-review UI is
+    allowed to both shrink AND reorder the manifest (drag/renumber steps,
+    drop mis-clicks). IDs are NOT renumbered; a gap (step-002 dropped,
+    step-001/step-003 remain, in whatever order was requested) is fine --
+    nothing downstream assumes contiguous numbering or original manifest
+    order, only that the resulting manifest's step-id order is preserved
+    1:1 with the resulting doc (assembler.py). Raises ValueError if
+    `ordered_keep_ids` names an unknown step id or repeats one -- that can
+    only happen from a hand-crafted/malformed request, never the real
+    review page, so the caller should turn it into a clean 400. No
+    re-validation against the JSON Schema is needed: reordering/dropping
+    entries from an already-valid manifest's steps list can't introduce a
+    schema violation (no minItems on steps)."""
+    by_id = {s.id: s for s in manifest.steps}
+    seen = set()
+    selected = []
+    for step_id in ordered_keep_ids:
+        if step_id not in by_id:
+            raise ValueError(f"unknown step id: {step_id!r}")
+        if step_id in seen:
+            raise ValueError(f"duplicate step id: {step_id!r}")
+        seen.add(step_id)
+        selected.append(by_id[step_id])
+    return manifest.model_copy(update={"steps": selected})
 
 
 def manifest_to_schema_dict(manifest):
     """Serializes a Manifest back to schema-valid JSON -- the inverse of
     load_manifest, used when a manifest built in memory (e.g. via
-    filter_manifest_steps) needs writing back to disk. by_alias restores
+    select_manifest_steps) needs writing back to disk. by_alias restores
     "class" from Window.class_. button/text_summary are popped when None:
     the schema requires each ABSENT (not null) on the action it doesn't
     apply to, unlike element.bounding_rect/session.narration_wav, which are

@@ -276,13 +276,16 @@ Add `-F "stage=1"` to hold the session at `status: "staged"` instead — the
 same steps-review gate the web UI uses (§5) — then `POST
 /sessions/{id}/confirm-steps` with one `-F "keep=step-001"` per step you want
 to keep once you've reviewed the thumbnails at `GET /sessions/{id}/raw/{filename}`.
+Add one `-F "pos-step-001=2"` per step to reorder them (any number, decimals
+allowed); omit it entirely and steps land in whatever order you listed them
+in `keep`.
 
 ### Endpoints
 
 | Method | Path | Returns |
 |---|---|---|
 | `POST` | `/sessions` | Uploads a session. `multipart/form-data`: `manifest_json` + one `files` part per screenshot (named exactly as the manifest's `screenshot` field), an **optional** `transcript_file` (`.txt`/`.md`/`.json`), and an **optional** `stage` field (any truthy value). By default (`stage` omitted), queues for processing immediately with `status: "queued"`. With `stage` set, the session is held — same steps-review gate the web UI uses (see below) — with `status: "staged"` until confirmed. Missing screenshots or a bad transcript → `400`. |
-| `POST` | `/ui/sessions/{id}/confirm-steps` | Confirms a staged session's steps-review page: `keep` (one or more step ids) selects which steps survive; the manifest is rewritten to just those, in original order, and generation is queued. `400` if `keep` is empty; `409` if the session isn't currently staged. |
+| `POST` | `/ui/sessions/{id}/confirm-steps` | Confirms a staged session's steps-review page: `keep` (one or more step ids) selects which steps survive; an **optional** `pos-{step_id}` field per step (any number, decimals allowed) sets its new position — omit all of them and steps keep whatever order `keep` was submitted in. The manifest is rewritten to the selected/reordered steps and generation is queued. `400` if `keep` is empty, a step id is unknown/duplicated, or a given `pos-{step_id}` isn't a number; `409` if the session isn't currently staged. |
 | `GET` | `/sessions/{id}/raw/{filename}` | A staged session's original (pre-generation) screenshot — what the steps-review checklist's thumbnails point at. |
 | `POST` | `/sessions/{id}/rerender` | Re-runs generation + all exports for an already-uploaded session. |
 | `POST` | `/ui/build` | Manifest-free build: `multipart/form-data` with an optional `title`, one `files` part per image (each becomes a step, in order), and an optional `transcript_file`. Always stages (see `stage` above) — redirects to the steps-review page. |
@@ -313,7 +316,8 @@ port. All examples use `curl.exe` (PowerShell's built-in `curl` is an alias for
 
 # POST /ui/sessions/{id}/confirm-steps -- confirm a staged session's steps-review page
 curl.exe -X POST http://127.0.0.1:8420/ui/sessions/$id/confirm-steps `
-  -F "keep=step-001" -F "keep=step-003"   # one -F "keep=..." per step to KEEP
+  -F "keep=step-001" -F "keep=step-003" `  # one -F "keep=..." per step to KEEP
+  -F "pos-step-001=2" -F "pos-step-003=1"  # optional: reorder (step-003 first)
 
 # GET /sessions/{id}/raw/{filename} -- a staged session's pre-generation screenshot
 curl.exe http://127.0.0.1:8420/sessions/$id/raw/001.png -o 001.png
@@ -405,12 +409,16 @@ system fonts, no external assets — works fully offline).
 - **Steps-review page**: shown once, right after a recording is uploaded (or
   a screenshots+transcript build is submitted), before any document is
   generated. A checklist of every captured step — a thumbnail, the action,
-  and the window/element it was on — checked by default. Uncheck any wrong
-  or accidental clicks, then hit **Keep selected steps & generate document**
-  to drop them and start generation with only what's left. This is the same
-  URL as the session page (`/ui/sessions/{id}`) — it just shows this
-  checklist first, then the processing/finished states below, once you
-  confirm.
+  the window/element it was on, and an editable **Position** number — checked
+  by default. Uncheck any wrong or accidental clicks to drop them, and/or edit
+  a step's position number to move it — decimals work too (type "2.5" to
+  insert a step between steps 2 and 3 without renumbering anything else).
+  Hit **Keep selected steps & generate document** to apply both the drops and
+  the reorder and start generation with only what's left, in the order you
+  set. This works identically whether the session came from a real recording
+  or the screenshots-only build below. This is the same URL as the session
+  page (`/ui/sessions/{id}`) — it just shows this checklist first, then the
+  processing/finished states below, once you confirm.
 - **Session page**: while a session is still generating, this page shows a
   **percentage progress bar** ("N / M steps") and auto-refreshes, turning
   into the finished review page on its own once done. The finished page has

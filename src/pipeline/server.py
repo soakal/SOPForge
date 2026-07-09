@@ -65,7 +65,7 @@ from pipeline.library import remove_entry
 from pipeline.library import search as library_search
 from pipeline.library import upsert_entry
 from pipeline.llm_client import LLMClient
-from pipeline.manifest import filter_manifest_steps, load_manifest, manifest_to_schema_dict
+from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_manifest_steps
 from pipeline.narration_polish import polish_narration
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.semantic_align import build_step_contexts, semantic_align
@@ -1054,12 +1054,22 @@ def create_app(
 
     @app.post("/ui/sessions/{session_id}/confirm-steps")
     async def ui_confirm_steps(session_id: str, request: Request):
-        """Drops any steps the user unchecked on the steps-review page, then
-        submits the (possibly reduced) session for generation. The manifest on
-        disk is rewritten to the kept subset BEFORE jobs.submit runs, so
-        _generate/assemble_steps never sees a removed step -- the 1:1
-        manifest<->doc mapping invariant holds by construction, the same way
-        it would for a hand-edited manifest."""
+        """Drops any steps the user unchecked on the steps-review page, and
+        reorders the rest by each step's submitted position number (decimals
+        allowed, so moving one step never requires renumbering the others --
+        the server just stable-sorts on whatever values were submitted),
+        then submits the session for generation. A `pos-{step_id}` field is
+        OPTIONAL per step (not just per request) -- a plain `keep`-only POST
+        (the documented curl API, and every pre-reorder-feature caller)
+        keeps working exactly as before, with steps ordered however they
+        were submitted; only a field that's PRESENT but not a number is
+        rejected, since that can only come from a malformed request, never
+        the real review page or the documented API shape. The manifest on
+        disk is rewritten to the selected/reordered subset BEFORE
+        jobs.submit runs, so _generate/assemble_steps never sees a dropped
+        or out-of-order step -- the 1:1 manifest<->doc mapping invariant
+        holds by construction, the same way it would for a hand-edited
+        manifest."""
         _require_known_session(session_id)
         if session_id not in staged:
             raise HTTPException(status_code=409, detail="session already submitted for generation")
@@ -1067,12 +1077,30 @@ def create_app(
         keep_ids = form.getlist("keep")
         if not keep_ids:
             raise HTTPException(status_code=400, detail="select at least one step to keep")
+
+        positions = {}
+        for index, step_id in enumerate(keep_ids):
+            raw = form.get(f"pos-{step_id}")
+            if raw is None:
+                positions[step_id] = (float(index), index)  # no position given -> submission order
+                continue
+            try:
+                positions[step_id] = (float(raw), index)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400, detail=f"invalid position for step {step_id!r}"
+                ) from None
+        ordered_ids = sorted(keep_ids, key=positions.__getitem__)
+
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
-        filtered = filter_manifest_steps(manifest, keep_ids)
+        try:
+            selected = select_manifest_steps(manifest, ordered_ids)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         (session_dir / "manifest.json").write_text(
-            json.dumps(manifest_to_schema_dict(filtered)), encoding="utf-8"
+            json.dumps(manifest_to_schema_dict(selected)), encoding="utf-8"
         )
-        sessions[session_id] = (filtered, screenshots_dir, annotated_dir, session_dir)
+        sessions[session_id] = (selected, screenshots_dir, annotated_dir, session_dir)
         staged.discard(session_id)
         jobs.submit(session_id, lambda: _generate(session_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
