@@ -1034,7 +1034,8 @@ def create_app(
                 "provider": form.get("steps_provider", "ollama"),
                 "endpoint": form.get("steps_endpoint", ""),
                 "model": _model_or_existing(form.get("steps_model", ""), existing.steps.model),
-                "max_concurrency": form.get("steps_max_concurrency") or "1",
+                "max_concurrency": form.get("steps_max_concurrency")
+                or str(existing.steps.max_concurrency),
             },
             "narrative": {
                 "provider": form.get("narrative_provider", "ollama"),
@@ -1049,6 +1050,14 @@ def create_app(
                 "provider": form.get("vision_provider", "ollama"),
                 "endpoint": form.get("vision_endpoint", ""),
                 "model": _model_or_existing(form.get("vision_model", ""), existing.vision.model),
+                "max_concurrency": form.get("vision_max_concurrency")
+                or str(existing.vision.max_concurrency),
+            },
+            "document": {
+                "author": _model_or_existing(
+                    form.get("document_author", ""), existing.document.author
+                ),
+                "doc_no_prefix": form.get("document_doc_no_prefix", ""),
             },
         }
         try:

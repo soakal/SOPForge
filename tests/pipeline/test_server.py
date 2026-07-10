@@ -687,6 +687,44 @@ def test_photo_build_caption_length_mismatch_fails_the_job_loudly(tmp_path, monk
     assert "mismatched step list" in status["error"]
 
 
+def test_photo_build_headings_do_not_fabricate_a_click(tmp_path, monkeypatch):
+    """Regression: photo_build.py's synthetic steps carry a placeholder
+    action="click" with an empty element for every step (no click ever
+    happened -- these are just uploaded screenshots). step_heading used to
+    fall back to a fabricated "Click the screen" for every single heading in
+    a manifest-free build; it must now fall back to a bare "Step N" instead,
+    since there's no real action to describe."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "No Fabrication SOP"}, files=files, follow_redirects=False
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Click the screen" not in md
+    assert "## Step 1" in md
+    assert "## Step 2" in md
+
+
 def test_add_transcript_to_existing_session_then_rerender(tmp_path):
     """A transcript can be attached from the review page after the fact: POST
     /ui/sessions/{id}/transcript saves it and re-renders, and the narration
@@ -822,6 +860,9 @@ def test_config_page_renders_and_saves(tmp_path):
     assert "Configuration" in page.text
     assert "qwen3:32b" in page.text  # current steps model shown
     assert 'name="steps_max_concurrency"' in page.text
+    assert 'name="vision_max_concurrency"' in page.text
+    assert 'name="document_author"' in page.text
+    assert 'name="document_doc_no_prefix"' in page.text
 
     resp = client.post(
         "/ui/config",
@@ -838,6 +879,9 @@ def test_config_page_renders_and_saves(tmp_path):
             "vision_endpoint": "http://192.168.200.60:11434/v1",
             "vision_model": "qwen2.5vl:7b",
             "vision_enabled": "on",
+            "vision_max_concurrency": "2",
+            "document_author": "Jane Q",
+            "document_doc_no_prefix": "SOP",
         },
         follow_redirects=False,
     )
@@ -848,6 +892,64 @@ def test_config_page_renders_and_saves(tmp_path):
     assert cfg["steps"]["model"] == "anthropic/claude-3.5-haiku"
     assert cfg["steps"]["max_concurrency"] == 5
     assert cfg["vision"]["enabled"] is True
+    assert cfg["vision"]["max_concurrency"] == 2
+    assert cfg["document"]["author"] == "Jane Q"
+    assert cfg["document"]["doc_no_prefix"] == "SOP"
+
+
+def test_config_save_preserves_document_and_vision_concurrency_when_form_omits_them(tmp_path):
+    """Regression: an earlier version of the save handler rebuilt the config
+    purely from named form fields, and never included document.*/
+    vision.max_concurrency in that rebuild -- so ANY save (even one that only
+    changes, say, the steps model) silently reset those two to their pydantic
+    defaults, discarding whatever was actually configured. A save that omits
+    document_author (e.g. a client that hasn't loaded the new fields yet)
+    must still preserve the existing value, not reset it."""
+    client = _make_client(tmp_path)
+
+    first = client.post(
+        "/ui/config",
+        data={
+            "steps_provider": "ollama",
+            "steps_endpoint": "http://x/v1",
+            "steps_model": "qwen3:32b",
+            "narrative_provider": "ollama",
+            "narrative_endpoint": "http://x/v1",
+            "narrative_model": "qwen3:32b",
+            "vision_provider": "ollama",
+            "vision_endpoint": "http://x/v1",
+            "vision_model": "qwen2.5vl:7b",
+            "vision_max_concurrency": "3",
+            "document_author": "Jane Q",
+            "document_doc_no_prefix": "SOP",
+        },
+        follow_redirects=False,
+    )
+    assert first.status_code == 303
+
+    # A second save that only changes the steps model, submitted WITHOUT the
+    # document_author field at all (simulating a stale/partial form post).
+    second = client.post(
+        "/ui/config",
+        data={
+            "steps_provider": "ollama",
+            "steps_endpoint": "http://x/v1",
+            "steps_model": "qwen3:14b",
+            "narrative_provider": "ollama",
+            "narrative_endpoint": "http://x/v1",
+            "narrative_model": "qwen3:32b",
+            "vision_provider": "ollama",
+            "vision_endpoint": "http://x/v1",
+            "vision_model": "qwen2.5vl:7b",
+        },
+        follow_redirects=False,
+    )
+    assert second.status_code == 303
+
+    cfg = client.get("/config").json()
+    assert cfg["steps"]["model"] == "qwen3:14b"  # the actual intended change took effect
+    assert cfg["document"]["author"] == "Jane Q"  # preserved, not reset to "SOPForge"
+    assert cfg["vision"]["max_concurrency"] == 3  # preserved, not reset to 4
 
 
 def test_config_page_model_datalists(tmp_path):

@@ -400,6 +400,7 @@ def _config_row(key, heading, values, extra="", providers=None):
 
 def render_config_page(config, keystatus, saved=False):
     steps, narr, vis = config["steps"], config["narrative"], config["vision"]
+    doc = config.get("document", {})
     saved_note = (
         '<div class="card" data-status="green" style="border-left:4px solid var(--ok)">'
         "<p><strong>Saved.</strong> Changes take effect on the next generation.</p></div>"
@@ -410,6 +411,19 @@ def render_config_page(config, keystatus, saved=False):
     vision_extra = (
         '<div class="field"><label><input type="checkbox" name="vision_enabled"'
         f"{checked}> Enable vision captioning</label></div>"
+        '<div class="field"><label>Max concurrency <small>(concurrent vision calls)</small>'
+        "</label>"
+        f'<input type="text" name="vision_max_concurrency" value="{vis.get("max_concurrency", 4)}"></div>'
+    )
+    document_card = (
+        '<div class="card"><h2>Document</h2>'
+        '<div class="field"><label>Author <small>(shown on the title page / revision '
+        "table)</small></label>"
+        f'<input type="text" name="document_author" value="{html.escape(doc.get("author", "SOPForge"))}"></div>'
+        '<div class="field"><label>Document number prefix <small>(e.g. "SOP" — blank omits '
+        "the document number entirely)</small></label>"
+        f'<input type="text" name="document_doc_no_prefix" value="{html.escape(doc.get("doc_no_prefix", ""))}"></div>'
+        "</div>"
     )
     passes_extra = (
         f'<div class="field"><label>Passes</label>'
@@ -462,6 +476,7 @@ def render_config_page(config, keystatus, saved=False):
         f"{_config_row('steps', 'Steps', steps, extra=steps_extra)}"
         f"{_config_row('narrative', 'Narration', narr, extra=passes_extra)}"
         f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra, providers=_VISION_PROVIDERS)}"
+        f"{document_card}"
         '<button type="submit">Save configuration</button></form>'
         f"{key_panel}{rec_table}"
     )
