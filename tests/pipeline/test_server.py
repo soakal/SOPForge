@@ -778,7 +778,83 @@ def test_photo_build_canonicalizes_inconsistent_transcript_spelling(tmp_path, mo
     assert md.count("Hilschier") == 3  # title + step 1 + step 2, one consistent spelling
 
     report = client.get(f"/sessions/{session_id}/report").json()
-    assert report["consistency"] == [{"canonical": "Hilschier", "variants": ["Hilsshier"]}]
+    assert report["consistency"] == [
+        {"canonical": "Hilschier", "variants": ["Hilsshier"], "source": "anchor"}
+    ]
+
+
+def test_photo_build_vision_caption_spelling_beats_more_frequent_transcript_spelling(
+    tmp_path, monkeypatch
+):
+    """Regression (fable follow-up): with no user-typed title to anchor on,
+    a vision caption's spelling (read directly off the screenshot pixels)
+    should still win over a transcript-derived spelling even when the
+    transcript's spelling is MORE frequent -- vision is grounded in what's
+    actually on screen, a stronger signal than plain occurrence-counting."""
+    import io
+
+    import pipeline.server as server_module
+
+    def fake_caption_images(paths, *a, **k):
+        # Only the first image gets a successful (vision-derived) caption;
+        # the second falls back to transcript placement.
+        return ["Select the 'Hilschier Windows 11.7z' archive.", None]
+
+    monkeypatch.setattr(server_module, "caption_images", fake_caption_images)
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    import pipeline.config as config_module
+
+    original_load = config_module.load_models_config
+
+    def loaded_with_vision_enabled(*a, **k):
+        loaded = original_load(*a, **k)
+        loaded.vision.enabled = True
+        return loaded
+
+    monkeypatch.setattr(server_module, "load_models_config", loaded_with_vision_enabled)
+
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            (
+                "t.md",
+                b"Step 1: nothing relevant here.\nStep 2: Extract the 'Hilsshier "
+                b"Windows 11.7z' archiving file and confirm the Hilsshier install.",
+                "text/markdown",
+            ),
+        ),
+    ]
+    # No "title" field -- no anchor_text, isolating vision-preference vs. frequency.
+    resp = client.post("/ui/build", data={}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Hilsshier" not in md
+    assert "Hilschier" in md
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["consistency"] == [
+        {"canonical": "Hilschier", "variants": ["Hilsshier"], "source": "vision"}
+    ]
 
 
 def test_add_transcript_to_existing_session_then_rerender(tmp_path):

@@ -74,6 +74,62 @@ def test_most_frequent_variant_wins_without_an_anchor():
     assert all("Hilschier" not in field for field in canonicalized)
 
 
+def test_preferred_text_wins_over_frequency():
+    fields = [
+        "Select Hilsshier from the list.",
+        "Select Hilsshier from the list again.",
+        "Select Hilschier from the list once.",
+    ]
+    # "Hilsshier" is more frequent (2 vs 1), but a vision caption (reading
+    # the actual screenshot pixels) says "Hilschier" -- that should win
+    # over raw frequency, same as anchor_text does, just one tier weaker.
+    canonicalized, actions = canonicalize_terms(
+        fields, preferred_texts=["The Hilschier installer window is shown."]
+    )
+
+    assert actions[0]["canonical"] == "Hilschier"
+    assert actions[0]["source"] == "vision"
+    assert all("Hilsshier" not in field for field in canonicalized)
+
+
+def test_anchor_text_wins_over_preferred_text():
+    fields = [
+        "Select Hilsshier from the list.",
+        "Select Hilschier from the list again.",
+    ]
+    # A vision caption says "Hilsshier", but the user-typed title
+    # (anchor_text) says "Hilschier" -- the explicit user-supplied ground
+    # truth should still win over the weaker vision signal.
+    canonicalized, actions = canonicalize_terms(
+        fields,
+        anchor_text="Hilschier Setup Guide",
+        preferred_texts=["The Hilsshier installer window is shown."],
+    )
+
+    assert actions[0]["canonical"] == "Hilschier"
+    assert actions[0]["source"] == "anchor"
+    assert all("Hilsshier" not in field for field in canonicalized)
+
+
+def test_frequency_source_reported_when_no_anchor_or_preferred_match():
+    fields = ["Select Hilsshier once.", "Select Hilsshier twice.", "Select Hilschier thrice."]
+    _canonicalized, actions = canonicalize_terms(fields)
+
+    assert actions[0]["source"] == "frequency"
+
+
+def test_preferred_texts_none_behaves_identically_to_omitted():
+    fields = [
+        "Select Hilsshier from the list.",
+        "Select Hilsshier from the list again.",
+        "Select Hilschier from the list once.",
+    ]
+    without_kwarg = canonicalize_terms(fields)
+    with_none = canonicalize_terms(fields, preferred_texts=None)
+
+    assert without_kwarg == with_none
+
+
 def test_tie_breaks_on_earliest_document_order_occurrence():
     fields = ["Select Hilschier first.", "Select Hilsshier second."]
     canonicalized, actions = canonicalize_terms(fields)
@@ -91,6 +147,20 @@ def test_idempotent_second_pass_is_a_no_op():
     ]
     once, _actions = canonicalize_terms(fields)
     twice, actions_again = canonicalize_terms(once)
+
+    assert once == twice
+    assert actions_again == []
+
+
+def test_idempotent_second_pass_with_preferred_texts_is_a_no_op():
+    fields = [
+        "Select Hilsshier from the list.",
+        "Select Hilsshier from the list again.",
+        "Select Hilschier from the list once.",
+    ]
+    preferred = ["The Hilschier installer window is shown."]
+    once, _actions = canonicalize_terms(fields, preferred_texts=preferred)
+    twice, actions_again = canonicalize_terms(once, preferred_texts=preferred)
 
     assert once == twice
     assert actions_again == []

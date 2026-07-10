@@ -16,8 +16,11 @@ several near-identical spellings of what is obviously the same word, and
 canonicalize all of them to a single one of those observed spellings, so
 the shipped document is at least internally consistent. If the user typed
 a session title, whichever variant matches a word in it wins as the
-canonical spelling (the one piece of "ground truth" the user did supply);
-otherwise the most frequent variant wins.
+canonical spelling (the one piece of "ground truth" the user did supply).
+A vision caption (see vision.py -- a model reading the actual screenshot
+pixels, told to spell on-screen text as shown) is a second, weaker piece
+of ground truth: preferred over raw frequency, but still subordinate to
+an explicit user-typed title. Otherwise the most frequent variant wins.
 
 The fuzzy matching here is deliberately conservative: ordinary English
 inflection (update/updated, close/closed) and unrelated same-length words
@@ -205,15 +208,20 @@ def _adapt_case(canonical_key, original):
     return canonical_key
 
 
-def canonicalize_terms(fields, anchor_text=None):
+def canonicalize_terms(fields, anchor_text=None, preferred_texts=None):
     """`fields` is a list of strings (e.g. [title, narrative_text, *step
     texts]) that together make up one generated document. Returns
     (canonicalized_fields, actions): canonicalized_fields is a new list,
     same length/order, with every near-duplicate proper-noun spelling
     replaced by a single canonical form (case-adapted per occurrence,
     see _adapt_case); actions is a list of {"canonical": str, "variants":
-    [str, ...]} dicts (empty if nothing was merged), suitable for the
-    sidecar review report.
+    [str, ...], "source": "anchor"|"vision"|"frequency"} dicts (empty if
+    nothing was merged), suitable for the sidecar review report.
+
+    `preferred_texts`, if given (e.g. vision captions -- see vision.py),
+    is a weaker piece of ground truth than `anchor_text`: a spelling
+    found there wins over frequency, but a spelling found in `anchor_text`
+    (an explicit user-typed title) still wins over one only found here.
 
     Pure and idempotent: running it twice on its own output is a no-op.
     """
@@ -234,13 +242,23 @@ def canonicalize_terms(fields, anchor_text=None):
     if anchor_text:
         anchor_keys = {key for key, _exact, _proper in _tokens_in_order(anchor_text)}
 
+    preferred_keys = set()
+    for preferred_text in preferred_texts or []:
+        preferred_keys |= {key for key, _exact, _proper in _tokens_in_order(preferred_text)}
+
     groups = _group_variants(eligible_keys)
 
     key_to_canonical = {}  # variant key -> canonical key
     actions = []
     for group in groups:
         anchor_matches = group & anchor_keys
-        pool = anchor_matches or group
+        preferred_matches = group & preferred_keys
+        if anchor_matches:
+            pool, source = anchor_matches, "anchor"
+        elif preferred_matches:
+            pool, source = preferred_matches, "vision"
+        else:
+            pool, source = group, "frequency"
 
         best_count = max(key_total_count[key] for key in pool)
         top = [key for key in pool if key_total_count[key] == best_count]
@@ -255,6 +273,7 @@ def canonicalize_terms(fields, anchor_text=None):
             {
                 "canonical": canonical_key.capitalize(),
                 "variants": [key.capitalize() for key in variant_keys],
+                "source": source,
             }
         )
 

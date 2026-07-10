@@ -438,11 +438,14 @@ def create_app(
         # A title + one-line overview from the narration (best-effort). Fill the
         # title only if the user didn't provide one, so a UUID never shows.
         user_title = manifest.session.title
+        on_screen_texts = [c for c in captions if c]
         narrative_text = None
         if narration.strip():
             llm = make_llm_client()
             try:
-                gen_title, narrative_text = generate_title_and_overview(narration, llm)
+                gen_title, narrative_text = generate_title_and_overview(
+                    narration, llm, on_screen_texts=on_screen_texts
+                )
             finally:
                 close = getattr(llm, "close", None)
                 if callable(close):
@@ -457,12 +460,14 @@ def create_app(
         # spelling to be *correct* (no ground truth for that exists here),
         # only internally *consistent* -- see consistency.py. A user-typed
         # title is the one real ground truth available, so it anchors the
-        # canonical spelling when one of its words matches a variant.
+        # canonical spelling when one of its words matches a variant; a
+        # vision caption (on_screen_texts -- reading the actual screenshot
+        # pixels) is weaker ground truth, preferred over raw frequency.
         fields = [manifest.session.title or "", narrative_text or ""] + [
             r["text"] for r in step_results
         ]
         canonicalized, consistency_actions = canonicalize_terms(
-            fields, anchor_text=user_title or None
+            fields, anchor_text=user_title or None, preferred_texts=on_screen_texts
         )
         manifest.session.title = canonicalized[0]
         if narrative_text is not None:
