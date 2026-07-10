@@ -45,6 +45,15 @@ a = Analysis(
             os.path.join(_SOP_FACTORY_2_TEMPLATE_DIR, "SOP_TEMPLATE_WITH_PHOTOS.docx"),
             "sop_factory_2",
         ),
+        # DejaVu Sans (Bitstream Vera license -- freely redistributable/
+        # embeddable, see assets/fonts/dejavu-sans/LICENSE) gives export_pdf.py
+        # a real Unicode font instead of core-font Latin-1 + a transliteration
+        # table for everything outside it.
+        ("assets/fonts/dejavu-sans/DejaVuSans.ttf", "assets/fonts/dejavu-sans"),
+        ("assets/fonts/dejavu-sans/DejaVuSans-Bold.ttf", "assets/fonts/dejavu-sans"),
+        ("assets/fonts/dejavu-sans/DejaVuSans-Oblique.ttf", "assets/fonts/dejavu-sans"),
+        ("assets/fonts/dejavu-sans/DejaVuSans-BoldOblique.ttf", "assets/fonts/dejavu-sans"),
+        ("assets/fonts/dejavu-sans/LICENSE", "assets/fonts/dejavu-sans"),
     ],
     # SOP Factory 2's sop_lib.py is bundled as a *data* file (imported
     # dynamically at runtime via sys.path, not a real import statement

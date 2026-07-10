@@ -108,6 +108,56 @@ def test_pdf_export_never_crashes_on_non_latin1_text(tmp_path):
     assert output_path.read_bytes()[:5] == b"%PDF-"
 
 
+def test_pdf_renders_smart_punctuation_verbatim_with_dejavu(tmp_path):
+    """With the bundled DejaVu Sans font registered (assets/fonts/dejavu-sans),
+    "smart" typography punctuation outside Latin-1 -- curly quotes, em dash,
+    ellipsis -- must render as the real character, not get transliterated or
+    mangled to '?'. Transliteration is a last-resort fallback that only
+    kicks in if DejaVu registration itself fails (see _safe_text); this test
+    proves the primary, expected path actually works end to end."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    step_results, annotated_paths = render_steps_template_mode(manifest, screenshots, annotated)
+
+    narrative_text = "Café naïve “curly quotes” — em dash … ellipsis."
+    output_path = tmp_path / "out.pdf"
+    render_pdf(manifest, step_results, annotated_paths, output_path, narrative_text=narrative_text)
+
+    text = _extract_text(output_path)
+    assert "Café naïve “curly quotes” — em dash … ellipsis." in _normalize_whitespace(text)
+    assert "?" not in text.replace("Café", "").replace("naïve", "")
+
+
+def test_register_font_falls_back_to_helvetica_and_transliterates(tmp_path, monkeypatch):
+    """If the bundled DejaVu font files are ever missing (a packaging
+    regression, e.g. sopforge-server.spec's datas entries dropped), export
+    must still succeed via the Helvetica + transliteration fallback rather
+    than raising -- the same "always succeeds" guarantee as the docx
+    template fallback."""
+    import pipeline.export_pdf as export_pdf_module
+
+    def _boom(*_args, **_kwargs):
+        raise FileNotFoundError("simulated missing font file")
+
+    monkeypatch.setattr(export_pdf_module, "resource_path", _boom)
+
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    step_results, annotated_paths = render_steps_template_mode(manifest, screenshots, annotated)
+
+    narrative_text = "Curly ‘quotes’ and an em dash — here."
+    output_path = tmp_path / "out.pdf"
+    render_pdf(manifest, step_results, annotated_paths, output_path, narrative_text=narrative_text)
+
+    text = _normalize_whitespace(_extract_text(output_path))
+    assert output_path.read_bytes()[:5] == b"%PDF-"
+    assert "Curly 'quotes' and an em dash -- here." in text
+
+
 def test_pdf_handles_missing_screenshot_without_crashing(tmp_path):
     manifest = load_manifest(FIXTURES / "sample-manifest.json")
     screenshots = tmp_path / "screenshots"
