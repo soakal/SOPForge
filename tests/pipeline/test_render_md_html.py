@@ -60,6 +60,32 @@ def test_template_mode_end_to_end_makes_zero_llm_requests(tmp_path, monkeypatch)
         assert path.exists()
 
 
+def test_render_markdown_escapes_brackets_in_image_alt_text(tmp_path):
+    """Regression: a step's heading can embed a raw UIA element name
+    (assembler.step_heading), and the image alt text used to embed that
+    heading completely unescaped. An element name with an unmatched `]`
+    (plausible in real UI strings, e.g. a mis-paired label) would
+    prematurely close the markdown alt-text bracket and break the image
+    reference; even a *balanced* pair needs no escaping to render correctly,
+    but nothing should assume every real name is balanced."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]
+    unbalanced = step.model_copy(
+        update={"element": step.element.model_copy(update={"name": "Weird ] Name"})}
+    )
+    manifest = manifest.model_copy(update={"steps": [unbalanced, *manifest.steps[1:]]})
+
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    step_results, annotated_paths = render_steps_template_mode(manifest, screenshots, annotated)
+
+    md = render_markdown(manifest, step_results, annotated_paths)
+
+    assert "![Step 1 — Click 'Weird \\] Name'](" in md
+    assert "![Step 1 — Click 'Weird ] Name'](" not in md  # would break the image reference
+
+
 def test_render_markdown_contains_every_step_and_screenshot(tmp_path):
     manifest = load_manifest(FIXTURES / "sample-manifest.json")
     screenshots = tmp_path / "screenshots"

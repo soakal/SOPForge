@@ -34,6 +34,25 @@ def render_verify_blockquote(claim):
     return f"> {_verify_marker(claim['claim_id'])}: {claim['text']}"
 
 
+_VERIFY_LINE_PREFIX = "> [verify]"
+
+
+def parse_verify_line(line):
+    """Returns the claim's text if `line` is a rendered [verify] blockquote
+    (render_verify_blockquote's own output format), or None otherwise. The
+    one place that reverses that format, so every consumer that needs to
+    style a [verify] line differently from plain narrative text
+    (docx_assembler.py, export_pdf.py — both render it as a distinct
+    callout instead of raw "> [verify] (claim-id): ..." text) shares one
+    parser instead of each independently re-deriving the prefix/separator,
+    which would otherwise let the two silently drift out of sync with
+    render_verify_blockquote's actual format."""
+    if not line.startswith(_VERIFY_LINE_PREFIX):
+        return None
+    _, _, claim_text = line.partition(":")
+    return claim_text.strip() or "(unspecified)"
+
+
 def ensure_claim_coverage(narrative_text, claims):
     """Returns (final_text, covered_claim_ids, verify_claim_ids). Every claim
     ends up covered by the narrative's own content or flagged with an

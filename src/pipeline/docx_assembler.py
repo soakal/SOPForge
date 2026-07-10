@@ -13,7 +13,8 @@ from pathlib import Path
 
 from docx.shared import RGBColor
 
-from pipeline.assembler import step_heading
+from pipeline.assembler import step_heading, toc_lines
+from pipeline.claim_coverage import parse_verify_line
 from pipeline.resource_path import resource_path
 
 DEFAULT_SOP_FACTORY_2_DIR = Path(r"C:\Users\Brian\Documents\SOP_Factory_2\template")
@@ -46,17 +47,17 @@ def _import_sop_builder():
 
 def _narrative_body(sop, narrative_text):
     """Writes narrative_text as one or more paragraphs, rendering any
-    "> [verify] (claim-id): ..." line (claim_coverage.py's
-    render_verify_blockquote) as a distinct styled callout instead of raw
-    "> [verify] (claim-...)" text that reads as debug scaffolding in a
-    shipped document. The claim id itself is dropped from what's *shown* —
-    it stays meaningful in the sidecar report, not the reader-facing doc."""
+    [verify]-flagged line (claim_coverage.parse_verify_line, which reverses
+    render_verify_blockquote's own format -- the shared single point of
+    truth export_pdf.py's counterpart also uses) as a distinct styled
+    callout instead of raw "> [verify] (claim-...)" text that reads as
+    debug scaffolding in a shipped document. The claim id itself is dropped
+    from what's *shown* — it stays meaningful in the sidecar report, not
+    the reader-facing doc."""
     for line in narrative_text.splitlines():
-        if line.startswith("> [verify]"):
-            _, _, claim_text = line.partition(":")
-            p = sop.bullet_rich(
-                [("Needs verification: ", True), (claim_text.strip() or "(unspecified)", False)]
-            )
+        claim_text = parse_verify_line(line)
+        if claim_text is not None:
+            p = sop.bullet_rich([("Needs verification: ", True), (claim_text, False)])
             label_run = p.runs[1]  # runs[0] is the bullet_rich "•  " marker
             label_run.italic = True
             label_run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
@@ -116,17 +117,7 @@ def assemble_docx(
     title = manifest.session.title or manifest.session.id
     sop.title_page(title.upper(), author=author, doc_no=doc_no)
 
-    section = 0
-    toc_lines = []
-    if narrative_text:
-        section += 1
-        toc_lines.append(f"{section}.  Overview")
-    section += 1
-    toc_lines.append(f"{section}.  Procedure")
-    toc_lines.extend(f"      {step_heading(n, step)}" for n, step in enumerate(manifest.steps, 1))
-    section += 1
-    toc_lines.append(f"{section}.  Revision History")
-    sop.toc(toc_lines)
+    sop.toc(toc_lines(manifest, narrative_text))
 
     if narrative_text:
         sop.heading1("Overview")

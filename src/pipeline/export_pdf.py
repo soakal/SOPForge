@@ -12,7 +12,8 @@ from pathlib import Path
 
 from fpdf import FPDF
 
-from pipeline.assembler import format_doc_date, step_heading
+from pipeline.assembler import format_doc_date, step_heading, toc_lines
+from pipeline.claim_coverage import parse_verify_line
 
 _INK = (33, 37, 41)
 _MUTED = (110, 116, 124)
@@ -85,20 +86,21 @@ def _bullet(pdf, text):
 
 
 def _narrative_body(pdf, narrative_text):
-    """Mirrors docx_assembler.py's _narrative_body: a "> [verify] (claim-id):
-    ..." line (claim_coverage.py's render_verify_blockquote) renders as a
-    distinct red/italic callout instead of raw debug-looking text; the claim
-    id itself is dropped from what's shown (it stays meaningful in the
+    """Mirrors docx_assembler.py's _narrative_body: a [verify]-flagged line
+    (claim_coverage.parse_verify_line -- the shared single point of truth
+    both exporters use to reverse render_verify_blockquote's format) renders
+    as a distinct red/italic callout instead of raw debug-looking text; the
+    claim id itself is dropped from what's shown (it stays meaningful in the
     sidecar report, not the reader-facing doc)."""
     for line in narrative_text.splitlines():
-        if line.startswith("> [verify]"):
-            _, _, claim_text = line.partition(":")
+        claim_text = parse_verify_line(line)
+        if claim_text is not None:
             pdf.set_font("Helvetica", "BI", 10)
             pdf.set_text_color(*_VERIFY)
             pdf.multi_cell(
                 0,
                 6,
-                _safe_text(f"Needs verification: {claim_text.strip() or '(unspecified)'}"),
+                _safe_text(f"Needs verification: {claim_text}"),
                 new_x="LMARGIN",
                 new_y="NEXT",
             )
@@ -161,24 +163,20 @@ def render_pdf(
     pdf.cell(0, 11, "Table of Contents", new_x="LMARGIN", new_y="NEXT")
     pdf.set_text_color(*_INK)
     pdf.ln(2)
-    section = 0
-    if narrative_text:
-        section += 1
-        pdf.set_font("Helvetica", "", 11)
-        pdf.multi_cell(0, 7, _safe_text(f"{section}.  Overview"), new_x="LMARGIN", new_y="NEXT")
-    section += 1
-    pdf.set_font("Helvetica", "", 11)
-    pdf.multi_cell(0, 7, _safe_text(f"{section}.  Procedure"), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Helvetica", "", 10)
-    pdf.set_text_color(*_MUTED)
-    for n, step in enumerate(manifest.steps, start=1):
-        pdf.multi_cell(
-            0, 6, _safe_text(f"      {step_heading(n, step)}"), new_x="LMARGIN", new_y="NEXT"
-        )
-    pdf.set_text_color(*_INK)
-    section += 1
-    pdf.set_font("Helvetica", "", 11)
-    pdf.multi_cell(0, 7, _safe_text(f"{section}.  Revision History"), new_x="LMARGIN", new_y="NEXT")
+    # toc_lines (assembler.py) is the single source of truth for the outline
+    # itself -- shared with docx_assembler.py so the two TOCs can't drift
+    # out of sync. Indented step entries (the "      " prefix that same
+    # helper produces) get the smaller/muted styling; numbered section
+    # lines get the larger plain one.
+    for line in toc_lines(manifest, narrative_text):
+        if line.startswith("      "):
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_text_color(*_MUTED)
+            pdf.multi_cell(0, 6, _safe_text(line), new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*_INK)
+        else:
+            pdf.set_font("Helvetica", "", 11)
+            pdf.multi_cell(0, 7, _safe_text(line), new_x="LMARGIN", new_y="NEXT")
 
     # --- Overview ---
     if narrative_text:

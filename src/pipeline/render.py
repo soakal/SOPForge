@@ -22,6 +22,18 @@ from pipeline.generation import generate_all_steps
 from pipeline.template import render_step_template
 
 
+def _escape_md_alt_text(text):
+    """Escapes markdown-significant characters for use inside an image
+    alt-text slot `![...]`. A step heading can embed a raw UIA element name
+    (step_heading); an unmatched `[` or `]` in that name would prematurely
+    close the alt-text bracket and break the `![...](...)`  image reference
+    (a balanced pair like "Save [Ctrl+S]" happens to still parse under
+    CommonMark, but nothing here can assume every real element name is
+    balanced). Backslash is escaped first so the bracket escapes that follow
+    can't be misread as forming a different escape sequence."""
+    return text.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+
 def _annotate_all(manifest, screenshot_dir, annotated_dir):
     """Writes an annotated copy of each step's screenshot -- marker drawn
     first, then cropped to the clicked element's neighborhood (a no-op-sized
@@ -94,7 +106,7 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
         if result.get("narration"):
             lines.append(f"> **Narration:** {result['narration']}")
             lines.append("")
-        lines.append(f"![{heading}]({_image_ref(shot, base_dir)})")
+        lines.append(f"![{_escape_md_alt_text(heading)}]({_image_ref(shot, base_dir)})")
         lines.append("")
     return "\n".join(lines)
 

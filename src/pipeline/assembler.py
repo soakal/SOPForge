@@ -12,15 +12,42 @@ def step_heading(n, step):
     """A short, descriptive per-step heading built purely from manifest
     fields (no LLM, no invariant risk) -- "Step 3 — Click 'Save'" instead of
     a bare "Step 3". Shared by every export format (docx/pdf/html/md) so a
-    step's heading, TOC entry, and image caption are always the same text."""
+    step's heading, TOC entry, and image caption are always the same text.
+
+    Falls back to a bare "Step N" (no verb, no target) when the element has
+    neither a name nor a control_type -- claiming a specific action ("Click
+    the screen") would be a fabrication for the manifest-free photo-build
+    flow (photo_build.py's synthetic steps carry a placeholder action="click"
+    for every step even though no click ever happened), and is uninformative
+    even for a real capture step with genuinely empty UIA metadata."""
     if step.element.name:
         target = f"'{step.element.name}'"
     elif step.element.control_type:
         target = f"the {step.element.control_type}"
     else:
-        target = "the screen"
+        return f"Step {n}"
     verb = "Click" if step.action == "click" else "Enter value in"
     return f"Step {n} — {verb} {target}"
+
+
+def toc_lines(manifest, narrative_text):
+    """The document outline as a flat list of display strings: an optional
+    numbered "N.  Overview" line, a numbered "N.  Procedure" line followed
+    by each step's indented heading, and a closing "N.  Revision History"
+    line. Shared by docx_assembler.py and export_pdf.py so their two TOCs
+    can never independently drift out of sync for the same session (adding,
+    renaming, or reordering a section only needs to change here once)."""
+    section = 0
+    lines = []
+    if narrative_text:
+        section += 1
+        lines.append(f"{section}.  Overview")
+    section += 1
+    lines.append(f"{section}.  Procedure")
+    lines.extend(f"      {step_heading(n, step)}" for n, step in enumerate(manifest.steps, 1))
+    section += 1
+    lines.append(f"{section}.  Revision History")
+    return lines
 
 
 def format_doc_date(started_utc):

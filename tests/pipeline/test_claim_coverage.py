@@ -6,6 +6,7 @@ entirely."""
 
 from pipeline.claim_coverage import (
     ensure_claim_coverage,
+    parse_verify_line,
     render_verify_blockquote,
     validate_claim_coverage,
 )
@@ -67,6 +68,25 @@ def test_render_verify_blockquote_format():
     line = render_verify_blockquote(_CLAIMS[0])
     assert line.startswith("> [verify] (claim-001):")
     assert _CLAIMS[0]["text"] in line
+
+
+def test_parse_verify_line_reverses_render_verify_blockquote():
+    """docx_assembler.py and export_pdf.py both style a [verify] line
+    differently from plain narrative text -- they share this parser rather
+    than each independently re-deriving render_verify_blockquote's exact
+    prefix/separator, which could otherwise silently drift out of sync."""
+    line = render_verify_blockquote(_CLAIMS[0])
+    assert parse_verify_line(line) == _CLAIMS[0]["text"]
+
+
+def test_parse_verify_line_returns_none_for_plain_text():
+    assert parse_verify_line("Just a normal narrative sentence.") is None
+    assert parse_verify_line("> A plain blockquote, not a verify marker.") is None
+
+
+def test_parse_verify_line_falls_back_to_unspecified_for_empty_claim_text():
+    assert parse_verify_line("> [verify] (claim-001):") == "(unspecified)"
+    assert parse_verify_line("> [verify] (claim-001):   ") == "(unspecified)"
 
 
 def test_empty_claims_list_always_passes():
