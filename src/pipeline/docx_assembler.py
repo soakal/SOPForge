@@ -2,10 +2,10 @@
 Drives the existing SOPBuilder engine (python-docx-based, VRSI-formatted,
 at C:\\Users\\Brian\\Documents\\SOP_Factory_2\\template\\sop_lib.py) from a
 manifest plus already-rendered step text (task-06/12) and already-annotated
-screenshots (task-10). This module contains none of SOPBuilder's own
-formatting logic — it only calls its public methods in a new order
-specific to a captured SOP session; the engine itself is imported, not
-copied."""
+screenshots (task-10). This module calls the engine's public methods in a
+new order specific to a captured SOP session, plus a thin repo-side layer
+(docx_fields.py) that turns the engine's own plain-text TOC into a real
+Word TOC field without touching the external, unversioned engine file."""
 
 import os
 import sys
@@ -15,6 +15,7 @@ from docx.shared import RGBColor
 
 from pipeline.assembler import step_heading, toc_lines
 from pipeline.claim_coverage import parse_verify_line
+from pipeline.docx_fields import add_toc_field, enable_update_fields_on_open, set_outline_level
 from pipeline.resource_path import resource_path
 
 DEFAULT_SOP_FACTORY_2_DIR = Path(r"C:\Users\Brian\Documents\SOP_Factory_2\template")
@@ -117,20 +118,31 @@ def assemble_docx(
     title = manifest.session.title or manifest.session.id
     sop.title_page(title.upper(), author=author, doc_no=doc_no)
 
-    sop.toc(toc_lines(manifest, narrative_text))
+    # A real Word TOC field (docx_fields.py), not SOPBuilder's own
+    # plain-text toc() -- the cached text is the same toc_lines() would
+    # show either way, but Word can now actually build/update it. Every
+    # heading below is marked with a matching outline level (0 for section
+    # headings, 1 for step headings) since SOPBuilder's heading1/heading2
+    # carry no named Word style for the field's \u switch to key off.
+    add_toc_field(sop, toc_lines(manifest, narrative_text))
 
     if narrative_text:
         sop.heading1("Overview")
+        set_outline_level(sop.doc.paragraphs[-1], 0)
         _narrative_body(sop, narrative_text)
     sop.heading1("Procedure")
+    set_outline_level(sop.doc.paragraphs[-1], 0)
     for n, (step, result) in enumerate(zip(manifest.steps, step_results, strict=True), start=1):
         heading = step_heading(n, step)
         sop.heading2(heading)
+        set_outline_level(sop.doc.paragraphs[-1], 1)
         _step_bullet(sop, step, result)
         if result.get("narration"):
             sop.bullet(f"Narration: {result['narration']}", sub=True)
         sop.image(step.screenshot, caption=heading)
     sop.heading1("Revision History")
+    set_outline_level(sop.doc.paragraphs[-1], 0)
     sop.revision_history([(date, revision, "Initial generation", author)])
+    enable_update_fields_on_open(sop.doc)
     out = sop.save()
     return out, sop.warnings
