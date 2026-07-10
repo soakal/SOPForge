@@ -725,6 +725,62 @@ def test_photo_build_headings_do_not_fabricate_a_click(tmp_path, monkeypatch):
     assert "## Step 2" in md
 
 
+def test_photo_build_canonicalizes_inconsistent_transcript_spelling(tmp_path, monkeypatch):
+    """Regression: a real photo-mode document shipped three different
+    spellings of the same product name ("Hillshire" in the title,
+    "Hilsshier"/"Hilschier" in two step texts) because a raw narration
+    transcript is placed verbatim with no manifest ground truth to
+    round-trip-gate it against (see consistency.py's module docstring).
+    consistency.canonicalize_terms should now merge near-duplicate
+    spellings into one, anchored on the user-typed title when it matches
+    one of the variants."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            (
+                "t.md",
+                b"Step 1: Select the 'Hilsshier Windows 11.7z' archive and click "
+                b"Extract all.\nStep 2: Extract the 'Hilschier Windows 11.7z' "
+                b"archiving file.",
+                "text/markdown",
+            ),
+        ),
+    ]
+    resp = client.post(
+        "/ui/build",
+        data={"title": "Hilschier Driver Install"},
+        files=files,
+        follow_redirects=False,
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Hillshire" not in md
+    assert "Hilsshier" not in md
+    assert md.count("Hilschier") == 3  # title + step 1 + step 2, one consistent spelling
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["consistency"] == [{"canonical": "Hilschier", "variants": ["Hilsshier"]}]
+
+
 def test_add_transcript_to_existing_session_then_rerender(tmp_path):
     """A transcript can be attached from the review page after the fact: POST
     /ui/sessions/{id}/transcript saves it and re-renders, and the narration

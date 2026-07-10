@@ -47,6 +47,7 @@ from PIL import Image
 
 from pipeline import __version__
 from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
+from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import (
     ModelsConfig,
@@ -436,6 +437,7 @@ def create_app(
 
         # A title + one-line overview from the narration (best-effort). Fill the
         # title only if the user didn't provide one, so a UUID never shows.
+        user_title = manifest.session.title
         narrative_text = None
         if narration.strip():
             llm = make_llm_client()
@@ -447,6 +449,26 @@ def create_app(
                     close()
             if gen_title and not manifest.session.title:
                 manifest.session.title = gen_title
+
+        # Photo-mode has no manifest ground truth (element/window names) to
+        # round-trip-gate step text against -- a raw narration transcript is
+        # placed verbatim, and ASR can transcribe the same out-of-vocabulary
+        # proper noun differently each time it's spoken. This can't fix
+        # spelling to be *correct* (no ground truth for that exists here),
+        # only internally *consistent* -- see consistency.py. A user-typed
+        # title is the one real ground truth available, so it anchors the
+        # canonical spelling when one of its words matches a variant.
+        fields = [manifest.session.title or "", narrative_text or ""] + [
+            r["text"] for r in step_results
+        ]
+        canonicalized, consistency_actions = canonicalize_terms(
+            fields, anchor_text=user_title or None
+        )
+        manifest.session.title = canonicalized[0]
+        if narrative_text is not None:
+            narrative_text = canonicalized[1]
+        for step_result, canonical_text in zip(step_results, canonicalized[2:]):
+            step_result["text"] = canonical_text
 
         verify_claims = (placement_meta or {}).get("verify_claims", [])
         report = {
@@ -465,6 +487,8 @@ def create_app(
             }
         if vision_note:
             report["vision"] = vision_note
+        if consistency_actions:
+            report["consistency"] = consistency_actions
         _write_all_exports(
             session_id,
             manifest,

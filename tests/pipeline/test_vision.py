@@ -36,6 +36,28 @@ def test_caption_images_returns_one_caption_per_image(tmp_path):
     assert len(seen) == 2  # one call per image
 
 
+def test_prompt_instructs_spelling_on_screen_text_over_narration(tmp_path):
+    """See consistency.py: a raw narration transcript can spell an
+    out-of-vocabulary proper noun differently each time (ASR homophone
+    drift). Vision captioning reads the actual on-screen pixels, so it
+    should be told to trust what's shown over what the narrator said."""
+    imgs = [_png(tmp_path, "1.png")]
+    seen = []
+
+    def handler(request):
+        seen.append(request.read().decode())
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Do the thing."}}]})
+
+    caption_images(
+        imgs,
+        "narration mentioning a product name",
+        "http://x/v1",
+        "m",
+        transport=httpx.MockTransport(handler),
+    )
+    assert "spell it exactly as shown in the image" in seen[0]
+
+
 def test_caption_failure_returns_none_for_that_image(tmp_path):
     imgs = [_png(tmp_path, "1.png")]
 

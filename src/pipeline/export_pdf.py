@@ -110,7 +110,14 @@ def _bullet(pdf, text):
     pdf.set_font(pdf._font_family, "", 11)
     pdf.set_text_color(*_INK)
     x = pdf.get_x()
-    pdf.cell(6, 6, chr(149))  # bullet dot
+    # DejaVu (a real Unicode font) has a native glyph for the actual bullet
+    # character; the core-font Helvetica fallback only supports Latin-1
+    # (0-255), which the bullet's real codepoint (U+2022) is outside of --
+    # chr(149) is the historical trick there: byte 0x95 encodes fine within
+    # Latin-1's range, and fpdf2's built-in Helvetica glyph table happens to
+    # render it as a bullet (same cp1252 mapping Windows uses for that byte).
+    bullet_char = "•" if pdf._font_family != "Helvetica" else chr(149)
+    pdf.cell(6, 6, bullet_char)
     pdf.set_x(x + 6)
     pdf.multi_cell(0, 6, _safe_text(text, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
 

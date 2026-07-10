@@ -91,6 +91,31 @@ def test_pdf_contains_verify_blockquote_claim_text(tmp_path):
     assert "claim-001" not in text
 
 
+def test_bullet_marker_uses_a_real_glyph_dejavu_can_render(tmp_path, caplog):
+    """Regression: the bullet marker used to be chr(149) ('\\x95', a control
+    character with no printable glyph in Unicode) which only ever looked
+    like a bullet because fpdf2's old core Helvetica font decoded it via
+    cp1252 (where byte 0x95 happens to display as '•'). Since DejaVu
+    (a real Unicode TTF) was wired in, that stopped working -- fpdf2 logs a
+    "missing glyph" warning and the bullet doesn't render. Must be a real
+    '•' character instead, which DejaVu actually has a glyph for."""
+    import logging
+
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    step_results, annotated_paths = render_steps_template_mode(manifest, screenshots, annotated)
+
+    output_path = tmp_path / "out.pdf"
+    with caplog.at_level(logging.WARNING):
+        render_pdf(manifest, step_results, annotated_paths, output_path)
+
+    assert not any("missing" in record.message.lower() for record in caplog.records)
+    text = _extract_text(output_path)
+    assert "•" in text
+
+
 def test_pdf_export_never_crashes_on_non_latin1_text(tmp_path):
     """Speech-transcribed claim text can realistically contain characters
     outside fpdf2's core-font Latin-1 support (curly quotes, accents,

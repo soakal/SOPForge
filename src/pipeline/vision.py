@@ -30,7 +30,9 @@ def _prompt(narration, index, total):
         f"{context}This is step {index} of {total} in the procedure. Looking at the "
         "screenshot, write 1-2 short imperative sentences telling the reader exactly what to "
         "do at this step. Be specific to what is shown on screen. Do not mention the words "
-        "'screenshot' or 'step', and do not number it."
+        "'screenshot' or 'step', and do not number it. If a file name, product name, or other "
+        "proper noun is visible on screen, spell it exactly as shown in the image, even if the "
+        "narrator's description above spells it differently."
     )
 
 
