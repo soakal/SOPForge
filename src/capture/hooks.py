@@ -82,8 +82,9 @@ class InputRecorder:
         if not pressed:
             return
         self._flush_typing()
-        self._last_pos = (x, y)
-        self._has_clicked = True
+        with self._lock:
+            self._last_pos = (x, y)
+            self._has_clicked = True
         self.on_event(
             {
                 "action": "click",
@@ -162,11 +163,26 @@ class InputRecorder:
 
     def stop(self):
         """Stops and *joins* both listener threads (pynput's Listener is a
-        threading.Thread subclass) so that by the time stop() returns, no
-        on_click/on_press callback can still be executing — a caller (e.g.
-        Recorder.stop()) that finalizes state right after this call is
-        guaranteed there's no in-flight event that could still mutate it."""
-        self._flush_typing()
+        threading.Thread subclass) FIRST, then flushes any typing burst that
+        was in progress — so by the time stop() returns, no on_click/on_press
+        callback can still be executing (a caller like Recorder.stop() that
+        finalizes state right after this call is guaranteed there's no
+        in-flight event that could still mutate it) AND no keystroke can have
+        armed an idle timer stop() doesn't know about.
+
+        Flushing first (the original order) left exactly that gap: a
+        keystroke landing between the flush and the listeners actually being
+        stopped would start a brand-new burst and arm a fresh idle timer that
+        nothing then cancels. Recorder.stop() calls this method, then
+        immediately enqueues its own stop sentinel on the assumption that no
+        more events can be enqueued afterward — but that orphaned timer would
+        still fire ~type_flush_idle seconds later and enqueue a "type" event
+        into an already-drained, dead queue, silently dropping the final
+        typing burst. Stopping the listeners first closes the race: pynput
+        guarantees no callback is still executing or can run again once
+        `.join()` returns, so any keystroke that snuck in during teardown has
+        already fully completed (including arming its timer) by the time the
+        final `_flush_typing()` below runs and catches it."""
         listeners = [
             listener
             for listener in (self._mouse_listener, self._keyboard_listener)
@@ -176,3 +192,4 @@ class InputRecorder:
             listener.stop()
         for listener in listeners:
             listener.join()
+        self._flush_typing()

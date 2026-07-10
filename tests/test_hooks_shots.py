@@ -11,6 +11,7 @@ actually hit disk), but the underlying mss session is faked too — real GDI
 BitBlt capture also fails on this VM (see uia-notes.md) and is unverified
 here; it needs a normal desktop session to confirm."""
 
+import threading
 import time
 
 from pynput import keyboard, mouse
@@ -218,6 +219,100 @@ def test_stop_cancels_idle_timer_and_emits_no_late_event():
     assert [e["action"] for e in events] == ["type"]
     time.sleep(0.4)
     assert [e["action"] for e in events] == ["type"]  # no late/duplicate flush after stop()
+
+
+def test_stop_flushes_only_after_joining_both_listeners():
+    """Regression: stop() used to flush BEFORE stopping/joining the
+    listeners, leaving a window where a keystroke landing in that gap could
+    start a fresh burst and arm an idle timer nothing then cancelled -- an
+    orphaned timer that would fire after Recorder.stop() had already
+    finalized the manifest, silently dropping the final typing burst.
+    Verifies the fixed call order directly (flush strictly after both
+    listeners are stopped and joined) rather than relying on a real,
+    hard-to-trigger timing race against actual pynput listener threads."""
+    recorder = InputRecorder(on_event=lambda e: None)
+    recorder.start()
+    call_order = []
+
+    real_flush = recorder._flush_typing
+
+    def tracking_flush():
+        call_order.append("flush")
+        return real_flush()
+
+    recorder._flush_typing = tracking_flush
+
+    def make_stop(rs, name):
+        def _stop():
+            call_order.append(f"{name}.stop")
+            return rs()
+
+        return _stop
+
+    def make_join(rj, name):
+        def _join(*a, **kw):
+            call_order.append(f"{name}.join")
+            return rj(*a, **kw)
+
+        return _join
+
+    for listener_attr in ("_mouse_listener", "_keyboard_listener"):
+        listener = getattr(recorder, listener_attr)
+        listener.stop = make_stop(listener.stop, listener_attr)
+        listener.join = make_join(listener.join, listener_attr)
+
+    recorder.stop()
+
+    assert "flush" in call_order
+    flush_index = call_order.index("flush")
+    assert flush_index == len(call_order) - 1  # flush is strictly the last call
+    assert all(entry.endswith(".stop") or entry.endswith(".join") for entry in call_order[:-1])
+
+
+def test_on_click_writes_last_pos_and_has_clicked_under_the_lock():
+    """Regression: _on_click used to write _last_pos/_has_clicked WITHOUT
+    holding _lock, while _on_press reads both under the lock (runs on a
+    different OS thread, pynput's keyboard-listener thread) -- a narrow but
+    real cross-thread race, especially on the very first click of a session.
+    Verifies the writes now happen while the lock is held by swapping in a
+    Lock subclass that records whether it was held during each write."""
+
+    class _TrackingLock:
+        def __init__(self):
+            self._real = threading.Lock()
+            self.held_during_write = []
+
+        def __enter__(self):
+            self._real.acquire()
+            return self
+
+        def __exit__(self, *exc_info):
+            self._real.release()
+            return False
+
+        def locked(self):
+            return self._real.locked()
+
+    recorder = InputRecorder(on_event=lambda e: None)
+    tracking_lock = _TrackingLock()
+    recorder._lock = tracking_lock
+
+    orig_setattr = InputRecorder.__setattr__
+
+    class _Recorder(InputRecorder):
+        def __setattr__(self, name, value):
+            if (
+                name in ("_last_pos", "_has_clicked")
+                and getattr(self, "_lock", None) is tracking_lock
+            ):
+                tracking_lock.held_during_write.append(tracking_lock.locked())
+            orig_setattr(self, name, value)
+
+    recorder.__class__ = _Recorder
+    recorder._on_click(50, 60, mouse.Button.left, True)
+
+    assert tracking_lock.held_during_write  # the writes actually happened
+    assert all(tracking_lock.held_during_write)  # ... and every one was under the lock
 
 
 def test_type_event_ts_anchors_to_burst_start_not_flush_time():
