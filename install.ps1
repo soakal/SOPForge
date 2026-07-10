@@ -373,6 +373,15 @@ $ServerArgs = "--port $Port --sessions-root `"$SessionsRoot`""
 $CaptureExe = Join-Path $CaptureInstallPath "sopforge.exe"
 
 $StartupShortcuts = @()
+# Tracks, per task name, whether Register-Autostart actually registered a
+# FRESH scheduled task THIS run (Register-ScheduledTask -Force rewrites the
+# action with this run's current -Port/-SessionsRoot -- so this is true only
+# when that call succeeded). A task by the right name existing at the right
+# install path is NOT enough to trust starting it via Start-ScheduledTask
+# later: if registration failed this run and fell back to a shortcut, a
+# task from a PRIOR run at this same -InstallPath can still be sitting there
+# with STALE arguments, and Start-InstalledApp must not start THAT one.
+$TaskRegisteredThisRun = @{}
 if ($AutostartEffective) {
     # Each entry is attempted independently -- the base install (files +
     # config, above) already succeeded regardless of what happens here, and
@@ -380,9 +389,11 @@ if ($AutostartEffective) {
     # other from being attempted.
     $ServerShortcut = Register-Autostart -TaskName $ServerTaskName -Exe $ServerExe `
         -Arguments $ServerArgs -OwnInstallPath $InstallPath
+    $TaskRegisteredThisRun[$ServerTaskName] = -not $ServerShortcut
     if ($ServerShortcut) { $StartupShortcuts += $ServerShortcut }
 
     $CaptureShortcut = Register-Autostart -TaskName $CaptureTaskName -Exe $CaptureExe -Arguments $null -OwnInstallPath $InstallPath
+    $TaskRegisteredThisRun[$CaptureTaskName] = -not $CaptureShortcut
     if ($CaptureShortcut) { $StartupShortcuts += $CaptureShortcut }
 }
 
@@ -442,17 +453,21 @@ function Start-InstalledApp {
     )
     try {
         # Only trust a same-name/same-path task when THIS run's own
-        # Register-Autostart just (re-)registered it -- Register-ScheduledTask
-        # -Force there always rewrites the action with this run's current
-        # -Port/-SessionsRoot, so ownership by itself isn't enough: if
-        # -NoAutostart was passed, an existing task from a PRIOR run at this
-        # same -InstallPath could still be sitting there with STALE
-        # arguments (an old port/sessions root), and starting it would
-        # silently bring up the wrong config instead of what this run asked
-        # for. $AutostartEffective gates that: no autostart branch ran this
-        # time -> never start via a task, fall through to a direct launch
-        # with this run's own arguments instead.
-        if ($AutostartEffective -and (Test-TaskOwnedByThisInstall -TaskName $TaskName -OwnInstallPath $InstallPath)) {
+        # Register-Autostart call actually registered it fresh --
+        # Register-ScheduledTask -Force always rewrites the action with this
+        # run's current -Port/-SessionsRoot, so a task existing at the right
+        # path is NOT enough by itself: if registration failed this run
+        # (Task Scheduler policy block) and fell back to a shortcut, a task
+        # from a PRIOR run at this same -InstallPath can still be sitting
+        # there with STALE arguments (an old port/sessions root) -- starting
+        # THAT one would silently bring up the wrong config. $TaskRegistered
+        # ThisRun is set only when Register-Autostart's own return value
+        # said registration succeeded; Test-TaskOwnedByThisInstall is kept
+        # as a second, independent check (it re-queries live Task Scheduler
+        # state) so a total registration+fallback failure -- where
+        # Register-Autostart also returns falsy but nothing was actually
+        # created -- can't be misread as "safe to start".
+        if ($TaskRegisteredThisRun[$TaskName] -and (Test-TaskOwnedByThisInstall -TaskName $TaskName -OwnInstallPath $InstallPath)) {
             Start-ScheduledTask -TaskName $TaskName
             Write-Output "Started '$TaskName'."
             return
@@ -463,26 +478,74 @@ function Start-InstalledApp {
             Write-Output "Started '$TaskName' via its Startup-folder shortcut."
             return
         }
-        if ($Arguments) {
-            Start-Process -FilePath $Exe -ArgumentList $Arguments | Out-Null
+        if (Test-IsElevated) {
+            # De-elevate via a temporary shortcut launched through
+            # explorer.exe -- explorer.exe always runs at the user's own
+            # integrity level even when this installer process is
+            # UAC-elevated, the same technique the Startup-shortcut branch
+            # above already relies on. Without this, a plain Start-Process
+            # here would run the app with the elevated admin token -- e.g.
+            # creating session directories the user's own later unelevated
+            # launches can't write into (the exact upload-500s failure mode
+            # the sessions-root design otherwise prevents).
+            $TempShortcutPath = Join-Path $env:TEMP "sopforge-start-$([guid]::NewGuid().ToString('N').Substring(0, 8)).lnk"
+            try {
+                $TempShortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($TempShortcutPath)
+                $TempShortcut.TargetPath = $Exe
+                if ($Arguments) { $TempShortcut.Arguments = $Arguments }
+                $TempShortcut.Save()
+                Start-Process -FilePath "explorer.exe" -ArgumentList "`"$TempShortcutPath`""
+                Write-Output "Started '$TaskName' directly (de-elevated)."
+            } finally {
+                # Give explorer.exe a moment to read the shortcut before
+                # deleting it.
+                Start-Sleep -Milliseconds 500
+                Remove-Item -Path $TempShortcutPath -Force -ErrorAction SilentlyContinue
+            }
         } else {
-            Start-Process -FilePath $Exe | Out-Null
+            if ($Arguments) {
+                Start-Process -FilePath $Exe -ArgumentList $Arguments | Out-Null
+            } else {
+                Start-Process -FilePath $Exe | Out-Null
+            }
+            Write-Output "Started '$TaskName' directly."
         }
-        Write-Output "Started '$TaskName' directly."
     } catch {
         Write-Warning "Could not start '$TaskName' after install: $_"
         Write-Warning "It will still start automatically at next logon (if autostart is enabled), or launch $Exe by hand."
     }
 }
 
+function Wait-ForHealthy([int]$Port, [int]$TimeoutSeconds = 8) {
+    $Deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $Deadline) {
+        try {
+            $Response = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/" -UseBasicParsing -TimeoutSec 2
+            if ($Response.StatusCode -eq 200) { return $true }
+        } catch {}
+        Start-Sleep -Milliseconds 200
+    }
+    return $false
+}
+
 if (-not $NoStart) {
     Start-InstalledApp -TaskName $ServerTaskName -Exe $ServerExe -Arguments $ServerArgs -ShortcutName "$ServerTaskName.lnk"
-    # A short, best-effort head start for the server so an immediate first
-    # recording's auto-upload (capture.upload) has a better chance of landing
-    # -- not a hard dependency (capture never calls the server at startup,
-    # only on session stop, and that call has its own 10s timeout), just a
-    # nicety.
-    Start-Sleep -Milliseconds 500
+    # A real health check, not a blind sleep: on an upgrade-in-place, the
+    # server was just killed a few hundred ms ago (see the stop-before-copy
+    # block above) and a socket that hasn't fully released yet makes the new
+    # instance fail to bind and exit silently (CLAUDE.md's "Operational
+    # procedures" documents exactly this). Polling for an actual 200 catches
+    # that instead of reporting "Started" regardless, and also gives an
+    # immediate first recording's auto-upload (capture.upload) a real head
+    # start rather than a fixed guess -- still best-effort, not a hard
+    # dependency (capture only calls the server on session stop, with its
+    # own 10s timeout, so a slow/failed server here doesn't block Capture).
+    $HealthCheckTimeoutSeconds = 8
+    if (Wait-ForHealthy -Port $Port -TimeoutSeconds $HealthCheckTimeoutSeconds) {
+        Write-Output "Server is responding on port $Port."
+    } else {
+        Write-Warning "Server did not respond on port $Port within ${HealthCheckTimeoutSeconds}s -- it may have failed to bind (see CLAUDE.md's port-rebind note) or is still starting. Check Task Manager, or start it manually: $ServerExe $ServerArgs"
+    }
     Start-InstalledApp -TaskName $CaptureTaskName -Exe $CaptureExe -Arguments $null -ShortcutName "$CaptureTaskName.lnk"
 }
 
