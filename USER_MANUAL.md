@@ -24,7 +24,13 @@ you record and stop, and the doc just appears; no manual steps in between:**
    factual fallback if the LLM is unavailable or produces something inaccurate.
 4. The result is assembled into **docx** (using the SOP Factory 2 / VRSI
    formatting engine), **PDF**, a **self-contained single-file HTML**, and an
-   **Obsidian-compatible Markdown bundle** (`.md` + `images/`).
+   **Obsidian-compatible Markdown bundle** (`.md` + `images/`) — every format
+   with a real title page (document number, author, revision, the session's
+   actual date — see §7), a table of contents, and a descriptive heading per
+   step (e.g. "Step 3 — Click 'Save'") instead of a bare step number. Each
+   step's screenshot is cropped to the clicked element's neighborhood rather
+   than the full (possibly multi-monitor) desktop, with a click marker sized
+   to the image resolution.
 5. **Your browser opens automatically** to the finished doc's review page —
    preview it, check the sidecar report, download whatever format you need.
 
@@ -62,12 +68,15 @@ appear; accept it** to continue. Pass an `-InstallPath` you already own
 (e.g. `-InstallPath "$env:LOCALAPPDATA\SOPForge"`) to install without
 needing administrator rights at all — no UAC prompt appears in that case.
 
-This copies both EXEs and — autostart being
-on by default — registers **two** per-user scheduled tasks: one that
-launches the server at logon, and one that launches the capture agent
-(tray icon) at logon too, so after signing in, recording is just a hotkey
-away and the doc-generation server is already running — genuinely nothing
-to manually start. Pass `-NoAutostart` to skip this. Autostart is
+This copies both EXEs, **starts both apps immediately** (no reboot or
+re-sign-in needed to use SOPForge right after installing), and —
+autostart being on by default — registers **two** per-user scheduled
+tasks: one that launches the server at logon, and one that launches the
+capture agent (tray icon) at logon too, so after every future sign-in,
+recording is just a hotkey away and the doc-generation server is
+already running — genuinely nothing to manually start. Pass
+`-NoAutostart` to skip registering autostart for future logons (the apps
+still start once, immediately, for this session). Autostart is
 **self-healing**: some machines/accounts restrict `AtLogOn`-triggered
 scheduled task registration even without elevation, and when that happens,
 `install.ps1` automatically falls back to creating a Startup-folder shortcut
@@ -296,7 +305,7 @@ in `keep`.
 | `GET` | `/sessions/{id}/doc.md` | Markdown, relative image paths. |
 | `GET` | `/sessions/{id}/doc.html` | HTML, relative image paths (served alongside it, so it previews correctly). |
 | `GET` | `/sessions/{id}/doc.docx` | The assembled docx (VRSI/SOP Factory 2 formatting). |
-| `GET` | `/sessions/{id}/doc.pdf` | PDF, mirroring the docx structure (title page, per-step headings/bullets/narration/screenshots, revision history). |
+| `GET` | `/sessions/{id}/doc.pdf` | PDF, mirroring the docx structure (title page, table of contents, per-step headings/bullets/narration/screenshots, revision history). Renders with a bundled Unicode font (DejaVu Sans) so curly quotes, em dashes, and accented characters from transcripts/narration display correctly instead of being mangled. |
 | `GET` | `/sessions/{id}/doc.single.html` | Self-contained single-file HTML (images inlined as base64) — safe to email or move anywhere. |
 | `GET` | `/sessions/{id}/export.md.zip` | The Markdown bundle (`.md` + `images/`) zipped up. |
 | `GET` | `/sessions/{id}/review` | A plain-HTML page rendering just the sidecar report. |
@@ -384,11 +393,20 @@ configured endpoint is unreachable, the API key is missing, or the reply
 doesn't hold up, that one step falls back to the template automatically.
 Nothing ever retries, and a single broken/unreachable LLM can never take
 down doc generation. An uploaded transcript (§5) is placed verbatim under
-each step by label/order or timestamp — that's live. The separate
-atomic-claim-extraction narrative path (extracting timestamped claims and
-flagging any that don't appear in generated narrative text as `[verify]`
-blockquotes) isn't wired into the live server yet, so `verify_claims` in the
-sidecar report (§6) is always empty for now.
+each step by label/order or timestamp — that's live. For an unstructured
+transcript with no labels/blank lines to split on, the semantic
+placement + polish pipeline (§5) can flag content it can't confirm
+survived a rewrite as a `[verify]` blockquote — that's what populates
+`verify_claims` in the sidecar report (§6).
+
+By default, step-text generation is **sequential** — one LLM call at a
+time. If your Ollama server has multiple GPUs and is tuned for
+concurrent requests (`OLLAMA_NUM_PARALLEL` set on the Ollama host — see
+§7), you can raise `[steps] max_concurrency` (Configuration page or
+`config/models.toml`) to dispatch more than one step's generation at
+once. Off (`1`) by default: against an untuned single-slot Ollama
+server, raising it just queues requests and risks a queued step's own
+timeout expiring into a template fallback it didn't need.
 
 ---
 
@@ -410,7 +428,9 @@ system fonts, no external assets — works fully offline).
   a screenshots+transcript build is submitted), before any document is
   generated. A checklist of every captured step — a thumbnail, the action,
   the window/element it was on, and an editable **Position** number — checked
-  by default. Uncheck any wrong or accidental clicks to drop them, and/or edit
+  by default. Click a thumbnail to see it full size (up to 95% of your
+  screen) before deciding — close with the ✕, click outside it, or press
+  Escape. Uncheck any wrong or accidental clicks to drop them, and/or edit
   a step's position number to move it — decimals work too (type "2.5" to
   insert a step between steps 2 and 3 without renumbering anything else).
   Hit **Keep selected steps & generate document** to apply both the drops and
@@ -434,8 +454,14 @@ system fonts, no external assets — works fully offline).
   console.docx`, not a generic `doc.docx`), and a read-only panel showing
   the current `config/models.toml`.
 
-No JavaScript is required — the search box, upload form, transcript form,
-re-render button, and delete button are all plain HTML forms.
+No JavaScript is required for the core workflow — the search box, upload
+form, transcript form, re-render button, and delete button are all plain
+HTML forms. Two pages use a small, deliberate amount of JS as a
+progressive enhancement (documented "considered exceptions," not a
+framework or build step): the Configuration page's model-suggestion
+dropdowns (§7), and the steps-review page's click-to-enlarge screenshot
+preview — the checklist/reorder/submit all still work with JavaScript
+disabled, you just lose the zoom.
 
 ### Adding narration with a transcript
 
@@ -544,16 +570,26 @@ The easiest way to configure which AI you use is the **Configuration page**:
 open the tray icon → **Configuration** (or go to `http://127.0.0.1:8420/ui/config`,
 or the **Configuration** link on the library page).
 
-It has three simple rows — **Steps**, **Narration**, **Vision** — each with a
-**provider** dropdown and a **model** box. The model box is a suggestion
-dropdown (native browser autocomplete; a small bit of JavaScript makes the
-suggestions follow whichever provider you've selected, and clears-on-focus so
-you see every option instead of just the field's current value — the page
-still fully works with JavaScript disabled, you just lose that convenience
-and see the currently-configured provider's suggestions instead).
-Suggestions follow the selected provider. It still accepts any typed model
-name — needed for Ollama's arbitrary local pull names, or any model not yet
-in the list.
+It has three model-routing rows — **Steps**, **Narration**, **Vision** —
+each with a **provider** dropdown and a **model** box. The model box is a
+suggestion dropdown (native browser autocomplete; a small bit of JavaScript
+makes the suggestions follow whichever provider you've selected, and
+clears-on-focus so you see every option instead of just the field's
+current value — the page still fully works with JavaScript disabled, you
+just lose that convenience and see the currently-configured provider's
+suggestions instead). Suggestions follow the selected provider. It still
+accepts any typed model name — needed for Ollama's arbitrary local pull
+names, or any model not yet in the list.
+
+**Steps** and **Vision** also have a **Max concurrency** field — how many
+LLM/vision calls that section dispatches at once (see §4 for what this
+actually does and why it defaults to `1`/off).
+
+A separate **Document** card sets the metadata stamped on every generated
+SOP's title page and revision table: **Author** (defaults to "SOPForge")
+and a **Document number prefix** (e.g. "SOP" — combined with a short
+per-session suffix to make each document's number, like "SOP-A1B2"; leave
+it blank to omit the document number line entirely rather than invent one).
 
 - **ollama** (default): a local, private model server — nothing leaves your
   network, no API key. Set the endpoint to your Ollama server.
@@ -626,7 +662,9 @@ form posts.
   `phases/DEVIATIONS.md`); only the rare case of both being blocked needs a
   manual step. The server always works fine launched manually regardless.
 - `POST /sessions` processes each session on a single background worker
-  thread — sessions queue and run one at a time, not in parallel.
+  thread — sessions queue and run one at a time, not in parallel (this is
+  separate from `[steps] max_concurrency`, §7, which controls parallelism
+  *within* one session's own step generation, not across sessions).
 - Auto-upload (§3) only fires if the server is reachable at the moment you
   stop recording — it doesn't retry later or queue for when the server comes
   back up. If it fails, use the library page's upload form (§5) once the
