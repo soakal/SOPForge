@@ -7,9 +7,11 @@ from pathlib import Path
 
 from PIL import Image
 
+from pipeline.generation import _build_prompt
 from pipeline.manifest import load_manifest
 from pipeline.render import render_steps_llm_mode
 from pipeline.template import render_step_template
+from pipeline.vision import _image_data_url
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 
@@ -83,3 +85,57 @@ def test_llm_mode_step_ids_match_manifest_order(tmp_path):
     step_results, _annotated_paths = render_steps_llm_mode(manifest, screenshots, annotated, client)
 
     assert [r["step_id"] for r in step_results] == [s.id for s in manifest.steps]
+
+
+def test_llm_mode_default_use_vision_sends_plain_string_content(tmp_path):
+    """use_vision defaults to False all the way through render_steps_llm_mode
+    -- every recorded call's content must stay the plain prompt string,
+    byte-identical to the pre-vision call, not the two-block vision list."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    steps = list(manifest.steps)
+
+    client = _RecordingClient(lambda idx: "irrelevant reply triggering fallback")
+    render_steps_llm_mode(manifest, screenshots, annotated, client)
+
+    assert len(client.calls) == len(manifest.steps)
+    for call, step in zip(client.calls, steps):
+        content = call[0]["content"]
+        assert isinstance(content, str)
+        assert content == _build_prompt(step)
+
+
+def test_llm_mode_use_vision_true_sends_multipart_content_with_real_screenshots(tmp_path):
+    """use_vision=True, with real screenshot files already on disk at
+    screenshot_dir (render_steps_llm_mode's own screenshot_dir param, not a
+    separate arg) -- every recorded call's content must be the two-block
+    [text, image_url] list end-to-end through generate_all_steps."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    steps = list(manifest.steps)
+
+    def realistic_reply(idx):
+        step = steps[idx]
+        target = step.element.name or step.element.control_type or "the field"
+        window = step.window.title or "the window"
+        verb = "Click" if step.action == "click" else "Enter a value into"
+        return f"{verb} {target} in {window}."
+
+    client = _RecordingClient(realistic_reply)
+    step_results, _annotated_paths = render_steps_llm_mode(
+        manifest, screenshots, annotated, client, use_vision=True
+    )
+
+    assert len(client.calls) == len(manifest.steps)
+    assert all(not r["used_fallback"] for r in step_results)
+    for call, step in zip(client.calls, steps):
+        content = call[0]["content"]
+        screenshot_path = screenshots / step.screenshot
+        assert content == [
+            {"type": "text", "text": _build_prompt(step)},
+            {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+        ]

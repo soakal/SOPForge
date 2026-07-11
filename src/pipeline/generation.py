@@ -100,12 +100,21 @@ def generate_step_text(step, llm_client, use_vision=False, screenshot_dir=None):
     return reply, False
 
 
-def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1):
+def generate_all_steps(
+    manifest,
+    llm_client,
+    on_progress=None,
+    max_concurrency=1,
+    use_vision=False,
+    screenshot_dir=None,
+):
     """Returns [{"step_id", "text", "used_fallback"}, ...] in manifest order
     — one generation attempt per step, invariant L1's 1:1 mapping preserved
     regardless of max_concurrency. `on_progress`, if given, is called as
     `on_progress(completed, total)` after each step so a caller (e.g. the
     session's job status) can report how far along a long generation run is.
+    `use_vision`/`screenshot_dir` are forwarded straight through to
+    generate_step_text (off by default -- see its docstring).
 
     max_concurrency=1 (default) keeps the original strictly sequential loop
     — safest against an Ollama instance that isn't tuned for concurrent
@@ -120,7 +129,9 @@ def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1
     if max_concurrency <= 1 or total <= 1:
         results = []
         for i, step in enumerate(manifest.steps, start=1):
-            text, used_fallback = generate_step_text(step, llm_client)
+            text, used_fallback = generate_step_text(
+                step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir
+            )
             results.append({"step_id": step.id, "text": text, "used_fallback": used_fallback})
             if on_progress:
                 on_progress(i, total)
@@ -129,7 +140,13 @@ def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1
     results = [None] * total
     with ThreadPoolExecutor(max_workers=min(max_concurrency, total)) as pool:
         futures = {
-            pool.submit(generate_step_text, step, llm_client): (i, step)
+            pool.submit(
+                generate_step_text,
+                step,
+                llm_client,
+                use_vision=use_vision,
+                screenshot_dir=screenshot_dir,
+            ): (i, step)
             for i, step in enumerate(manifest.steps)
         }
         done = 0

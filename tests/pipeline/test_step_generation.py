@@ -353,6 +353,99 @@ def test_concurrency_cap_respected():
     assert client.peak_in_flight <= 3
 
 
+class _VisionRecordingClient:
+    """Thread-safe stub that records every call's raw content (str or the
+    two-block vision list) and replies realistically -- used to prove
+    use_vision/screenshot_dir reach generate_step_text through BOTH of
+    generate_all_steps' code paths, sequential and ThreadPool."""
+
+    def __init__(self, reply_for_name):
+        self.reply_for_name = reply_for_name
+        self._lock = threading.Lock()
+        self.calls = []
+
+    def chat(self, messages, **kwargs):
+        content = messages[0]["content"]
+        text = content[0]["text"] if isinstance(content, list) else content
+        name = next(n for n in self.reply_for_name if n in text)
+        with self._lock:
+            self.calls.append(content)
+        return self.reply_for_name[name]
+
+
+def test_generate_all_steps_forwards_use_vision_sequential_path(tmp_path):
+    """max_concurrency=1 (default) is the sequential loop -- use_vision=True
+    plus real screenshots on disk must reach generate_step_text there too."""
+    manifest = _make_manifest(4)
+    for step in manifest.steps:
+        (tmp_path / step.screenshot).write_bytes(b"fake-png-bytes-for-test")
+    reply_for_name = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+    client = _VisionRecordingClient(reply_for_name)
+
+    results = generate_all_steps(manifest, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert len(client.calls) == len(manifest.steps)
+    assert all(not r["used_fallback"] for r in results)
+    for step, content in zip(manifest.steps, client.calls):
+        screenshot_path = tmp_path / step.screenshot
+        assert content == [
+            {"type": "text", "text": _build_prompt(step)},
+            {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+        ]
+
+
+def test_generate_all_steps_forwards_use_vision_concurrent_pool_path(tmp_path):
+    """max_concurrency>1 dispatches through the ThreadPool pool.submit path --
+    the easy mistake this guards against is wiring use_vision/screenshot_dir
+    into only the sequential branch and forgetting this one."""
+    manifest = _make_manifest(6)
+    for step in manifest.steps:
+        (tmp_path / step.screenshot).write_bytes(b"fake-png-bytes-for-test")
+    reply_for_name = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+    client = _VisionRecordingClient(reply_for_name)
+
+    results = generate_all_steps(
+        manifest, client, max_concurrency=3, use_vision=True, screenshot_dir=tmp_path
+    )
+
+    assert [r["step_id"] for r in results] == [s.id for s in manifest.steps]
+    assert len(client.calls) == len(manifest.steps)
+    assert all(not r["used_fallback"] for r in results)
+    for call in client.calls:
+        assert isinstance(call, list)
+        assert call[0]["type"] == "text"
+        assert call[1]["type"] == "image_url"
+    for step in manifest.steps:
+        screenshot_path = tmp_path / step.screenshot
+        expected = [
+            {"type": "text", "text": _build_prompt(step)},
+            {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+        ]
+        assert expected in client.calls
+
+
+def test_generate_all_steps_use_vision_default_false_stays_plain_string_concurrent(tmp_path):
+    """use_vision defaults to False even when max_concurrency>1 -- the
+    ThreadPool path must stay byte-identical to the pre-vision call."""
+    manifest = _make_manifest(4)
+    for step in manifest.steps:
+        (tmp_path / step.screenshot).write_bytes(b"fake-png-bytes-for-test")
+    reply_for_name = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+    client = _VisionRecordingClient(reply_for_name)
+
+    generate_all_steps(manifest, client, max_concurrency=3)
+
+    assert len(client.calls) == len(manifest.steps)
+    for call in client.calls:
+        assert isinstance(call, str)
+
+
 def test_default_is_sequential():
     manifest = _make_manifest(5)
     client = _StaggeredClient({step.element.name: 0.01 for step in manifest.steps})

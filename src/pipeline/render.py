@@ -60,7 +60,13 @@ def render_steps_template_mode(manifest, screenshot_dir, annotated_dir):
 
 
 def render_steps_llm_mode(
-    manifest, screenshot_dir, annotated_dir, llm_client, on_progress=None, max_concurrency=1
+    manifest,
+    screenshot_dir,
+    annotated_dir,
+    llm_client,
+    on_progress=None,
+    max_concurrency=1,
+    use_vision=False,
 ):
     """Renders every manifest step via the LLM with a round-trip gate and
     per-step template fallback (task-06's generate_all_steps — one
@@ -70,9 +76,17 @@ def render_steps_llm_mode(
     render_steps_template_mode's plain {"step_id", "text"} shape.
     `on_progress`, if given, is passed straight through to generate_all_steps.
     `max_concurrency` is passed straight through too — see generate_all_steps'
-    own docstring for what it does and why it defaults to 1."""
+    own docstring for what it does and why it defaults to 1. `use_vision`
+    (off by default) is forwarded to generate_all_steps along with this
+    function's own `screenshot_dir` param, so a step's own screenshot is what
+    gets attached when vision is on."""
     step_results = generate_all_steps(
-        manifest, llm_client, on_progress=on_progress, max_concurrency=max_concurrency
+        manifest,
+        llm_client,
+        on_progress=on_progress,
+        max_concurrency=max_concurrency,
+        use_vision=use_vision,
+        screenshot_dir=screenshot_dir,
     )
     annotated_paths = _annotate_all(manifest, screenshot_dir, annotated_dir)
     return step_results, annotated_paths

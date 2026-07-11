@@ -340,6 +340,7 @@ def create_app(
         # unreachable, or Anthropic routing is on with no API key, or the
         # reply doesn't hold up, that step just falls back; nothing here
         # ever retries.
+        models_cfg = load_models_config(resolved_config_path)
         llm_client = make_llm_client()
         try:
             step_results, annotated_paths = render_steps_llm_mode(
@@ -348,7 +349,8 @@ def create_app(
                 annotated_dir,
                 llm_client,
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
-                max_concurrency=load_models_config(resolved_config_path).steps.max_concurrency,
+                max_concurrency=models_cfg.steps.max_concurrency,
+                use_vision=models_cfg.steps.use_vision,
             )
         finally:
             close = getattr(llm_client, "close", None)
@@ -405,7 +407,7 @@ def create_app(
                 narrative_text, _covered, _verify_ids = generate_narrative(
                     claims,
                     narrative_llm,
-                    passes=load_models_config(resolved_config_path).narrative.passes,
+                    passes=models_cfg.narrative.passes,
                 )
             except Exception:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
                 narrative_text = None
