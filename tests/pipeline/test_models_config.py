@@ -132,7 +132,7 @@ def test_polish_defaults_sanely_when_section_is_absent(tmp_path):
     config = load_models_config(path)
     assert config.polish.enabled is False
     assert config.polish.provider == "ollama"
-    assert config.polish.model  # a non-empty placeholder; default is confirmed pulled/live on the Ollama host
+    assert config.polish.model  # non-empty; default (gemma3:12b) is confirmed pulled/live on the Ollama host
 
 
 def test_polish_parses_explicit_section(tmp_path):
@@ -194,7 +194,7 @@ def test_resolve_polish_config_haiku_forces_anthropic_claude_haiku():
     resolved = resolve_polish_config("haiku", config)
     assert resolved is not None
     assert resolved.provider == "anthropic"
-    assert resolved.model == "claude-haiku-4-5-20251001"
+    assert resolved.model == "claude-haiku-4-5"
     assert resolved.enabled is True
 
 

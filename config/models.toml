@@ -44,9 +44,14 @@ doc_no_prefix = ""
 
 # Optional 4th stage: one formatting/tone pass over the assembled document
 # (see src/pipeline/polish.py). Off by default -- the model below
-# (gemma3n:e4b) is confirmed live on this deployment's Ollama host
-# (192.168.200.60:11434): present in its `GET /api/tags` response as of
-# 2026-07-10. Review the polish stage's output on a sample document before
+# (gemma3:12b) is confirmed live on this deployment's Ollama host
+# (192.168.200.60:11434) and produced a genuine, gate-passing rewrite in
+# live testing on 2026-07-11. gemma3n:e4b was tried first but consistently
+# echoed the input document back unchanged instead of rewriting it (0/4
+# genuine rewrites across two prompt variants, including one with an
+# explicit "say NO_CHANGES if nothing to fix" escape hatch) -- ruled out as
+# a prompt-wording issue, treated as a model-capability limitation at that
+# size. Review the polish stage's output on a sample document before
 # setting enabled = true.
 #
 # The `polish` query param on POST /sessions/{id}/rerender (and
@@ -60,4 +65,4 @@ doc_no_prefix = ""
 enabled = false
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
-model = "gemma3n:e4b"
+model = "gemma3:12b"

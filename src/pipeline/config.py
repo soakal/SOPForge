@@ -96,19 +96,23 @@ class PolishConfig(SectionConfig):
     enabled: bool = False
 
 
-# Gemma "e4b" (gemma3n:e4b) is the model this stage is meant to run on. It is
-# now confirmed present in this deployment's Ollama tag list (queried
-# http://192.168.200.60:11434/api/tags on 2026-07-10 -- gemma3n:e4b is
-# pulled and live, alongside gemma3:27b/gemma3:12b). [polish].enabled still
-# defaults to False so the polish stage stays opt-in until its output has
-# been reviewed on a sample document, not because the model is in doubt.
-_POLISH_DEFAULT_MODEL = "gemma3n:e4b"  # confirmed live -- see comment above
+# gemma3n:e4b was the original candidate but proved unreliable in live testing
+# (2026-07-11 diagnostic: 0/4 genuine rewrites across two prompt variants --
+# it echoes the input document back near-verbatim instead of rewriting, even
+# when given an explicit "say NO_CHANGES if nothing to fix" escape hatch,
+# ruling out a prompt-wording fix). gemma3:12b, run through the identical
+# prompt/document on the same host, produced a genuine gate-passing rewrite
+# on first try and is ~2x faster than gemma3:27b (also reliable). [polish]
+# .enabled still defaults to False so the polish stage stays opt-in until
+# its output has been reviewed on real (not just fixture) documents.
+_POLISH_DEFAULT_MODEL = "gemma3:12b"  # see comment above for why not gemma3n:e4b
 
 PolishMode = Literal["off", "local", "haiku"]
 
-# Confirmed Claude Haiku 4.5 model id (unlike _POLISH_DEFAULT_MODEL above,
-# this one is not a placeholder).
-_POLISH_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+# Claude Haiku 4.5. Using the floating alias (not the dated snapshot) per
+# Anthropic's guidance for configs -- it tracks the current Haiku 4.5
+# snapshot rather than pinning to one.
+_POLISH_HAIKU_MODEL = "claude-haiku-4-5"
 
 
 def resolve_polish_config(mode: PolishMode, cfg: "ModelsConfig") -> "PolishConfig | None":
@@ -264,8 +268,9 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         "",
         "# Optional 4th stage: one formatting/tone pass over the assembled",
         "# document (see src/pipeline/polish.py). Off by default -- the model",
-        "# below (gemma3n:e4b) is confirmed pulled on the Ollama host",
-        "# (verified via GET /api/tags on 2026-07-10).",
+        "# below (gemma3:12b) is confirmed pulled on the Ollama host and",
+        "# produced a genuine rewrite in live testing (gemma3n:e4b did not --",
+        "# see _POLISH_DEFAULT_MODEL's comment for details).",
         "[polish]",
         f"enabled = {_toml_str(cfg.polish.enabled)}",
         f"provider = {_toml_str(cfg.polish.provider)}",
