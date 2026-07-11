@@ -8,10 +8,12 @@ Generation runs on a background job (task-05), so POST /sessions returns
 "queued"/"processing" immediately — tests poll /status until "done" (or a
 terminal "error") before asserting on downstream endpoints."""
 
+import io
 import json
 import re
 import shutil
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -236,10 +238,11 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     about the server-side WIRING, so it fakes generate_polish_fields
     (uppercasing every field it's handed) and asserts against exactly what
     it captured/returned -- proving _write_all_exports actually calls it
-    and renders doc.md from its output. doc.html is asserted to carry the
-    SAME polished/uppercased text as doc.md (both now render from the
-    returned polished fields), proving this cycle extends the polish wiring
-    from doc.md to doc.html too."""
+    and renders doc.md from its output. doc.html and the export.md.zip
+    md-bundle are both asserted to carry the SAME polished/uppercased text
+    as doc.md (all three now render from the returned polished fields),
+    proving this cycle extends the polish wiring from doc.md to doc.html
+    and the md-bundle too."""
     import pipeline.server as server_module
 
     captured = {}
@@ -297,6 +300,25 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     for step in captured["step_results"]:
         assert _html.escape(step["text"].upper()) in html_doc
         assert _html.escape(step["text"]) not in html_doc
+
+    # export.md.zip's <slug>.md (export_markdown_bundle, export_md.py) now
+    # renders from the same polished fields as doc.md/doc.html this cycle --
+    # it must carry the polished/uppercased text too, not the pre-polish
+    # step_results/narrative_text.
+    zip_resp = client.get(f"/sessions/{session_id}/export.md.zip")
+    with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
+        md_name = next(name for name in zf.namelist() if name.endswith(".md"))
+        # Unlike doc.md (served via read_text(), which undoes Windows'
+        # write_text() \n -> \r\n translation), export.md.zip's member is
+        # zipped straight off disk as raw bytes -- normalize newlines so
+        # this comparison isn't a platform-dependent CRLF/LF mismatch.
+        bundle_md = zf.read(md_name).decode("utf-8").replace("\r\n", "\n")
+    if captured["narrative_text"]:
+        assert captured["narrative_text"].upper() in bundle_md
+    for step in captured["step_results"]:
+        assert step["text"].upper() in bundle_md
+        if step.get("narration"):
+            assert step["narration"].upper() in bundle_md
 
 
 def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):
@@ -645,6 +667,10 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
     html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    zip_resp = client.get(f"/sessions/{session_id}/export.md.zip")
+    with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
+        bundle_md_name = next(name for name in zf.namelist() if name.endswith(".md"))
+        bundle_md = zf.read(bundle_md_name).decode("utf-8")
     for field_id, original in items:
         polished = original.upper()
         assert polished in md, f"expected polished {field_id!r} in doc.md"
@@ -652,6 +678,15 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
         assert _html.escape(original) not in html_doc, (
             f"doc.html must not carry the original {field_id!r} -- doc.html now renders "
             "from the same polished fields as doc.md"
+        )
+        # Guards against the real (non-faked) polish pass silently no-oping
+        # onto the template-fallback path this cycle wires up too: proves
+        # the md-bundle's <slug>.md genuinely carries the polished text, not
+        # just the pre-polish original that fallback would also produce.
+        assert polished in bundle_md, f"expected polished {field_id!r} in md-bundle"
+        assert original not in bundle_md, (
+            f"md-bundle must not carry the original {field_id!r} -- export_markdown_bundle "
+            "now renders from the same polished fields as doc.md"
         )
 
 
