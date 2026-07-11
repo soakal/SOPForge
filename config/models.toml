@@ -44,9 +44,10 @@ doc_no_prefix = ""
 
 # Optional 4th stage: one formatting/tone pass over the assembled document
 # (see src/pipeline/polish.py). Off by default -- the model below
-# (gemma3n:e4b) is an UNVERIFIED placeholder: it was not present in this
-# deployment's `GET /api/tags` response as of 2026-07-10. Pull it on your
-# Ollama host and confirm it works before setting enabled = true.
+# (gemma3n:e4b) is confirmed live on this deployment's Ollama host
+# (192.168.200.60:11434): present in its `GET /api/tags` response as of
+# 2026-07-10. Review the polish stage's output on a sample document before
+# setting enabled = true.
 #
 # The `polish` query param on POST /sessions/{id}/rerender (and
 # /ui/sessions/{id}/rerender) overrides this section for a single re-render

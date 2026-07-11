@@ -132,7 +132,7 @@ def test_polish_defaults_sanely_when_section_is_absent(tmp_path):
     config = load_models_config(path)
     assert config.polish.enabled is False
     assert config.polish.provider == "ollama"
-    assert config.polish.model  # a non-empty placeholder, even though unverified
+    assert config.polish.model  # a non-empty placeholder; default is confirmed pulled/live on the Ollama host
 
 
 def test_polish_parses_explicit_section(tmp_path):
