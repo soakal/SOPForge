@@ -3,6 +3,7 @@ per step, annotated screenshots embedded, [verify] blockquotes rendered.
 pypdf (test-only) verifies the actual rendered text, not just that a file
 was written."""
 
+import json
 import re
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from pypdf import PdfReader
 from pipeline.claim_coverage import ensure_claim_coverage
 from pipeline.export_pdf import render_pdf
 from pipeline.manifest import load_manifest
+from pipeline.polish import generate_polish_fields
 from pipeline.render import render_steps_template_mode
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
@@ -89,6 +91,95 @@ def test_pdf_contains_verify_blockquote_claim_text(tmp_path):
     assert "Needs verification:" in text
     assert "Something not in the narrative at all." in text
     assert "claim-001" not in text
+
+
+_PROMPT_ITEM_RE = re.compile(r'^(.+?): "(.*)"$', re.M)
+
+
+class _MarkerDroppingPolishStub:
+    """A `.chat()` that genuinely parses generate_polish_fields' real
+    prompt text (the `field_id: "text"` item-line format
+    `_build_fields_prompt`, polish.py, emits) and replies with a rewrite
+    per field: any line starting with the verify-blockquote marker "> " has
+    JUST that marker dropped (the rest of the line, including any digits,
+    kept verbatim) -- mirrors test_docx_e2e.py's identical stub, proving the
+    same generate_polish_fields protection (verify lines stripped before the
+    LLM ever sees them, spliced back verbatim after) also covers doc.pdf now
+    that server.py wires render_pdf to the polished fields. Every other line
+    is uppercased, so a genuine polish of the surrounding prose is still
+    provable."""
+
+    def __init__(self):
+        self.calls = []
+
+    def chat(self, messages, **kwargs):
+        content = messages[0]["content"]
+        self.calls.append(content)
+        items = _PROMPT_ITEM_RE.findall(content)
+        assert items, "expected at least one 'field_id: \"text\"' line in the real polish prompt"
+        rewrites = []
+        for field_id, text in items:
+            mangled = "\n".join(
+                line[2:] if line.startswith("> ") else line.upper() for line in text.split("\n")
+            )
+            rewrites.append({"field_id": field_id, "text": mangled})
+        return json.dumps(rewrites)
+
+
+def test_polish_never_lets_a_verify_blockquote_reach_the_llm_and_pdf_still_flags_it(tmp_path):
+    """Regression mirroring test_docx_e2e.py's identical-purpose test: doc.pdf
+    (export_pdf.py) shares its [verify]-blockquote rendering with doc.docx --
+    both call the same claim_coverage.parse_verify_line and render a "Needs
+    verification: ..." callout with the claim id dropped (see
+    export_pdf._narrative_body / docx_assembler._narrative_body). Uses the
+    REAL generate_polish_fields (not a monkeypatch) with
+    _MarkerDroppingPolishStub, a stub LLM that reflows a verify-blockquote
+    line by dropping just its leading "> " marker -- the same attack proven
+    dangerous for docx. generate_polish_fields strips every verify-blockquote
+    line out of narrative_text before it's ever shown to the LLM and splices
+    it back verbatim afterward, so this also confirms the stub's prompt calls
+    never contained the verify line, then feeds the polished result into the
+    REAL render_pdf and confirms the "Needs verification" callout still
+    renders."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    step_results, annotated_paths = render_steps_template_mode(manifest, screenshots, annotated)
+
+    verify_line = "> [verify] (claim-042): The device firmware is version 42."
+    narrative_text = f"Open the console and review the settings.\n{verify_line}\n"
+
+    stub = _MarkerDroppingPolishStub()
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, stub
+    )
+
+    assert stub.calls, "the polish LLM stub was never called"
+    for call in stub.calls:
+        assert "[verify]" not in call, (
+            "a verify-blockquote line reached the polish LLM prompt -- it must be "
+            "stripped out before the call, not merely survive gating afterward"
+        )
+
+    # The surrounding prose genuinely got polished (proves this isn't a
+    # no-op / gate-rejection making the test vacuous)...
+    assert "OPEN THE CONSOLE" in polished_narrative
+    # ...while the verify blockquote line itself survived byte-for-byte,
+    # never mangled, never dropped.
+    assert verify_line in polished_narrative
+    assert "narrative" in meta["fields_polished"]
+
+    output_path = tmp_path / "out.pdf"
+    render_pdf(
+        manifest, polished_steps, annotated_paths, output_path, narrative_text=polished_narrative
+    )
+
+    text = _normalize_whitespace(_extract_text(output_path))
+    assert "Needs verification:" in text
+    assert "The device firmware is version 42." in text
+    assert "claim-042" not in text
+    assert "[verify]" not in text
 
 
 def test_bullet_marker_uses_a_real_glyph_dejavu_can_render(tmp_path, caplog):

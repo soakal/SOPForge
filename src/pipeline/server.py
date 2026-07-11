@@ -638,11 +638,9 @@ def create_app(
         # [polish].enabled (default off -- see PolishConfig); an explicit
         # override bypasses that toggle for this job (resolve_polish_config's
         # "off" always skips, "local"/"haiku" always run). doc.md, doc.html,
-        # doc.single.html, the md-bundle (export.md.zip), and doc.docx all
-        # reflect this pass -- all five rendered from the polished fields
-        # below; the pdf export further down still renders from the original
-        # (pre-polish) step_results/narrative_text and is deliberately left
-        # unpolished for now.
+        # doc.single.html, the md-bundle (export.md.zip), doc.docx, and
+        # doc.pdf all reflect this pass -- all six rendered from the
+        # polished fields below.
         current_cfg = load_models_config(resolved_config_path)
         if polish_override is not None:
             polish_section = resolve_polish_config(polish_override, current_cfg)
@@ -720,10 +718,10 @@ def create_app(
         pdf_path = session_dir / "doc.pdf"
         render_pdf(
             manifest,
-            step_results,
+            md_step_results,
             annotated_paths,
             pdf_path,
-            narrative_text=narrative_text,
+            narrative_text=md_narrative_text,
             date=doc_date,
             author=doc_cfg.author,
             doc_no=doc_no,

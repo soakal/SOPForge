@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+from pypdf import PdfReader
 
 from pipeline.config import default_config_path, load_models_config, save_models_config
 from pipeline.manifest import load_manifest
@@ -238,12 +239,16 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     about the server-side WIRING, so it fakes generate_polish_fields
     (uppercasing every field it's handed) and asserts against exactly what
     it captured/returned -- proving _write_all_exports actually calls it
-    and renders doc.md from its output. doc.html, doc.single.html, and the
-    export.md.zip md-bundle, and doc.docx are all asserted to carry the
-    SAME polished/uppercased text as doc.md (all five now render from the
-    returned polished fields), proving this cycle extends the polish
-    wiring from doc.md to the rest of the HTML family, the md-bundle, and
-    doc.docx too."""
+    and renders doc.md from its output. doc.html, doc.single.html, the
+    export.md.zip md-bundle, doc.docx, and doc.pdf are all asserted to carry
+    the SAME polished/uppercased text as doc.md (all six now render from
+    the returned polished fields), proving this cycle extends the polish
+    wiring from doc.md to the rest of the HTML family, the md-bundle,
+    doc.docx, and doc.pdf too -- doc.pdf's assertion specifically closes the
+    gap this cycle exists to close: it drives the real POST /sessions ->
+    _write_all_exports -> render_pdf(md_step_results, ...) route, which a
+    revert of server.py's render_pdf call-site args would break but which
+    test_export_pdf.py's direct-call regression test cannot detect."""
     import pipeline.server as server_module
 
     captured = {}
@@ -351,6 +356,34 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
         assert step["text"].upper() in docx_text
         if step.get("narration"):
             assert f"Narration: {step['narration'].upper()}" in docx_text
+
+    # doc.pdf (render_pdf, export_pdf.py) now renders from the same polished
+    # md_step_results/md_narrative_text as the five formats above this
+    # cycle -- this is the specific assertion this cycle exists to add.
+    # doc.pdf is the one export whose server.py call-site (render_pdf's
+    # md_step_results/md_narrative_text args) was reverted to the pre-polish
+    # step_results/narrative_text with every other test in the suite still
+    # green, because test_export_pdf.py's polish regression test calls
+    # generate_polish_fields and render_pdf directly, never through this
+    # real POST /sessions -> _write_all_exports route. Extract text the same
+    # way test_export_pdf.py does (pypdf PdfReader), normalizing whitespace
+    # since fpdf2's multi_cell() word-wraps long lines into real newlines
+    # mid-sentence. Like doc.docx, narrative_text as a whole isn't asserted
+    # here: export_pdf.py's _narrative_body applies the same "> [verify]" ->
+    # "Needs verification: " callout transform as docx_assembler.py, and
+    # sample-manifest.json's stubbed narrative carries no claims, so that
+    # path isn't exercised here.
+    pdf_resp = client.get(f"/sessions/{session_id}/doc.pdf")
+    assert pdf_resp.status_code == 200
+    pdf_reader = PdfReader(io.BytesIO(pdf_resp.content))
+    pdf_text = re.sub(
+        r"\s+", " ", "\n".join(page.extract_text() for page in pdf_reader.pages)
+    ).strip()
+    for step in captured["step_results"]:
+        assert re.sub(r"\s+", " ", step["text"].upper()).strip() in pdf_text
+        if step.get("narration"):
+            expected = re.sub(r"\s+", " ", f"Narration: {step['narration'].upper()}").strip()
+            assert expected in pdf_text
 
 
 def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):
