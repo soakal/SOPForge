@@ -85,8 +85,8 @@ _MAX_NOVEL_CONTENT_ABSOLUTE = 8
 # grammar/phrasing" rewrite needs to introduce a new word like this that
 # wasn't already in the source.
 _DENYLIST_WORDS = {
-    "format", "delete", "remove", "wipe", "erase", "disable", "uninstall",
-    "drop", "kill", "terminate",
+    "format", "reformat", "delete", "remove", "wipe", "erase", "disable",
+    "uninstall", "drop", "kill", "terminate",
 }  # fmt: skip
 
 # "restart" alone is too common a benign word (e.g. a legitimate rewrite
@@ -101,16 +101,79 @@ _DENYLIST_INFRA_NOUNS = {
     "network", "controller", "cluster", "node", "spooler", "domain",
 }  # fmt: skip
 
+_VOWELS = set("aeiou")
+
+
+def _cleanup_stem(stem):
+    """Consonant-doubling / silent-e cleanup applied after `_stem` strips an
+    -ing/-ed suffix, mirroring the relevant subset of the Porter stemmer's
+    step-1b cleanup: a stem ending in "at"/"bl"/"iz" gets a silent e
+    restored (disabl -> disable, from "disabling"); a stem ending in a
+    doubled consonant (other than l/s/z, which are legitimately doubled in
+    real words like "install"/"kiss" and must NOT be undone) has the double
+    undone (formatt -> format, from "formatting"/"reformatting"); and a
+    short consonant-vowel-consonant stem (last letter not w/x/y) gets a
+    silent e restored (wip -> wipe from "wiping", eras -> erase from
+    "erased"). Anything else is returned unchanged."""
+    if stem.endswith(("at", "bl", "iz")):
+        return stem + "e"
+    if len(stem) >= 2 and stem[-1] == stem[-2] and stem[-1] not in "lsz":
+        return stem[:-1]
+    if (
+        len(stem) >= 3
+        and stem[-1] not in _VOWELS
+        and stem[-1] not in "wxy"
+        and stem[-2] in _VOWELS
+        and stem[-3] not in _VOWELS
+    ):
+        return stem + "e"
+    return stem
+
+
+def _stem(word):
+    """Light inflectional stemmer used ONLY to normalize denylist
+    comparisons (see `_denylisted_word`) -- strips a single trailing
+    -ing/-ed/-s suffix (the -es case, e.g. "deletes"/"erases", falls out of
+    the same -s rule, since those are just a silent-e lemma plus -s) and
+    runs the result through `_cleanup_stem`, so an inflected variant of a
+    word (formatting/reformatting, deletes, wiping, erased, disabling)
+    reduces to the same stem as its bare lemma (format/reformat, delete,
+    wipe, erase, disable).
+
+    Deliberately produces a value for EQUALITY comparison only, never a
+    prefix/substring check -- `_denylisted_word` compares `_stem(novel_word)
+    == _stem(denylisted_word)`, so an unrelated word that merely shares a
+    prefix with a denylisted word (dropdown vs drop, skillet vs kill,
+    terminal vs terminate) does not collapse onto it: none of those end in
+    -ing/-ed/-s, so they pass through unchanged and stay distinct from the
+    stemmed denylist word."""
+    if word.endswith("ing") and len(word) > 5:
+        return _cleanup_stem(word[:-3])
+    if word.endswith("ed") and len(word) > 4:
+        return _cleanup_stem(word[:-2])
+    if word.endswith("s") and not word.endswith("ss") and len(word) > 3:
+        return word[:-1]
+    return word
+
+
+_DENYLIST_STEMS = {_stem(w) for w in _DENYLIST_WORDS}
+_DENYLIST_INFRA_NOUN_STEMS = {_stem(w) for w in _DENYLIST_INFRA_NOUNS}
+_RESTART_STEM = _stem("restart")
+
 
 def _denylisted_word(novel_tokens, rewrite_tokens):
     """Returns the first denylisted high-risk/destructive word found among
-    `novel_tokens`, or None. `rewrite_tokens` (the full content-token set of
-    the rewrite, novel or not) is used only for the "restart" + infra-noun
-    combination check."""
+    `novel_tokens`, or None. Comparisons are done on STEMS (`_stem`), not
+    raw words, so inflected variants (reformatting, deletes, wiping,
+    erased, disabling, ...) are rejected just like their bare lemmas.
+    `rewrite_tokens` (the full content-token set of the rewrite, novel or
+    not) is used only for the "restart" + infra-noun combination check."""
+    rewrite_stems = {_stem(w) for w in rewrite_tokens}
     for word in novel_tokens:
-        if word in _DENYLIST_WORDS:
+        stem = _stem(word)
+        if stem in _DENYLIST_STEMS:
             return word
-        if word == "restart" and rewrite_tokens & _DENYLIST_INFRA_NOUNS:
+        if stem == _RESTART_STEM and rewrite_stems & _DENYLIST_INFRA_NOUN_STEMS:
             return word
     return None
 

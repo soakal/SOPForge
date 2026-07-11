@@ -188,6 +188,63 @@ def test_gate_rejects_a_denylisted_word_smuggled_in_via_reused_vocabulary():
     assert reason == "introduced a high-risk or destructive instruction"
 
 
+def test_gate_rejects_an_inflected_denylisted_word_reformatting():
+    # Stemming-evasion regression: "reformatting" is a morphological variant
+    # of the already-denylisted "reformat"/"format" family, built almost
+    # entirely out of the document's own vocabulary (same shape as
+    # test_gate_rejects_a_denylisted_word_smuggled_in_via_reused_vocabulary
+    # above). Before stemming was added to _denylisted_word, the exact-match
+    # check let this straight through -- "reformatting" is not a member of
+    # _DENYLIST_WORDS even though "format"/"reformat" are.
+    fabricated_step = "Step 20: Reformatting the c drive to complete the session."
+    rewrite = _faithful_rewrite(_REALISTIC_DOCUMENT) + "\n\n" + fabricated_step
+    ok, reason = _gate(_REALISTIC_DOCUMENT, rewrite)
+    assert not ok
+    assert reason == "introduced a high-risk or destructive instruction"
+
+
+def test_gate_rejects_an_inflected_denylisted_word_deletes():
+    fabricated_step = "Step 20: This deletes all files in the session folder."
+    rewrite = _faithful_rewrite(_REALISTIC_DOCUMENT) + "\n\n" + fabricated_step
+    ok, reason = _gate(_REALISTIC_DOCUMENT, rewrite)
+    assert not ok
+    assert reason == "introduced a high-risk or destructive instruction"
+
+
+def test_gate_rejects_an_inflected_denylisted_word_wiping():
+    fabricated_step = "Step 20: Finish by wiping the disk before archiving the session."
+    rewrite = _faithful_rewrite(_REALISTIC_DOCUMENT) + "\n\n" + fabricated_step
+    ok, reason = _gate(_REALISTIC_DOCUMENT, rewrite)
+    assert not ok
+    assert reason == "introduced a high-risk or destructive instruction"
+
+
+def test_gate_accepts_a_benign_novel_word_that_shares_a_prefix_with_a_denylisted_word():
+    # False-positive guard for the stemming fix: "dropdown" shares a prefix
+    # with the denylisted word "drop" but is a completely unrelated, benign
+    # UI term. _stem must produce an EQUALITY comparison, not a
+    # substring/prefix match -- "dropdown" must never collapse onto "drop".
+    original = "click the settings icon to continue"
+    rewrite = "Click the settings dropdown to continue."
+    ok, reason = _gate(original, rewrite)
+    assert ok, reason
+
+
+def test_stem_does_not_collapse_unrelated_words_onto_denylisted_stems():
+    # Direct unit check on the stemmer itself (not just through the gate):
+    # words that merely share a prefix with a denylisted word must stem to
+    # something different from that denylisted word's stem.
+    from pipeline.polish import _DENYLIST_STEMS, _stem
+
+    for benign, denylisted in [
+        ("dropdown", "drop"),
+        ("skillet", "kill"),
+        ("terminal", "terminate"),
+    ]:
+        assert _stem(benign) not in _DENYLIST_STEMS, (benign, _stem(benign))
+        assert _stem(benign) != _stem(denylisted), (benign, denylisted)
+
+
 def test_gate_rejects_wildly_short_rewrite():
     original = (
         "open file explorer then open the c drive then goto users then select "
