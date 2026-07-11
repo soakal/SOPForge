@@ -48,6 +48,7 @@ from PIL import Image
 
 from pipeline import __version__
 from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
+from pipeline.claim_coverage import validate_claim_coverage
 from pipeline.claims import extract_claims
 from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
@@ -436,6 +437,7 @@ def create_app(
             report,
             narrative_text=narrative_text,
             polish_override=polish_override,
+            claims=claims,
         )
 
     def _generate_photo(session_id, polish_override=None):
@@ -608,6 +610,7 @@ def create_app(
         report,
         narrative_text=None,
         polish_override=None,
+        claims=(),
     ):
         """Render every output format + the review report from finished
         step_results and annotated images. Shared by both generation modes.
@@ -618,7 +621,13 @@ def create_app(
         except the rerender routes) means "no override": fall back to
         whatever [polish].enabled/provider/model already say in
         config/models.toml, byte-for-byte the same as before this param
-        existed."""
+        existed.
+
+        claims: the Stage 2 narrative claim list (claims.py shape) the
+        assembled markdown was built to cover, checked against the polish
+        pass's output below -- an empty default (the photo-build call site,
+        which has no narrative claims) makes that check a no-op, byte-for-
+        byte unchanged from before this param existed."""
         md = render_markdown(
             manifest,
             step_results,
@@ -644,11 +653,27 @@ def create_app(
         if polish_section is not None:
             polish_llm = make_polish_llm_client(polish_section)
             try:
-                md = generate_polish_pass(md, polish_llm)
+                polished_md = generate_polish_pass(md, polish_llm)
             finally:
                 close = getattr(polish_llm, "close", None)
                 if callable(close):
                     close()
+            # Safety net for invariant L4 (CLAUDE.md): the whole-doc polish
+            # LLM rewrites narrative prose freely, and unlike
+            # generate_polish_pass's own no-invented-content gate (which
+            # only checks the rewrite didn't ADD unsupported content), it
+            # has no way to know a claim's exact text is load-bearing --
+            # nothing stops a rephrase from making a claim's text (and any
+            # [verify] blockquote covering it) vanish. Re-run the same
+            # coverage check doc.md must already satisfy pre-polish; if
+            # polish broke it, discard the polish and keep the known-good
+            # unpolished md rather than ship a doc with a silently dropped
+            # claim.
+            ok, missing = validate_claim_coverage(polished_md, claims)
+            if ok:
+                md = polished_md
+            else:
+                report["polish_rejected_claim_coverage"] = missing
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
         html_doc = render_html(

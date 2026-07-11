@@ -395,6 +395,89 @@ def test_rerender_invalid_polish_value_returns_422(tmp_path):
     assert resp.status_code == 422
 
 
+class _VerbatimNarrativeStub:
+    """Unlike _NarrativeGeneratingStub (whose fixed reply matches none of
+    its claims, forcing every one into a [verify] blockquote), this reply
+    quotes all three transcript claims verbatim -- so claim-coverage
+    (ensure_claim_coverage) marks every one "covered by content" and
+    appends no [verify] blockquote at all. That's the shape the polish
+    safety net below exists for: a claim can be satisfied by the
+    narrative's own prose, with nothing marking WHERE, so a polish rewrite
+    that rephrases that prose can make the claim's exact text vanish
+    without ever touching a [verify] marker."""
+
+    def chat(self, messages, **kwargs):
+        return (
+            "First, open the console. Then enter the computer name. Finally, check the downloads."
+        )
+
+
+def test_polish_rejected_when_it_drops_claim_coverage(tmp_path):
+    """generate_polish_pass's own no-invented-content gate (polish.py's
+    _gate) only rejects a rewrite that ADDS unsupported content -- a
+    rewrite that purely REPHRASES an already-covered claim's exact wording
+    (dropping a couple of old words, adding a couple of new ones, well
+    under the gate's novel-content thresholds) sails straight through it,
+    silently breaking invariant L4 ("every claim ID must appear in output
+    or be [verify]-flagged"): the claim's literal text no longer appears
+    anywhere, and it was never [verify]-flagged to begin with. This is the
+    safety net that must still catch it: when the polished text fails
+    validate_claim_coverage, _write_all_exports must discard the polish and
+    keep the known-good unpolished md (which already satisfies coverage by
+    construction), and record the rejection on the sidecar report."""
+    _target = "Then enter the computer name."
+    _replacement = "Then type in the computer name."
+
+    class _ClaimRephrasingPolishStub:
+        def chat(self, messages, **kwargs):
+            from pipeline.polish import _POLISH_PROMPT_TEMPLATE
+
+            prefix, _, suffix = _POLISH_PROMPT_TEMPLATE.partition("{document}")
+            content = messages[0]["content"]
+            document = content[len(prefix) : len(content) - len(suffix)]
+            assert _target in document, (
+                "fixture assumption: claim-002's exact text must be present "
+                "(content-covered, not [verify]-flagged) in the unpolished doc"
+            )
+            return document.replace(_target, _replacement)
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
+        polish_llm_client_factory=lambda section: _ClaimRephrasingPolishStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    transcript = (
+        "First, open the console.\n\nThen enter the computer name.\n\nFinally, check the downloads."
+    )
+    files.append(("transcript_file", ("narration.md", transcript.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    # The rephrasing polish was rejected -- doc.md fell back to the
+    # unpolished (claim-complete) render, still containing claim-002's
+    # exact original wording, no [verify] blockquotes needed.
+    assert _target in md
+    assert "[verify]" not in md
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report.get("polish_rejected_claim_coverage") == ["claim-002"]
+
+
 def test_review_page_renders_sidecar_report(tmp_path):
     client = _make_client(tmp_path)
     session_id, status = _create_and_wait(client, tmp_path)
