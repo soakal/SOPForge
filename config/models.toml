@@ -41,3 +41,14 @@ max_concurrency = 4
 [document]
 author = "SOPForge"
 doc_no_prefix = ""
+
+# Optional 4th stage: one formatting/tone pass over the assembled document
+# (see src/pipeline/polish.py). Off by default -- the model below
+# (gemma3n:e4b) is an UNVERIFIED placeholder: it was not present in this
+# deployment's `GET /api/tags` response as of 2026-07-10. Pull it on your
+# Ollama host and confirm it works before setting enabled = true.
+[polish]
+enabled = false
+provider = "ollama"
+endpoint = "http://192.168.200.60:11434/v1"
+model = "gemma3n:e4b"

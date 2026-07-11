@@ -121,6 +121,50 @@ def test_max_concurrency_rejects_zero():
         ModelsConfig.model_validate(data)
 
 
+def test_polish_defaults_sanely_when_section_is_absent(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.polish.enabled is False
+    assert config.polish.provider == "ollama"
+    assert config.polish.model  # a non-empty placeholder, even though unverified
+
+
+def test_polish_parses_explicit_section(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[polish]\nenabled = true\nprovider = "ollama"\nendpoint = "http://x"\nmodel = "gemma3n:e4b"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.polish.enabled is True
+    assert config.polish.model == "gemma3n:e4b"
+
+
+def test_polish_round_trips_through_dump_and_reload(tmp_path):
+    data = _base_cfg()
+    data["polish"] = {
+        "enabled": True,
+        "provider": "ollama",
+        "endpoint": "http://x",
+        "model": "gemma3n:e4b",
+    }
+    cfg = ModelsConfig.model_validate(data)
+    path = tmp_path / "models.toml"
+    save_models_config(cfg, path)
+    reloaded = load_models_config(path)
+    assert reloaded.polish.enabled is True
+    assert reloaded.polish.provider == "ollama"
+    assert reloaded.polish.model == "gemma3n:e4b"
+    assert "[polish]" in dump_models_config_toml(cfg)
+
+
 def test_rejects_missing_required_field(tmp_path):
     # `model` is required (endpoint has a default); a section without it must fail.
     path = tmp_path / "models.toml"

@@ -85,6 +85,29 @@ class SectionConfig(BaseModel):
         return self
 
 
+class PolishConfig(SectionConfig):
+    """Optional 4th pipeline stage: a single formatting/tone pass over the
+    already-assembled document (polish.py's generate_polish_pass). Reuses
+    SectionConfig's provider/endpoint/model routing wholesale -- same shape
+    as [steps]/[narrative] -- adding only the `enabled` toggle this stage
+    additionally needs (default off, so an existing config that predates
+    this section still loads with polish disabled)."""
+
+    enabled: bool = False
+
+
+# Gemma "e4b" (gemma3n:e4b) is the model this stage is meant to run on, but
+# it is NOT present in this deployment's Ollama tag list as of the last
+# check (queried http://192.168.200.60:11434/api/tags on 2026-07-10 -- only
+# gemma3:27b/gemma3:12b were pulled, no gemma3n/e4b variant). This string is
+# therefore an UNVERIFIED placeholder, not a confirmed-working tag -- pull
+# the real model on the Ollama host (or edit this) before relying on it.
+# [polish].enabled defaults to False specifically so shipping this
+# unverified default can never silently start making live calls to a model
+# that may not exist on a given host.
+_POLISH_DEFAULT_MODEL = "gemma3n:e4b"  # UNVERIFIED -- see comment above
+
+
 class VisionConfig(BaseModel):
     """Vision-model captioning for the screenshots+transcript build mode."""
 
@@ -116,6 +139,7 @@ class ModelsConfig(BaseModel):
     narrative: SectionConfig
     vision: VisionConfig = Field(default_factory=VisionConfig)
     document: DocumentConfig = Field(default_factory=DocumentConfig)
+    polish: PolishConfig = Field(default_factory=lambda: PolishConfig(model=_POLISH_DEFAULT_MODEL))
 
 
 def provider_endpoint(provider, configured_endpoint):
@@ -213,6 +237,16 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         "[document]",
         f"author = {_toml_str(cfg.document.author)}",
         f"doc_no_prefix = {_toml_str(cfg.document.doc_no_prefix)}",
+        "",
+        "# Optional 4th stage: one formatting/tone pass over the assembled",
+        "# document (see src/pipeline/polish.py). Off by default -- the model",
+        "# below is an unverified placeholder until confirmed pulled on your",
+        "# Ollama host (GET /api/tags).",
+        "[polish]",
+        f"enabled = {_toml_str(cfg.polish.enabled)}",
+        f"provider = {_toml_str(cfg.polish.provider)}",
+        f"endpoint = {_toml_str(cfg.polish.endpoint)}",
+        f"model = {_toml_str(cfg.polish.model)}",
         "",
     ]
     return "\n".join(lines)
