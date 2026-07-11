@@ -21,6 +21,7 @@ from PIL import Image
 from pipeline.config import default_config_path, load_models_config, save_models_config
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
+from pipeline.template import render_step_template
 
 from _stub_llm import stub_llm_client_factory
 
@@ -151,6 +152,39 @@ def test_get_report_lists_expected_categories(tmp_path):
     assert {"template_fallback_steps", "verify_claims", "empty_metadata_steps"} <= set(report)
     # sample-manifest.json's step-003 has empty element metadata.
     assert "step-003" in report["empty_metadata_steps"]
+
+
+def test_steps_fallback_to_template_text_end_to_end_and_report_it(tmp_path):
+    """StubLLMClient's reply (see _stub_llm.py) never round-trips against
+    any manifest step, so a real capture session -- POST /sessions with
+    sample-manifest.json, not the manifest-free photo-build path -- must
+    fall back to render_step_template's deterministic text for every step
+    (invariant L3, CLAUDE.md) and the sidecar report must say so
+    explicitly via template_fallback_steps, not just implicitly via
+    matching doc text."""
+    client = _make_client(tmp_path)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    expected_step_ids = manifest.step_ids()
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    # Explicit fallback assertion: every manifest step, not just some of
+    # them, must be reported as a template fallback -- this fails loudly
+    # if even one step's generation somehow used a real LLM reply instead.
+    assert sorted(report["template_fallback_steps"]) == sorted(expected_step_ids)
+
+    # step-001 is the manifest's "Save" button click. render_step_template's
+    # own output names the button, giving a stable, deterministic substring
+    # to look for in the assembled doc without pinning to the whole
+    # sentence -- unrelated phrasing tweaks to template.py won't break this.
+    save_step = next(s for s in manifest.steps if s.id == "step-001")
+    expected_target_phrase = f"'{save_step.element.name}' {save_step.element.control_type}"
+    assert expected_target_phrase in render_step_template(save_step)
+
+    doc_md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert expected_target_phrase in doc_md
 
 
 def test_step_mismatch_after_generation_fails_the_job_loudly(tmp_path, monkeypatch):
