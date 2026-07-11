@@ -27,6 +27,83 @@ _STOPWORDS = {
     "or", "not", "if", "when", "will", "can", "may", "should", "please",
 }  # fmt: skip
 
+# Max share of a rewrite's distinct content tokens allowed to be absent from
+# the original before check 2 below rejects it as invented content. A single
+# unsupported word can be an incidental paraphrase artifact (e.g. a connector
+# adjective); a cluster of them is fabricated content. Calibrated against
+# test_gate_rejects_invented_content: injecting "restart the print spooler
+# service" into a short original makes 4 of the rewrite's 8 distinct content
+# tokens (50%) novel -- well above this threshold -- while a faithful
+# paraphrase of a realistic ~130-content-token document that picks up a
+# couple of incidental new words (e.g. "carefully", "successfully") lands
+# under 2%, comfortably below it.
+_MAX_NOVEL_CONTENT_FRACTION = 0.3
+
+# Absolute cap on novel content tokens, applied ALONGSIDE (not instead of)
+# the fraction above. The fraction alone is exploitable on realistic-sized
+# documents: appending one entire fabricated-but-plausible extra SOP step
+# (e.g. "Restart the network switch located in the server rack and confirm
+# all indicator lights turn solid green.") to a faithful rewrite of a
+# ~130-content-token document adds ~12 novel tokens -- only ~8% of the
+# rewrite's total, comfortably under the 30% fraction -- yet is a fully
+# invented, actionable step a reader could act on. A real document only
+# grows the *budget* for novel words under a fraction rule; it should not
+# grow the amount of fabrication that's tolerable. This cap is sized so:
+#   - the benign 2-new-word paraphrase case (see
+#     test_gate_accepts_benign_paraphrase_with_a_few_new_words) stays well
+#     under it (2 << 8), and
+#   - a single fabricated extra step (~12 novel tokens, see
+#     test_gate_rejects_a_fabricated_extra_step) exceeds it and is rejected,
+#     regardless of how large the surrounding document is.
+_MAX_NOVEL_CONTENT_ABSOLUTE = 8
+
+# Deterministic backstop for check 2, independent of the fraction/absolute
+# counts above. An attacker doesn't need many novel words to smuggle in a
+# dangerous fabricated instruction -- they can reuse the document's own
+# vocabulary (stopwords, structural words like "step"/"session") for
+# everything except a handful of genuinely new words, and still clear both
+# the fraction and absolute caps. Demonstrated case: appending "Step 20:
+# Format the c drive to complete the session." to a faithful rewrite of a
+# ~130-content-token document introduces only 4 novel tokens (20, complete,
+# drive, format) -- 2.9% of the rewrite, comfortably under both caps -- yet
+# is a fully invented, destructive instruction. No amount of retuning the
+# fraction/absolute thresholds can close this: a bare novel-word-COUNT
+# heuristic can't see WHAT the novel words mean. This set closes that gap by
+# rejecting unconditionally, regardless of cluster size, when a novel word is
+# itself a high-risk/destructive action verb -- no legitimate "fix
+# grammar/phrasing" rewrite needs to introduce a new word like this that
+# wasn't already in the source.
+_DENYLIST_WORDS = {
+    "format", "delete", "remove", "wipe", "erase", "disable", "uninstall",
+    "drop", "kill", "terminate",
+}  # fmt: skip
+
+# "restart" alone is too common a benign word (e.g. a legitimate rewrite
+# might faithfully carry over "restart the tray app" from the original) to
+# denylist outright -- but "restart" newly applied to a piece of
+# infrastructure is exactly the shape of a plausible-sounding, invented,
+# disruptive instruction (e.g. "restart the network switch", "restart the
+# print spooler service"), so it's denylisted only when it co-occurs with an
+# infrastructure noun anywhere in the rewrite.
+_DENYLIST_INFRA_NOUNS = {
+    "server", "service", "switch", "router", "database", "firewall",
+    "network", "controller", "cluster", "node", "spooler", "domain",
+}  # fmt: skip
+
+
+def _denylisted_word(novel_tokens, rewrite_tokens):
+    """Returns the first denylisted high-risk/destructive word found among
+    `novel_tokens`, or None. `rewrite_tokens` (the full content-token set of
+    the rewrite, novel or not) is used only for the "restart" + infra-noun
+    combination check."""
+    for word in novel_tokens:
+        if word in _DENYLIST_WORDS:
+            return word
+        if word == "restart" and rewrite_tokens & _DENYLIST_INFRA_NOUNS:
+            return word
+    return None
+
+
 _POLISH_PROMPT_TEMPLATE = (
     "Below is a completed Standard Operating Procedure document. Perform ONE "
     "formatting and tone pass ONLY: fix grammar, punctuation, and phrasing; make "
@@ -80,11 +157,27 @@ def _gate(original, rewrite):
         if stripped and _has_digit_or_path_marker(stripped) and stripped not in rewrite_norm:
             return False, "dropped or altered a literal fact"
 
-    # 2. Every meaningful word in the rewrite must trace back to the
-    # original document -- nothing invented.
+    # 2. Most meaningful words in the rewrite must trace back to the
+    # original document. A handful of genuinely new words is tolerated as
+    # incidental paraphrase vocabulary; a cluster of unsupported new words
+    # is rejected as invented content -- whether that cluster is large
+    # relative to the rewrite (_MAX_NOVEL_CONTENT_FRACTION) or large in
+    # absolute terms (_MAX_NOVEL_CONTENT_ABSOLUTE, which a big document
+    # can't dilute away). Independently of cluster size, ANY novel word that
+    # is itself high-risk/destructive (_DENYLIST_WORDS) is rejected
+    # unconditionally -- a count-based rule alone can be evaded by padding a
+    # fabricated instruction with the document's own reused vocabulary so
+    # only a few genuinely novel words are needed. Any one of these three
+    # checks failing is sufficient to reject.
     orig_tokens = _content_tokens(orig_norm)
-    for tok in _content_tokens(rewrite_norm):
-        if tok not in orig_tokens:
+    rewrite_tokens = _content_tokens(rewrite_norm)
+    novel_tokens = rewrite_tokens - orig_tokens
+    if novel_tokens:
+        if _denylisted_word(novel_tokens, rewrite_tokens):
+            return False, "introduced a high-risk or destructive instruction"
+        exceeds_fraction = len(novel_tokens) / len(rewrite_tokens) > _MAX_NOVEL_CONTENT_FRACTION
+        exceeds_absolute = len(novel_tokens) > _MAX_NOVEL_CONTENT_ABSOLUTE
+        if exceeds_fraction or exceeds_absolute:
             return False, "introduced unsupported content"
 
     # 3. Length sanity -- a "formatting/tone" pass is not a summary or an

@@ -91,11 +91,86 @@ def test_gate_rejects_dropped_numeric_fact():
 
 
 def test_gate_rejects_invented_content():
+    # Tests the count-based mechanism specifically: enough novel words
+    # (4 of 8, 50%, of the rewrite's distinct content tokens) to fail on
+    # cluster size alone, using non-denylisted vocabulary so this stays
+    # isolated from test_gate_rejects_a_denylisted_word_smuggled_in_via_
+    # reused_vocabulary below, which tests the separate content-aware check.
     original = "click save to store the file"
-    rewrite = "Click save to store the file, then restart the print spooler service."
+    rewrite = "Click save to store the file, then synchronize the archived telemetry cache."
     ok, reason = _gate(original, rewrite)
     assert not ok
     assert reason == "introduced unsupported content"
+
+
+def test_gate_accepts_benign_paraphrase_with_a_few_new_words():
+    # A realistic LLM paraphrase of a realistic-sized document: no facts
+    # dropped, but a couple of incidental new words ("carefully",
+    # "successfully") that weren't in the original -- 2 of 134 (~1.5%) of
+    # the rewrite's distinct content tokens. This must be tolerated (it's
+    # the kind of benign rephrase the polish prompt explicitly invites),
+    # unlike test_gate_rejects_invented_content's clustered fabrication
+    # (4 of 8, i.e. 50%, of the rewrite's distinct content tokens), which
+    # must keep failing.
+    rewrite = _faithful_rewrite(_REALISTIC_DOCUMENT)
+    rewrite = rewrite.replace("verify the manifest", "carefully verify the manifest").replace(
+        "click approve to mark", "successfully click approve to mark"
+    )
+    assert rewrite != _faithful_rewrite(_REALISTIC_DOCUMENT)  # sanity: words were added
+    ok, reason = _gate(_REALISTIC_DOCUMENT, rewrite)
+    assert ok, reason
+
+
+def test_gate_rejects_a_fabricated_extra_step():
+    # Attack scenario: a rewrite that is a faithful rephrase of every
+    # existing step (no facts dropped or altered) but has an entire extra
+    # SOP step appended -- plausible-sounding, actionable, and completely
+    # invented; nothing in _REALISTIC_DOCUMENT told anyone to touch a
+    # network switch. On this ~132-content-token document this adds only
+    # 12 novel content tokens, ~8% of the rewrite's total -- comfortably
+    # under _MAX_NOVEL_CONTENT_FRACTION (30%) on its own. Before the
+    # absolute cap (_MAX_NOVEL_CONTENT_ABSOLUTE) was added, this attack was
+    # ACCEPTED by the gate: a fractional-only rule gives larger documents a
+    # proportionally larger budget for fabricated content, which is exactly
+    # backwards -- the amount of invented, actionable content a reader
+    # could act on must not scale with document size. This is the CLAUDE.md
+    # violation the old exact-membership rule prevented and the fraction-
+    # only replacement newly permitted. Uses non-denylisted vocabulary
+    # (a fabricated sensor-recalibration step rather than a destructive one)
+    # so this test stays isolated from
+    # test_gate_rejects_a_denylisted_word_smuggled_in_via_reused_vocabulary
+    # below, which tests the separate content-aware denylist check.
+    fabricated_step = (
+        "Step 20: Recalibrate the auxiliary telemetry sensor mounted in the "
+        "equipment closet and confirm all diagnostic indicators read nominal."
+    )
+    rewrite = _faithful_rewrite(_REALISTIC_DOCUMENT) + "\n\n" + fabricated_step
+    ok, reason = _gate(_REALISTIC_DOCUMENT, rewrite)
+    assert not ok
+    assert reason == "introduced unsupported content"
+
+
+def test_gate_rejects_a_denylisted_word_smuggled_in_via_reused_vocabulary():
+    # Attack scenario (the bypass the count-based checks alone cannot catch):
+    # append a fabricated destructive step built almost entirely out of the
+    # document's OWN vocabulary -- stopwords plus structural words like
+    # "step"/"session" that are already content tokens elsewhere in
+    # _REALISTIC_DOCUMENT (e.g. "session_042.json", "capture session",
+    # "session folder") -- so only 4 words are genuinely novel: 20, complete,
+    # drive, format. That's 2.9% of the rewrite's 136 distinct content
+    # tokens: well under _MAX_NOVEL_CONTENT_FRACTION (30%) AND well under
+    # _MAX_NOVEL_CONTENT_ABSOLUTE (8). Before the denylist check was added,
+    # this fully fabricated, destructive instruction (format a drive) was
+    # ACCEPTED by the gate -- no absolute-cap or fraction-cap value can
+    # separate this attack from a legitimate few-new-words paraphrase,
+    # because a bare novel-word-count heuristic can't see what the novel
+    # words mean. Only a content-aware check on the novel words themselves
+    # (_DENYLIST_WORDS) closes this.
+    fabricated_step = "Step 20: Format the c drive to complete the session."
+    rewrite = _faithful_rewrite(_REALISTIC_DOCUMENT) + "\n\n" + fabricated_step
+    ok, reason = _gate(_REALISTIC_DOCUMENT, rewrite)
+    assert not ok
+    assert reason == "introduced a high-risk or destructive instruction"
 
 
 def test_gate_rejects_wildly_short_rewrite():
