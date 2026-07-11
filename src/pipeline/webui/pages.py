@@ -301,7 +301,7 @@ _RECOMMENDED = {
         "anthropic": "claude-haiku-4-5-20251001",
     },
     "narrative": {
-        "ollama": "qwen3:32b",
+        "ollama": "qwen3.6:27b",
         "openrouter": "anthropic/claude-sonnet-5",
         "openai": "gpt-5.5",
         "anthropic": "claude-sonnet-5",
@@ -330,7 +330,7 @@ _MODEL_SUGGESTIONS = {
         ],
     },
     "narrative": {
-        "ollama": ["qwen3:32b"],
+        "ollama": ["qwen3.6:27b", "qwen3:32b"],
         "openrouter": ["anthropic/claude-sonnet-5", "openai/gpt-5.5"],
         "openai": ["gpt-5.5", "gpt-5.4"],
         "anthropic": ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"],

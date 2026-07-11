@@ -19,7 +19,7 @@ def test_loads_committed_config():
     # stale relative to the repo's own committed default.
     config = load_models_config(default_config_path())
     assert config.steps.model == "qwen3:32b"
-    assert config.narrative.model == "qwen3:32b"
+    assert config.narrative.model == "qwen3.6:27b"
     assert config.steps.anthropic is False
     assert config.narrative.anthropic is False
     assert config.narrative.passes == 3

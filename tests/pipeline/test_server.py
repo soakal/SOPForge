@@ -1221,7 +1221,7 @@ def test_config_page_model_datalists(tmp_path):
 
     for key, default_model in (
         ("steps", "qwen3:32b"),
-        ("narrative", "qwen3:32b"),
+        ("narrative", "qwen3.6:27b"),
         ("vision", "qwen2.5vl:7b"),
     ):
         suggestions_id = f"{key}_model_suggestions"

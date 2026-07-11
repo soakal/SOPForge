@@ -25,7 +25,7 @@ max_concurrency = 1
 [narrative]
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
-model = "qwen3:32b"
+model = "qwen3.6:27b"
 passes = 3
 
 [vision]
