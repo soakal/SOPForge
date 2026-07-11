@@ -77,6 +77,14 @@ class SectionConfig(BaseModel):
     # template fallback it didn't need -- so any speedup from a
     # multi-GPU/parallel-capable Ollama server is opt-in, not assumed.
     max_concurrency: int = Field(default=1, ge=1)
+    # Only meaningful for [steps] (same steps-only handling as
+    # max_concurrency above -- never dumped for [narrative]/[polish], see
+    # dump_models_config_toml). Off by default: generate_step_text does not
+    # yet branch on this flag, so it currently has no runtime effect --
+    # it's config plumbing for a later step that will gate screenshot-image
+    # attachment on the per-step generation call. Defaults False so every
+    # existing models.toml (which predates this field) still loads unchanged.
+    use_vision: bool = False
 
     @model_validator(mode="after")
     def _legacy_anthropic(self):
@@ -239,12 +247,17 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         "# Against an untuned single-slot server, raising this just queues",
         "# requests and risks a queued step's own timeout expiring into a",
         "# template fallback it didn't need. Default 1 (steps) is safe/sequential.",
+        "#",
+        "# use_vision (steps only): reserved for a later step that will attach",
+        "# screenshot images to the per-step generation call. Currently has no",
+        "# runtime effect. Default false.",
         "",
         "[steps]",
         f"provider = {_toml_str(cfg.steps.provider)}",
         f"endpoint = {_toml_str(cfg.steps.endpoint)}",
         f"model = {_toml_str(cfg.steps.model)}",
         f"max_concurrency = {_toml_str(cfg.steps.max_concurrency)}",
+        f"use_vision = {_toml_str(cfg.steps.use_vision)}",
         "",
         "[narrative]",
         f"provider = {_toml_str(cfg.narrative.provider)}",

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from pipeline.config import (
     ModelsConfig,
+    SectionConfig,
     default_config_path,
     dump_models_config_toml,
     load_models_config,
@@ -120,6 +121,38 @@ def test_max_concurrency_rejects_zero():
     data["steps"]["max_concurrency"] = 0
     with pytest.raises(ValidationError):
         ModelsConfig.model_validate(data)
+
+
+def test_use_vision_defaults_to_false(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.steps.use_vision is False
+
+
+def test_use_vision_round_trips(tmp_path):
+    data = _base_cfg()
+    data["steps"]["use_vision"] = True
+    cfg = ModelsConfig.model_validate(data)
+    path = tmp_path / "models.toml"
+    save_models_config(cfg, path)
+    reloaded = load_models_config(path)
+    assert reloaded.steps.use_vision is True
+    assert "use_vision = true" in dump_models_config_toml(cfg)
+
+
+def test_committed_default_config_lacks_use_vision_and_still_loads():
+    # config/models.toml predates this field -- confirms an existing
+    # real-world config without use_vision still validates (defaults False)
+    # and extra="forbid" hasn't been loosened to silently accept anything.
+    config = load_models_config(default_config_path())
+    assert config.steps.use_vision is False
+    with pytest.raises(ValidationError):
+        SectionConfig(model="m", bogus_field=True)
 
 
 def test_polish_defaults_sanely_when_section_is_absent(tmp_path):
