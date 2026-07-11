@@ -73,7 +73,7 @@ Exit 0 requires ALL of:
     not a request failure) for every one of the 3 screenshots.
   - The rerender-with-`polish=local` job also reaches "done", and the
     polish capturing client shows a live chat() call actually completed
-    (an HTTP round trip to gemma3n:e4b happened and returned a reply) --
+    (an HTTP round trip to the configured [polish] model happened and returned a reply) --
     per the plan's risk note, this script does NOT fail the proof if that
     reply is gate-rejected or generate_polish_pass() falls back to the
     original text; only a failure to even reach the model live is fatal
@@ -388,7 +388,9 @@ def main():
         print(f"  [{i}] {cap}")
 
     # ---- Stage 4: polish, forced live via the per-job override ----
-    print("\n--- Rerendering with polish=local (forces the live gemma3n:e4b polish pass) ---")
+    print(
+        f"\n--- Rerendering with polish=local (forces the live {cfg.polish.model!r} polish pass) ---"
+    )
     resp = client.post(f"/sessions/{session_id}/rerender", params={"polish": "local"})
     if resp.status_code != 200:
         print(f"FAIL: POST /rerender?polish=local returned {resp.status_code}: {resp.text}")
@@ -422,7 +424,7 @@ def main():
             "is not evidence of anything running live)."
         )
         sys.exit(1)
-    print("OK: polish stage made a live chat() call to gemma3n:e4b that returned a reply.")
+    print(f"OK: polish stage made a live chat() call to {cfg.polish.model!r} that returned a reply.")
 
     reply = polish_call["reply"]
     ok, reason = _gate(pre_polish_md, reply) if reply else (False, "empty reply")

@@ -1,5 +1,6 @@
-"""Live proof that the polish stage's local backend (gemma3n:e4b on
-192.168.200.60:11434) genuinely rewrites a document -- not a stub, not a
+"""Live proof that the polish stage's local backend (whatever model/host is
+configured under [polish] in config/models.toml -- printed at runtime below,
+not hardcoded here) genuinely rewrites a document -- not a stub, not a
 template fallback. Loads [polish] via load_models_config, builds a real
 LLMClient(cfg.polish), and:
 
@@ -41,8 +42,8 @@ failed a different check than _gate's.
 
 The retry runs at a substantially *higher* temperature (0.85, plus
 top_p=0.95) than the first attempt (the section's configured default,
-unset here), not lower. Live runs against gemma3n:e4b at low temperature
-were observed to reproduce byte-identical echo output across independent
+unset here), not lower. Live runs against the configured [polish] model at
+low temperature were observed to reproduce byte-identical echo output across independent
 process runs -- consistent with near-greedy decoding collapsing onto a
 single high-probability "return the input" completion for this prompt.
 Escaping that requires *more* sampling entropy, not less, so the retry
@@ -138,10 +139,9 @@ def check_ollama_reachable(base_url, timeout=5.0):
 
 
 def main():
-    print("=== proof_polish_live: local polish backend against gemma3n:e4b ===")
-
     cfg = load_models_config()
     polish_cfg = cfg.polish
+    print(f"=== proof_polish_live: local polish backend against {polish_cfg.model!r} ===")
     print(
         f"[polish] config: provider={polish_cfg.provider!r} "
         f"endpoint={polish_cfg.endpoint!r} model={polish_cfg.model!r}"
@@ -212,7 +212,7 @@ def main():
 
         print("OK: generate_polish_pass(original, llm) == reply != original.")
         print()
-        print("=== PROOF SUCCEEDED: live gemma3n:e4b polish pass produced a genuine, ===")
+        print(f"=== PROOF SUCCEEDED: live {polish_cfg.model!r} polish pass produced a genuine, ===")
         print("=== gate-accepted, non-degenerate rewrite via generate_polish_pass(). ===")
         print()
         print("---- ORIGINAL DOCUMENT ----")
