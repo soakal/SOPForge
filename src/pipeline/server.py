@@ -231,8 +231,9 @@ def create_app(
 
     polish_llm_client_factory: same shape, but built from config/models.toml's
     `[polish]` section -- used only for the optional stage-4 polish pass
-    (_write_all_exports), gated on `[polish].enabled`. Only doc.md's export
-    reflects this pass so far (per-field, via generate_polish_fields)."""
+    (_write_all_exports), gated on `[polish].enabled`. Only doc.md's and
+    doc.html's exports reflect this pass so far (per-field, via
+    generate_polish_fields)."""
     app = FastAPI()
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -636,11 +637,12 @@ def create_app(
         # good rewrite of another. With no override, gated on
         # [polish].enabled (default off -- see PolishConfig); an explicit
         # override bypasses that toggle for this job (resolve_polish_config's
-        # "off" always skips, "local"/"haiku" always run). Only doc.md
-        # reflects this pass this cycle -- rendered from the polished fields
-        # below; the docx/pdf/html/single-html/md-bundle exports further down
-        # still render from the original (pre-polish) step_results/
-        # narrative_text and are deliberately left unpolished for now.
+        # "off" always skips, "local"/"haiku" always run). Only doc.md and
+        # doc.html reflect this pass this cycle -- both rendered from the
+        # polished fields below; the docx/pdf/single-html/md-bundle exports
+        # further down still render from the original (pre-polish)
+        # step_results/narrative_text and are deliberately left unpolished
+        # for now.
         current_cfg = load_models_config(resolved_config_path)
         if polish_override is not None:
             polish_section = resolve_polish_config(polish_override, current_cfg)
@@ -691,9 +693,9 @@ def create_app(
 
         html_doc = render_html(
             manifest,
-            step_results,
+            md_step_results,
             annotated_paths,
-            narrative_text=narrative_text,
+            narrative_text=md_narrative_text,
             base_dir=annotated_dir,
         )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")

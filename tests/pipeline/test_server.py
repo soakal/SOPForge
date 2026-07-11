@@ -236,9 +236,10 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     about the server-side WIRING, so it fakes generate_polish_fields
     (uppercasing every field it's handed) and asserts against exactly what
     it captured/returned -- proving _write_all_exports actually calls it
-    and renders doc.md from its output. doc.html is asserted to still carry
-    the ORIGINAL (unpolished) text, proving this cycle's polish wiring is
-    scoped to doc.md only."""
+    and renders doc.md from its output. doc.html is asserted to carry the
+    SAME polished/uppercased text as doc.md (both now render from the
+    returned polished fields), proving this cycle extends the polish wiring
+    from doc.md to doc.html too."""
     import pipeline.server as server_module
 
     captured = {}
@@ -286,17 +287,16 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
         if step.get("narration"):
             assert step["narration"].upper() in md
 
-    # The other 5 export formats deliberately still render from the
-    # pre-polish step_results/narrative_text this cycle -- doc.html must
-    # carry the ORIGINAL text, not the polished/uppercased version.
+    # doc.html now renders from the same polished fields as doc.md this
+    # cycle -- it must carry the polished/uppercased text, not the original.
     # (render_html html.escape()s step text, e.g. "'" -> "&#x27;", so the
     # comparison escapes the same way rather than checking a raw substring.)
     import html as _html
 
     html_doc = client.get(f"/sessions/{session_id}/doc.html").text
     for step in captured["step_results"]:
-        assert _html.escape(step["text"]) in html_doc
-        assert _html.escape(step["text"].upper()) not in html_doc
+        assert _html.escape(step["text"].upper()) in html_doc
+        assert _html.escape(step["text"]) not in html_doc
 
 
 def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):
@@ -594,11 +594,11 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
     """Enables polish with `_RealPromptParsingPolishStub` (uppercasing every
     field via a reply built from genuinely parsing the real prompt text) and
     drives a real session end to end. Proves: narrative_text, step text, and
-    step narration all land polished (uppercased) in doc.md, while doc.html
-    -- deliberately still rendered from the pre-polish step_results/
-    narrative_text this cycle -- keeps the ORIGINAL text and never picks up
-    the polished version. Reuses test_polish_rejected_when_it_drops_claim_
-    coverage's transcript fixture (three claims, all covered verbatim by
+    step narration all land polished (uppercased) in doc.md AND doc.html --
+    both now rendered from the same returned polished fields this cycle, so
+    doc.html picks up the polished version and never keeps the ORIGINAL
+    text. Reuses test_polish_rejected_when_it_drops_claim_coverage's
+    transcript fixture (three claims, all covered verbatim by
     _VerbatimNarrativeStub) so narrative_text, step text, AND at least one
     step's narration are all exercised in one pass."""
     import html as _html
@@ -648,9 +648,10 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
     for field_id, original in items:
         polished = original.upper()
         assert polished in md, f"expected polished {field_id!r} in doc.md"
-        assert _html.escape(original) in html_doc, f"expected ORIGINAL {field_id!r} in doc.html"
-        assert _html.escape(polished) not in html_doc, (
-            f"doc.html must not carry polished {field_id!r} -- polish is doc.md-only this cycle"
+        assert _html.escape(polished) in html_doc, f"expected polished {field_id!r} in doc.html"
+        assert _html.escape(original) not in html_doc, (
+            f"doc.html must not carry the original {field_id!r} -- doc.html now renders "
+            "from the same polished fields as doc.md"
         )
 
 
@@ -662,11 +663,14 @@ def test_polish_end_to_end_real_prompt_claim_coverage_rejection(tmp_path):
     still get caught by _write_all_exports' validate_claim_coverage safety
     net and reverted to the original narrative_text -- while step
     text/narration polish (which claim coverage never governs) is kept,
-    proving the revert is scoped to just the narrative field. Uses the same
-    real-prompt-parsing stub as the happy-path test, with only the
-    narrative field's rewrite overridden to this specific claim-dropping
-    rephrase; every other field still gets the default (uppercase)
-    transform, so this also proves per-field independence end to end."""
+    proving the revert is scoped to just the narrative field. This also
+    reaches doc.html: since doc.html now renders from the same md_step_
+    results/md_narrative_text as doc.md, the kept (uppercased) step fields
+    show up polished in doc.html too. Uses the same real-prompt-parsing
+    stub as the happy-path test, with only the narrative field's rewrite
+    overridden to this specific claim-dropping rephrase; every other field
+    still gets the default (uppercase) transform, so this also proves
+    per-field independence end to end."""
     import html as _html
 
     _target = "Then enter the computer name."
@@ -728,10 +732,19 @@ def test_polish_end_to_end_real_prompt_claim_coverage_rejection(tmp_path):
     report = client.get(f"/sessions/{session_id}/report").json()
     assert report.get("polish_rejected_claim_coverage") == ["claim-002"]
 
+    # doc.html renders from the same md_step_results/md_narrative_text as
+    # doc.md this cycle -- same outcome: narrative reverted to the original
+    # (claim-002 intact), step fields still polished (uppercase). (No
+    # negative "original not in html_doc" check here: the reverted
+    # narrative text legitimately still contains some steps' original
+    # wording verbatim, same as doc.md above.)
     html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    assert _html.escape(_target) in html_doc
+    assert _html.escape(_replacement) not in html_doc
     for field_id, original in step_items:
-        assert _html.escape(original) in html_doc
-        assert _html.escape(original.upper()) not in html_doc
+        assert _html.escape(original.upper()) in html_doc, (
+            f"expected polished {field_id!r} to survive in doc.html"
+        )
 
 
 def test_review_page_renders_sidecar_report(tmp_path):
