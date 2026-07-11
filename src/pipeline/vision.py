@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 _SYSTEM = "You write clear, concise, imperative steps for a Standard Operating Procedure."
 
 
+def _image_data_url(path):
+    """Base64-encodes a PNG screenshot into an OpenAI-compatible
+    `data:image/png;base64,...` URL for a vision-model `image_url` content
+    block. Shared by _caption_one (this module) and generation.py's
+    generate_step_text -- one place for the encoding so both vision-capable
+    call sites build the identical data URL shape."""
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{data}"
+
+
 def _prompt(narration, index, total):
     context = (
         f"Here is the narrator's description of the whole procedure, for context:\n\n{narration}\n\n"
@@ -43,7 +53,7 @@ def _caption_one(path, narration, index, total, endpoint, model, timeout, transp
     fallback chain (caption or per_step.get(...) or a placeholder) already
     handles a missing caption safely. Never raises."""
     try:
-        data = base64.b64encode(path.read_bytes()).decode("ascii")
+        image_url = _image_data_url(path)
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         # Cap the CONNECT phase short (like LLMClient) so an unreachable/
         # firewalled endpoint fails fast per image instead of stalling the whole
@@ -63,7 +73,7 @@ def _caption_one(path, narration, index, total, endpoint, model, timeout, transp
                                 {"type": "text", "text": _prompt(narration, index, total)},
                                 {
                                     "type": "image_url",
-                                    "image_url": {"url": f"data:image/png;base64,{data}"},
+                                    "image_url": {"url": image_url},
                                 },
                             ],
                         },

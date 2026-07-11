@@ -7,11 +7,16 @@ failure at all (bad HTTP status, malformed response body missing/short
 nothing is ever retried, and the failure mode never propagates to the
 caller — a broken LLM must never take down doc generation."""
 
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from pipeline.roundtrip import round_trip_ok
 from pipeline.template import render_step_template
+from pipeline.vision import _image_data_url
+
+logger = logging.getLogger(__name__)
 
 # Bold markdown a model adds despite being told to write plain prose --
 # round_trip_ok only checks verb/entity presence, never formatting, so raw
@@ -58,13 +63,33 @@ def _build_prompt(step):
     )
 
 
-def generate_step_text(step, llm_client):
+def generate_step_text(step, llm_client, use_vision=False, screenshot_dir=None):
     """Returns (text, used_fallback). Exactly one LLM call attempt; any
     failure — HTTP error, malformed response body, or a round-trip mismatch
-    — falls back to the template, never retried."""
+    — falls back to the template, never retried.
+
+    `use_vision`/`screenshot_dir` are off by default (byte-identical to the
+    pre-vision call) -- passing both AND finding `screenshot_dir/step.screenshot`
+    on disk switches `content` from the plain prompt string to the two-block
+    text+image_url list vision models expect (same shape vision.py's
+    _caption_one already sends), reusing its base64 data-URL helper rather
+    than re-deriving it. A missing screenshot or any other reason vision
+    can't be attached just falls through to the plain-text prompt -- it is
+    NOT treated as a generation failure, so it never triggers a template
+    fallback by itself."""
     prompt = _build_prompt(step)  # outside the try: a bug here is ours, not the LLM's
+    content = prompt
+    if use_vision and screenshot_dir is not None:
+        screenshot_path = Path(screenshot_dir) / step.screenshot
+        if screenshot_path.exists():
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+            ]
+        else:
+            logger.warning("vision screenshot missing for %s", screenshot_path)
     try:
-        reply = llm_client.chat([{"role": "user", "content": prompt}])
+        reply = llm_client.chat([{"role": "user", "content": content}])
     except Exception:  # noqa: BLE001 - any generation failure means fallback, never retry
         return render_step_template(step), True
 
