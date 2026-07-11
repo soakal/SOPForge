@@ -47,6 +47,14 @@ doc_no_prefix = ""
 # (gemma3n:e4b) is an UNVERIFIED placeholder: it was not present in this
 # deployment's `GET /api/tags` response as of 2026-07-10. Pull it on your
 # Ollama host and confirm it works before setting enabled = true.
+#
+# The `polish` query param on POST /sessions/{id}/rerender (and
+# /ui/sessions/{id}/rerender) overrides this section for a single re-render
+# job without editing this file: "off" skips the stage even if enabled here
+# is true, "local" forces the ollama provider (keeping this section's own
+# endpoint/model), "haiku" forces Anthropic's Claude Haiku 4.5. Omitting the
+# param leaves the enabled/provider/model below in full effect. See
+# resolve_polish_config in src/pipeline/config.py.
 [polish]
 enabled = false
 provider = "ollama"

@@ -8,6 +8,7 @@ from pipeline.config import (
     default_config_path,
     dump_models_config_toml,
     load_models_config,
+    resolve_polish_config,
     save_models_config,
 )
 
@@ -163,6 +164,44 @@ def test_polish_round_trips_through_dump_and_reload(tmp_path):
     assert reloaded.polish.provider == "ollama"
     assert reloaded.polish.model == "gemma3n:e4b"
     assert "[polish]" in dump_models_config_toml(cfg)
+
+
+def test_resolve_polish_config_off_returns_none():
+    config = load_models_config(default_config_path())
+    assert resolve_polish_config("off", config) is None
+
+
+def test_resolve_polish_config_local_forces_ollama():
+    data = _base_cfg()
+    data["polish"] = {
+        "enabled": False,
+        "provider": "openai",
+        "endpoint": "http://x",
+        "model": "gemma3n:e4b",
+    }
+    config = ModelsConfig.model_validate(data)
+    resolved = resolve_polish_config("local", config)
+    assert resolved is not None
+    assert resolved.provider == "ollama"
+    assert resolved.enabled is True
+    # Everything else about the section (e.g. the configured model) is
+    # preserved -- only the provider (and enabled) are forced.
+    assert resolved.model == "gemma3n:e4b"
+
+
+def test_resolve_polish_config_haiku_forces_anthropic_claude_haiku():
+    config = load_models_config(default_config_path())
+    resolved = resolve_polish_config("haiku", config)
+    assert resolved is not None
+    assert resolved.provider == "anthropic"
+    assert resolved.model == "claude-haiku-4-5-20251001"
+    assert resolved.enabled is True
+
+
+def test_resolve_polish_config_rejects_unknown_mode():
+    config = load_models_config(default_config_path())
+    with pytest.raises(ValueError):
+        resolve_polish_config("bogus", config)
 
 
 def test_rejects_missing_required_field(tmp_path):

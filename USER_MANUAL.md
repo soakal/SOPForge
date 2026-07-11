@@ -296,7 +296,7 @@ in `keep`.
 | `POST` | `/sessions` | Uploads a session. `multipart/form-data`: `manifest_json` + one `files` part per screenshot (named exactly as the manifest's `screenshot` field), an **optional** `transcript_file` (`.txt`/`.md`/`.json`), and an **optional** `stage` field (any truthy value). By default (`stage` omitted), queues for processing immediately with `status: "queued"`. With `stage` set, the session is held — same steps-review gate the web UI uses (see below) — with `status: "staged"` until confirmed. Missing screenshots or a bad transcript → `400`. |
 | `POST` | `/ui/sessions/{id}/confirm-steps` | Confirms a staged session's steps-review page: `keep` (one or more step ids) selects which steps survive; an **optional** `pos-{step_id}` field per step (any number, decimals allowed) sets its new position — omit all of them and steps keep whatever order `keep` was submitted in. The manifest is rewritten to the selected/reordered steps and generation is queued. `400` if `keep` is empty, a step id is unknown/duplicated, or a given `pos-{step_id}` isn't a number; `409` if the session isn't currently staged. |
 | `GET` | `/sessions/{id}/raw/{filename}` | A staged session's original (pre-generation) screenshot — what the steps-review checklist's thumbnails point at. |
-| `POST` | `/sessions/{id}/rerender` | Re-runs generation + all exports for an already-uploaded session. |
+| `POST` | `/sessions/{id}/rerender` | Re-runs generation + all exports for an already-uploaded session. **Optional** `polish` query param (`off`\|`local`\|`haiku`) overrides the optional polish pass for this job only: `off` skips it even if `[polish].enabled=true`; `local` forces it onto the local Ollama provider; `haiku` forces it onto Claude Haiku 4.5. Omitted (the default) leaves the current `[polish].enabled`/`provider`/`model` behavior from `config/models.toml` untouched. Same param works on `POST /ui/sessions/{id}/rerender`. |
 | `POST` | `/ui/build` | Manifest-free build: `multipart/form-data` with an optional `title`, one `files` part per image (each becomes a step, in order), and an optional `transcript_file`. Always stages (see `stage` above) — redirects to the steps-review page. |
 | `POST` | `/ui/sessions/{id}/transcript` | Attach/replace a narration `transcript_file` on an existing session and re-render (used by the review page's transcript form). |
 | `GET` | `/version` | `{"version": "..."}` — the running build's version. |
@@ -333,6 +333,11 @@ curl.exe http://127.0.0.1:8420/sessions/$id/raw/001.png -o 001.png
 
 # POST /sessions/{id}/rerender -- re-run generation + all exports
 curl.exe -X POST http://127.0.0.1:8420/sessions/$id/rerender
+
+# ...with the optional `polish` query param overriding the polish pass for
+# this job only ("off" | "local" | "haiku"; omit it to use the current
+# [polish] config as-is):
+curl.exe -X POST "http://127.0.0.1:8420/sessions/$id/rerender?polish=haiku"
 
 # POST /ui/build -- manifest-free build from screenshots (+ optional transcript)
 curl.exe -X POST http://127.0.0.1:8420/ui/build `

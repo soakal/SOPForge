@@ -225,7 +225,7 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path):
         sessions_root=tmp_path / "sessions",
         llm_client_factory=stub_llm_client_factory,
         narrative_llm_client_factory=stub_llm_client_factory,
-        polish_llm_client_factory=lambda: _UppercasingPolishStub(),
+        polish_llm_client_factory=lambda section: _UppercasingPolishStub(),
         config_path=cfg,
     )
     client = TestClient(app)
@@ -244,7 +244,7 @@ def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):
     factory that raises if called proves this stays a pure no-op: no client
     construction, no network call)."""
 
-    def _explode():
+    def _explode(section):
         raise AssertionError("polish_llm_client_factory must not be called when disabled")
 
     client_default = _make_client(tmp_path)
@@ -267,6 +267,98 @@ def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):
     guarded_md = client_guarded.get(f"/sessions/{session_id2}/doc.md").text
 
     assert guarded_md == unpolished_md
+
+
+def test_rerender_polish_query_param_overrides_config(tmp_path):
+    """The `polish` query param on POST /sessions/{id}/rerender (and its
+    /ui counterpart) is a per-job override of the saved [polish] section,
+    resolved via resolve_polish_config (config.py): 'off' must skip the
+    stage even when [polish].enabled=true in the saved config; 'local' must
+    force the ollama provider regardless of what's saved; 'haiku' must
+    force Anthropic's Claude Haiku 4.5; omitting the param entirely must
+    fall back unchanged to the saved config's own enabled/provider/model."""
+    calls = []
+
+    class _RecordingPolishStub:
+        def chat(self, messages, **kwargs):
+            return messages[0]["content"]
+
+    def _factory(section):
+        calls.append(section)
+        return _RecordingPolishStub()
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    # Deliberately not ollama, so a later polish=local assertion proves it's
+    # a forced override rather than coincidentally matching the saved value.
+    models_cfg.polish.provider = "openai"
+    save_models_config(models_cfg, cfg)
+
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        polish_llm_client_factory=_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+    # Initial generation (no override in play) used the saved (enabled,
+    # openai) section.
+    assert len(calls) == 1
+    assert calls[0].provider == "openai"
+
+    calls.clear()
+    resp = client.post(f"/sessions/{session_id}/rerender", params={"polish": "off"})
+    assert resp.status_code == 200
+    _wait_for_terminal_status(client, session_id)
+    assert calls == [], "polish=off must never construct a polish client"
+
+    resp = client.post(f"/sessions/{session_id}/rerender", params={"polish": "local"})
+    assert resp.status_code == 200
+    _wait_for_terminal_status(client, session_id)
+    assert len(calls) == 1
+    assert calls[0].provider == "ollama"
+    assert calls[0].enabled is True
+
+    calls.clear()
+    resp = client.post(f"/sessions/{session_id}/rerender", params={"polish": "haiku"})
+    assert resp.status_code == 200
+    _wait_for_terminal_status(client, session_id)
+    assert len(calls) == 1
+    assert calls[0].provider == "anthropic"
+    assert calls[0].model == "claude-haiku-4-5-20251001"
+    assert calls[0].enabled is True
+
+    calls.clear()
+    resp = client.post(f"/sessions/{session_id}/rerender")
+    assert resp.status_code == 200
+    _wait_for_terminal_status(client, session_id)
+    assert len(calls) == 1
+    assert calls[0].provider == "openai"
+
+    # Same override, exercised through the redirecting /ui route.
+    calls.clear()
+    resp = client.post(
+        f"/ui/sessions/{session_id}/rerender",
+        params={"polish": "off"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _wait_for_terminal_status(client, session_id)
+    assert calls == []
+
+
+def test_rerender_invalid_polish_value_returns_422(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+
+    resp = client.post(f"/sessions/{session_id}/rerender", params={"polish": "bogus"})
+    assert resp.status_code == 422
 
 
 def test_review_page_renders_sidecar_report(tmp_path):

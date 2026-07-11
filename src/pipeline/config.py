@@ -107,6 +107,33 @@ class PolishConfig(SectionConfig):
 # that may not exist on a given host.
 _POLISH_DEFAULT_MODEL = "gemma3n:e4b"  # UNVERIFIED -- see comment above
 
+PolishMode = Literal["off", "local", "haiku"]
+
+# Confirmed Claude Haiku 4.5 model id (unlike _POLISH_DEFAULT_MODEL above,
+# this one is not a placeholder).
+_POLISH_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+
+
+def resolve_polish_config(mode: PolishMode, cfg: "ModelsConfig") -> "PolishConfig | None":
+    """Per-job override for the optional polish stage, independent of the
+    saved [polish].enabled toggle: 'off' skips polish for this job entirely
+    (returns None, regardless of [polish].enabled); 'local' forces the
+    existing [polish] section onto the local ollama provider (keeping its
+    configured endpoint/model); 'haiku' forces Anthropic's Claude Haiku 4.5,
+    so a single job can use a stronger model without editing models.toml.
+    Both 'local' and 'haiku' return a section with enabled=True -- once a
+    mode is explicitly requested, [polish].enabled is no longer consulted
+    for that job."""
+    if mode == "off":
+        return None
+    if mode == "local":
+        return cfg.polish.model_copy(update={"provider": "ollama", "enabled": True})
+    if mode == "haiku":
+        return cfg.polish.model_copy(
+            update={"provider": "anthropic", "model": _POLISH_HAIKU_MODEL, "enabled": True}
+        )
+    raise ValueError(f"unknown polish mode: {mode!r}")
+
 
 class VisionConfig(BaseModel):
     """Vision-model captioning for the screenshots+transcript build mode."""

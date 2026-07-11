@@ -33,6 +33,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -56,6 +57,7 @@ from pipeline.config import (
     load_models_config,
     provider_api_key,
     provider_endpoint,
+    resolve_polish_config,
     runtime_config_path,
     save_models_config,
 )
@@ -287,9 +289,20 @@ def create_app(
     make_narrative_llm_client = narrative_llm_client_factory or (
         lambda: LLMClient(load_models_config(resolved_config_path).narrative)
     )
-    make_polish_llm_client = polish_llm_client_factory or (
-        lambda: LLMClient(load_models_config(resolved_config_path).polish)
-    )
+
+    def make_polish_llm_client(section=None):
+        """section: a resolved PolishConfig to build the client from --
+        passed by _write_all_exports when a per-job `polish` override
+        (resolve_polish_config) is in play. Defaults to the current
+        [polish] section from config/models.toml, loaded fresh (not
+        cached), matching every other make_*_llm_client factory's promise
+        to reflect config edits without a server restart."""
+        if section is None:
+            section = load_models_config(resolved_config_path).polish
+        if polish_llm_client_factory is not None:
+            return polish_llm_client_factory(section)
+        return LLMClient(section)
+
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
     # session_ids awaiting step-review confirmation -- staged by _ingest_session
@@ -310,13 +323,13 @@ def create_app(
         mode = session_dir / "mode.txt"
         return mode.exists() and mode.read_text(encoding="utf-8").strip() == "photo"
 
-    def _generate(session_id):
+    def _generate(session_id, polish_override=None):
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
 
         # Manifest-free "screenshots + transcript" sessions take a different
         # path: no LLM step phrasing, no click-marker annotation.
         if _is_photo_mode(session_dir):
-            _generate_photo(session_id)
+            _generate_photo(session_id, polish_override=polish_override)
             return
 
         # One generation attempt per step, round-trip-gated with a
@@ -422,9 +435,10 @@ def create_app(
             session_dir,
             report,
             narrative_text=narrative_text,
+            polish_override=polish_override,
         )
 
-    def _generate_photo(session_id):
+    def _generate_photo(session_id, polish_override=None):
         """Manifest-free mode: one step per uploaded image, in order. When
         [vision] is enabled, a vision model captions each screenshot from the
         image + narration; otherwise the transcript's own placement supplies the
@@ -581,6 +595,7 @@ def create_app(
             session_dir,
             report,
             narrative_text=narrative_text,
+            polish_override=polish_override,
         )
 
     def _write_all_exports(
@@ -592,9 +607,18 @@ def create_app(
         session_dir,
         report,
         narrative_text=None,
+        polish_override=None,
     ):
         """Render every output format + the review report from finished
-        step_results and annotated images. Shared by both generation modes."""
+        step_results and annotated images. Shared by both generation modes.
+
+        polish_override: a PolishMode ("off"/"local"/"haiku") for this job
+        only, resolved via resolve_polish_config -- e.g. from a `polish`
+        query param on /rerender. None (the default, used by every caller
+        except the rerender routes) means "no override": fall back to
+        whatever [polish].enabled/provider/model already say in
+        config/models.toml, byte-for-byte the same as before this param
+        existed."""
         md = render_markdown(
             manifest,
             step_results,
@@ -603,13 +627,22 @@ def create_app(
             base_dir=annotated_dir,
         )
         # Optional stage 4: a single formatting/tone pass over the assembled
-        # markdown, gated on [polish].enabled (default off -- see
-        # PolishConfig). Only doc.md reflects this pass this cycle; the
-        # docx/pdf/html/single-html/md-bundle exports below render
+        # markdown. With no override, gated on [polish].enabled (default off
+        # -- see PolishConfig); an explicit override bypasses that toggle
+        # for this job (resolve_polish_config's "off" always skips, "local"/
+        # "haiku" always run). Only doc.md reflects this pass this cycle;
+        # the docx/pdf/html/single-html/md-bundle exports below render
         # independently from step_results/narrative_text and are
         # deliberately left unpolished for now.
-        if load_models_config(resolved_config_path).polish.enabled:
-            polish_llm = make_polish_llm_client()
+        current_cfg = load_models_config(resolved_config_path)
+        if polish_override is not None:
+            polish_section = resolve_polish_config(polish_override, current_cfg)
+        elif current_cfg.polish.enabled:
+            polish_section = current_cfg.polish
+        else:
+            polish_section = None
+        if polish_section is not None:
+            polish_llm = make_polish_llm_client(polish_section)
             try:
                 md = generate_polish_pass(md, polish_llm)
             finally:
@@ -958,24 +991,32 @@ def create_app(
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")
-    def rerender(session_id: str):
+    def rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
         """Re-runs generation + all exports for an already-uploaded session
         against the current config/models.toml -- genuinely meaningful now
         that step generation is LLM-backed: e.g. after editing the config to
         point at a different model/endpoint, or setting up Anthropic
-        routing, without re-uploading the manifest/screenshots."""
+        routing, without re-uploading the manifest/screenshots.
+
+        `polish` (optional query param) overrides the polish stage for this
+        job only, via resolve_polish_config -- "off" forces it skipped
+        even if [polish].enabled=true, "local" forces the local ollama
+        provider, "haiku" forces Anthropic's Claude Haiku 4.5. Omitted
+        (the default) leaves the current [polish].enabled/provider/model
+        behavior untouched."""
         _require_known_session(session_id)
-        jobs.submit(session_id, lambda: _generate(session_id))
+        jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
 
     @app.post("/ui/sessions/{session_id}/rerender")
-    def ui_rerender(session_id: str):
+    def ui_rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
         """Same effect as POST /sessions/{id}/rerender, but redirects back
         to the session page instead of returning JSON -- the JSON route
         stays as-is for API/script callers, since a plain HTML <form> POST
-        would otherwise navigate the browser to a raw JSON blob."""
+        would otherwise navigate the browser to a raw JSON blob. See
+        rerender() above for what `polish` does."""
         _require_known_session(session_id)
-        jobs.submit(session_id, lambda: _generate(session_id))
+        jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/ui/sessions/{session_id}/transcript")
