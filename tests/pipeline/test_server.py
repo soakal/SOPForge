@@ -239,11 +239,11 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     (uppercasing every field it's handed) and asserts against exactly what
     it captured/returned -- proving _write_all_exports actually calls it
     and renders doc.md from its output. doc.html, doc.single.html, and the
-    export.md.zip md-bundle are all asserted to carry the SAME
-    polished/uppercased text as doc.md (all four now render from the
+    export.md.zip md-bundle, and doc.docx are all asserted to carry the
+    SAME polished/uppercased text as doc.md (all five now render from the
     returned polished fields), proving this cycle extends the polish
-    wiring from doc.md to the rest of the HTML family and the md-bundle
-    too."""
+    wiring from doc.md to the rest of the HTML family, the md-bundle, and
+    doc.docx too."""
     import pipeline.server as server_module
 
     captured = {}
@@ -330,6 +330,27 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
         assert step["text"].upper() in bundle_md
         if step.get("narration"):
             assert step["narration"].upper() in bundle_md
+
+    # doc.docx (assemble_docx, docx_assembler.py) now renders from the same
+    # polished md_step_results/md_narrative_text as the four formats above
+    # this cycle -- _step_bullet writes result["text"] as a bullet and
+    # sop.bullet(f"Narration: {...}") writes result["narration"], so both
+    # must carry the uppercased text too. (Not asserting narrative_text as a
+    # whole here: _narrative_body rewrites any "> [verify]" line into a
+    # "Needs verification: " callout stripped of its claim id -- a transform
+    # doc.md/doc.html/doc.single.html/the md-bundle never apply -- so a
+    # narrative containing such a line would not appear verbatim regardless
+    # of polish. sample-manifest.json's stubbed narrative carries no claims,
+    # so that path isn't exercised here.)
+    docx_resp = client.get(f"/sessions/{session_id}/doc.docx")
+    assert docx_resp.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(docx_resp.content)) as zf:
+        document_xml = zf.read("word/document.xml").decode("utf-8")
+    docx_text = "".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", document_xml))
+    for step in captured["step_results"]:
+        assert step["text"].upper() in docx_text
+        if step.get("narration"):
+            assert f"Narration: {step['narration'].upper()}" in docx_text
 
 
 def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):

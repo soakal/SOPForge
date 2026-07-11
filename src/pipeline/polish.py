@@ -22,6 +22,7 @@ down, or silently corrupt, an otherwise-correct document."""
 import json
 import re
 
+from pipeline.claim_coverage import parse_verify_line
 from pipeline.textgate import degenerate_shape_reason
 
 _JSON_ARRAY_RE = re.compile(r"\[.*\]", re.S)
@@ -312,6 +313,59 @@ _FIELDS_POLISH_PROMPT_TEMPLATE = (
 )
 
 
+def _split_verify_lines(narrative_text):
+    """Returns (body_text, verify_lines): `verify_lines` is every line of
+    `narrative_text` that `claim_coverage.parse_verify_line` recognizes as a
+    rendered "> [verify] (claim-id): ..." blockquote (render_verify_blockquote's
+    own format), in original order, verbatim; `body_text` is everything else,
+    rejoined with newlines.
+
+    Why this exists: `_field_gate`'s literal-fact check (below) only requires
+    a claim id's digit-bearing token to survive as a substring ANYWHERE in a
+    rewrite -- it does not, and cannot cheaply, pin the exact "> [verify]
+    (claim-XXX):" prefix to the start of a line. A polish rewrite that
+    faithfully preserves a claim's digits/wording while reflowing away the
+    leading "> " marker and "[verify]" tag (e.g. merging the blockquote into
+    surrounding prose) would sail through the gate AND validate_claim_coverage
+    (claim_coverage.py) -- coverage only checks the claim's text is present
+    SOMEWHERE, not that it's still recognizable as a verify callout -- yet
+    docx_assembler.py/export_pdf.py's `parse_verify_line` would no longer
+    recognize the line, silently dropping the "Needs verification" callout
+    and rendering the claim as ordinary body prose with no warning recorded
+    anywhere.
+
+    The fix: never let a verify-blockquote line reach the polish LLM at all.
+    `generate_polish_fields` calls this to pull every such line out of
+    narrative_text before it becomes the "narrative" field item, and splices
+    them back verbatim (see `_splice_verify_lines`) after resolving whatever
+    the LLM did (or didn't) do to the rest -- so the exact syntax
+    `parse_verify_line` depends on can never be touched by a rewrite,
+    independent of how good or bad the gate's fact-preservation heuristic
+    is."""
+    body_lines = []
+    verify_lines = []
+    for line in narrative_text.splitlines():
+        if parse_verify_line(line) is not None:
+            verify_lines.append(line)
+        else:
+            body_lines.append(line)
+    return "\n".join(body_lines), verify_lines
+
+
+def _splice_verify_lines(body_text, verify_lines):
+    """Reattaches `verify_lines` (from `_split_verify_lines`) to `body_text`
+    after polish, mirroring claim_coverage.ensure_claim_coverage's own
+    append-at-the-end format -- the only place verify blockquotes are ever
+    produced in production, so this never changes their position relative to
+    where they started."""
+    if not verify_lines:
+        return body_text
+    block = "\n".join(verify_lines)
+    if body_text and body_text.strip():
+        return f"{body_text.rstrip()}\n\n{block}\n"
+    return f"{block}\n"
+
+
 def _build_field_items(narrative_text, step_results):
     """Returns the ordered list of (field_id, text) items to submit in one
     polish call: `narrative_text` (when present/non-empty) as `"narrative"`,
@@ -354,8 +408,20 @@ def generate_polish_fields(narrative_text, step_results, llm):
     `meta["fields_kept_verbatim"]`. Never raises: any exception raised by
     the LLM call or while parsing its reply leaves every field at its
     original text, exactly like `generate_polish_pass`'s "polish can never
-    corrupt or block a document" discipline."""
-    items = _build_field_items(narrative_text, step_results)
+    corrupt or block a document" discipline.
+
+    `narrative_text` may embed "> [verify] (claim-id): ..." blockquote lines
+    (claim_coverage.render_verify_blockquote's format). Those lines are
+    pulled out via `_split_verify_lines` BEFORE the "narrative" field item is
+    built and never shown to the LLM at all, then spliced back verbatim (
+    `_splice_verify_lines`) onto whatever the narrative field resolves to --
+    see `_split_verify_lines`'s docstring for why: no gate can safely allow a
+    rewrite to touch that exact syntax, so the only safe rule is that it
+    never gets the chance to."""
+    narrative_body, verify_lines = (
+        _split_verify_lines(narrative_text) if narrative_text else (narrative_text, [])
+    )
+    items = _build_field_items(narrative_body, step_results)
 
     meta = {
         "attempted": False,
@@ -396,7 +462,9 @@ def generate_polish_fields(narrative_text, step_results, llm):
         resolved[field_id] = rewrite
         meta["fields_polished"].append(field_id)
 
-    polished_narrative_text = resolved.get("narrative", narrative_text)
+    polished_narrative_text = _splice_verify_lines(
+        resolved.get("narrative", narrative_body), verify_lines
+    )
 
     polished_step_results = []
     for step in step_results:
