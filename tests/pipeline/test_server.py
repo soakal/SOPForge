@@ -199,7 +199,13 @@ def test_step_mismatch_after_generation_fails_the_job_loudly(tmp_path, monkeypat
     import pipeline.server as server_module
 
     def _dropping_render_steps_llm_mode(
-        manifest, screenshots_dir, annotated_dir, llm_client, on_progress=None, max_concurrency=1
+        manifest,
+        screenshots_dir,
+        annotated_dir,
+        llm_client,
+        on_progress=None,
+        max_concurrency=1,
+        use_vision=False,
     ):
         kept = manifest.steps[1:]  # deliberately drop the first step
         results = [{"step_id": s.id, "text": "x", "used_fallback": False} for s in kept]

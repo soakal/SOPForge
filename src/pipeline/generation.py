@@ -7,11 +7,16 @@ failure at all (bad HTTP status, malformed response body missing/short
 nothing is ever retried, and the failure mode never propagates to the
 caller — a broken LLM must never take down doc generation."""
 
+import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from pipeline.roundtrip import round_trip_ok
 from pipeline.template import render_step_template
+from pipeline.vision import _image_data_url
+
+logger = logging.getLogger(__name__)
 
 # Bold markdown a model adds despite being told to write plain prose --
 # round_trip_ok only checks verb/entity presence, never formatting, so raw
@@ -58,13 +63,33 @@ def _build_prompt(step):
     )
 
 
-def generate_step_text(step, llm_client):
+def generate_step_text(step, llm_client, use_vision=False, screenshot_dir=None):
     """Returns (text, used_fallback). Exactly one LLM call attempt; any
     failure — HTTP error, malformed response body, or a round-trip mismatch
-    — falls back to the template, never retried."""
+    — falls back to the template, never retried.
+
+    `use_vision`/`screenshot_dir` are off by default (byte-identical to the
+    pre-vision call) -- passing both AND finding `screenshot_dir/step.screenshot`
+    on disk switches `content` from the plain prompt string to the two-block
+    text+image_url list vision models expect (same shape vision.py's
+    _caption_one already sends), reusing its base64 data-URL helper rather
+    than re-deriving it. A missing screenshot or any other reason vision
+    can't be attached just falls through to the plain-text prompt -- it is
+    NOT treated as a generation failure, so it never triggers a template
+    fallback by itself."""
     prompt = _build_prompt(step)  # outside the try: a bug here is ours, not the LLM's
+    content = prompt
+    if use_vision and screenshot_dir is not None:
+        screenshot_path = Path(screenshot_dir) / step.screenshot
+        if screenshot_path.exists():
+            content = [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+            ]
+        else:
+            logger.warning("vision screenshot missing for %s", screenshot_path)
     try:
-        reply = llm_client.chat([{"role": "user", "content": prompt}])
+        reply = llm_client.chat([{"role": "user", "content": content}])
     except Exception:  # noqa: BLE001 - any generation failure means fallback, never retry
         return render_step_template(step), True
 
@@ -75,12 +100,21 @@ def generate_step_text(step, llm_client):
     return reply, False
 
 
-def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1):
+def generate_all_steps(
+    manifest,
+    llm_client,
+    on_progress=None,
+    max_concurrency=1,
+    use_vision=False,
+    screenshot_dir=None,
+):
     """Returns [{"step_id", "text", "used_fallback"}, ...] in manifest order
     — one generation attempt per step, invariant L1's 1:1 mapping preserved
     regardless of max_concurrency. `on_progress`, if given, is called as
     `on_progress(completed, total)` after each step so a caller (e.g. the
     session's job status) can report how far along a long generation run is.
+    `use_vision`/`screenshot_dir` are forwarded straight through to
+    generate_step_text (off by default -- see its docstring).
 
     max_concurrency=1 (default) keeps the original strictly sequential loop
     — safest against an Ollama instance that isn't tuned for concurrent
@@ -95,7 +129,9 @@ def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1
     if max_concurrency <= 1 or total <= 1:
         results = []
         for i, step in enumerate(manifest.steps, start=1):
-            text, used_fallback = generate_step_text(step, llm_client)
+            text, used_fallback = generate_step_text(
+                step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir
+            )
             results.append({"step_id": step.id, "text": text, "used_fallback": used_fallback})
             if on_progress:
                 on_progress(i, total)
@@ -104,7 +140,13 @@ def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1
     results = [None] * total
     with ThreadPoolExecutor(max_workers=min(max_concurrency, total)) as pool:
         futures = {
-            pool.submit(generate_step_text, step, llm_client): (i, step)
+            pool.submit(
+                generate_step_text,
+                step,
+                llm_client,
+                use_vision=use_vision,
+                screenshot_dir=screenshot_dir,
+            ): (i, step)
             for i, step in enumerate(manifest.steps)
         }
         done = 0

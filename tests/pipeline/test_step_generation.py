@@ -10,6 +10,7 @@ from pathlib import Path
 from pipeline.generation import _build_prompt, generate_all_steps, generate_step_text
 from pipeline.manifest import Element, Manifest, Screen, Session, Step, Window, load_manifest
 from pipeline.template import render_step_template
+from pipeline.vision import _image_data_url
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
 
@@ -182,6 +183,122 @@ def test_malformed_response_falls_back_with_exactly_one_attempt():
     assert text == render_step_template(step)
 
 
+def test_vision_off_by_default_sends_plain_string_content():
+    """Default (no use_vision arg at all) must be byte-identical to the
+    pre-vision call: `content` is the plain prompt string, not a list."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]
+    client = _RecordingClient(lambda idx, s=step: _realistic_reply(s))
+    text, used_fallback = generate_step_text(step, client)
+    assert used_fallback is False
+    assert client.calls[0][0]["content"] == _build_prompt(step)
+    assert isinstance(client.calls[0][0]["content"], str)
+
+
+def test_vision_on_with_existing_screenshot_builds_multipart_content_and_succeeds(tmp_path):
+    """use_vision=True + a real file at screenshot_dir/step.screenshot builds
+    the two-block text+image_url content, and the reply is a genuine
+    non-fallback pass (used_fallback is False) -- proves round_trip_ok saw a
+    real reply, not a template masquerading as one."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]
+    screenshot_path = tmp_path / step.screenshot
+    screenshot_path.write_bytes(b"fake-png-bytes-for-test")
+
+    client = _RecordingClient(lambda idx, s=step: _realistic_reply(s))
+    text, used_fallback = generate_step_text(step, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert used_fallback is False
+    content = client.calls[0][0]["content"]
+    assert content == [
+        {"type": "text", "text": _build_prompt(step)},
+        {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+    ]
+
+
+def test_vision_on_with_existing_screenshot_and_mismatched_reply_falls_back(tmp_path):
+    """Combines the vision-on multipart path with the round-trip-failure path:
+    a real screenshot on disk builds the two-block text+image_url content (so
+    this is a genuine vision call, not the missing-screenshot fall-through),
+    but the reply fails the round-trip gate -- must still fall back to the
+    template, exactly like the vision-off case, proving the fallback gate
+    runs identically regardless of use_vision."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]  # click, Save button, SmartDeploy Console
+    screenshot_path = tmp_path / step.screenshot
+    screenshot_path.write_bytes(b"fake-png-bytes-for-test")
+
+    client = _RecordingClient(lambda idx: "Completely unrelated wrong sentence.")
+    text, used_fallback = generate_step_text(step, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert used_fallback is True
+    assert len(client.calls) == 1  # exactly one attempt, never retried
+    assert text == render_step_template(step)
+    content = client.calls[0][0]["content"]
+    assert content == [
+        {"type": "text", "text": _build_prompt(step)},
+        {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+    ]
+
+
+def test_vision_on_without_matching_screenshot_falls_through_to_plain_text(tmp_path):
+    """A missing screenshot file is NOT a generation failure -- it just
+    means vision can't be attached, so the call proceeds with the ordinary
+    plain-string prompt (and can still succeed, not fall back)."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]  # tmp_path is empty -- no file named step.screenshot in it
+
+    client = _RecordingClient(lambda idx, s=step: _realistic_reply(s))
+    text, used_fallback = generate_step_text(step, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert used_fallback is False
+    assert client.calls[0][0]["content"] == _build_prompt(step)
+
+
+def test_vision_on_without_matching_screenshot_logs_warning(tmp_path, caplog):
+    """The missing-screenshot fall-through (generation.py's own comment: 'NOT
+    treated as a generation failure') is otherwise silent -- mirror vision.py's
+    _caption_one convention (a logger.warning naming the path) so the degrade
+    still leaves a discoverable trace in logs."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]  # tmp_path is empty -- no file named step.screenshot in it
+
+    client = _RecordingClient(lambda idx, s=step: _realistic_reply(s))
+    with caplog.at_level("WARNING", logger="pipeline.generation"):
+        generate_step_text(step, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert len(caplog.records) == 1
+    assert str(tmp_path / step.screenshot) in caplog.records[0].getMessage()
+
+
+def test_vision_off_does_not_log_warning(caplog):
+    """use_vision=False (the default) never even checks for a screenshot file,
+    so it must not emit the missing-screenshot warning."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]
+
+    client = _RecordingClient(lambda idx, s=step: _realistic_reply(s))
+    with caplog.at_level("WARNING", logger="pipeline.generation"):
+        generate_step_text(step, client)
+
+    assert caplog.records == []
+
+
+def test_vision_on_with_existing_screenshot_does_not_log_warning(tmp_path, caplog):
+    """A screenshot that does exist on disk must not trigger the
+    missing-screenshot warning."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]
+    screenshot_path = tmp_path / step.screenshot
+    screenshot_path.write_bytes(b"fake-png-bytes-for-test")
+
+    client = _RecordingClient(lambda idx, s=step: _realistic_reply(s))
+    with caplog.at_level("WARNING", logger="pipeline.generation"):
+        generate_step_text(step, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert caplog.records == []
+
+
 def test_generate_all_steps_preserves_order_and_ids():
     manifest = load_manifest(FIXTURES / "sample-manifest.json")
     client = _RecordingClient(lambda idx: "irrelevant text triggering fallback")
@@ -259,6 +376,99 @@ def test_concurrency_cap_respected():
     client = _StaggeredClient({step.element.name: 0.05 for step in manifest.steps})
     generate_all_steps(manifest, client, max_concurrency=3)
     assert client.peak_in_flight <= 3
+
+
+class _VisionRecordingClient:
+    """Thread-safe stub that records every call's raw content (str or the
+    two-block vision list) and replies realistically -- used to prove
+    use_vision/screenshot_dir reach generate_step_text through BOTH of
+    generate_all_steps' code paths, sequential and ThreadPool."""
+
+    def __init__(self, reply_for_name):
+        self.reply_for_name = reply_for_name
+        self._lock = threading.Lock()
+        self.calls = []
+
+    def chat(self, messages, **kwargs):
+        content = messages[0]["content"]
+        text = content[0]["text"] if isinstance(content, list) else content
+        name = next(n for n in self.reply_for_name if n in text)
+        with self._lock:
+            self.calls.append(content)
+        return self.reply_for_name[name]
+
+
+def test_generate_all_steps_forwards_use_vision_sequential_path(tmp_path):
+    """max_concurrency=1 (default) is the sequential loop -- use_vision=True
+    plus real screenshots on disk must reach generate_step_text there too."""
+    manifest = _make_manifest(4)
+    for step in manifest.steps:
+        (tmp_path / step.screenshot).write_bytes(b"fake-png-bytes-for-test")
+    reply_for_name = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+    client = _VisionRecordingClient(reply_for_name)
+
+    results = generate_all_steps(manifest, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert len(client.calls) == len(manifest.steps)
+    assert all(not r["used_fallback"] for r in results)
+    for step, content in zip(manifest.steps, client.calls):
+        screenshot_path = tmp_path / step.screenshot
+        assert content == [
+            {"type": "text", "text": _build_prompt(step)},
+            {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+        ]
+
+
+def test_generate_all_steps_forwards_use_vision_concurrent_pool_path(tmp_path):
+    """max_concurrency>1 dispatches through the ThreadPool pool.submit path --
+    the easy mistake this guards against is wiring use_vision/screenshot_dir
+    into only the sequential branch and forgetting this one."""
+    manifest = _make_manifest(6)
+    for step in manifest.steps:
+        (tmp_path / step.screenshot).write_bytes(b"fake-png-bytes-for-test")
+    reply_for_name = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+    client = _VisionRecordingClient(reply_for_name)
+
+    results = generate_all_steps(
+        manifest, client, max_concurrency=3, use_vision=True, screenshot_dir=tmp_path
+    )
+
+    assert [r["step_id"] for r in results] == [s.id for s in manifest.steps]
+    assert len(client.calls) == len(manifest.steps)
+    assert all(not r["used_fallback"] for r in results)
+    for call in client.calls:
+        assert isinstance(call, list)
+        assert call[0]["type"] == "text"
+        assert call[1]["type"] == "image_url"
+    for step in manifest.steps:
+        screenshot_path = tmp_path / step.screenshot
+        expected = [
+            {"type": "text", "text": _build_prompt(step)},
+            {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+        ]
+        assert expected in client.calls
+
+
+def test_generate_all_steps_use_vision_default_false_stays_plain_string_concurrent(tmp_path):
+    """use_vision defaults to False even when max_concurrency>1 -- the
+    ThreadPool path must stay byte-identical to the pre-vision call."""
+    manifest = _make_manifest(4)
+    for step in manifest.steps:
+        (tmp_path / step.screenshot).write_bytes(b"fake-png-bytes-for-test")
+    reply_for_name = {
+        step.element.name: f"Click {step.element.name} in Test Window." for step in manifest.steps
+    }
+    client = _VisionRecordingClient(reply_for_name)
+
+    generate_all_steps(manifest, client, max_concurrency=3)
+
+    assert len(client.calls) == len(manifest.steps)
+    for call in client.calls:
+        assert isinstance(call, str)
 
 
 def test_default_is_sequential():
