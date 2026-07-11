@@ -226,28 +226,38 @@ def test_get_doc_md_and_html(tmp_path):
     assert html_resp.text.startswith("<!doctype html>")
 
 
-def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path):
-    """[polish].enabled=true routes the assembled markdown through
-    generate_polish_pass (polish.py) before doc.md is written -- the stub
-    client here uppercases the whole document, a transform the gate accepts
-    (every content token still traces back to the original once
-    lowercased, no digit/path literal is dropped, length ratio is
-    unchanged) but that's trivially visible in the written doc.md, proving
-    the polished text -- not the original render -- is what lands on disk."""
-    from pipeline.polish import _POLISH_PROMPT_TEMPLATE
+def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
+    """[polish].enabled=true routes narrative_text and every step's
+    "text"/present "narration" through generate_polish_fields (polish.py)
+    before doc.md is rendered, and doc.md is built from the RETURNED
+    polished fields -- not the pre-polish step_results/narrative_text.
+    generate_polish_fields' own field-level prompt/gate/JSON-parsing
+    behavior already has dedicated coverage in test_polish.py; this test is
+    about the server-side WIRING, so it fakes generate_polish_fields
+    (uppercasing every field it's handed) and asserts against exactly what
+    it captured/returned -- proving _write_all_exports actually calls it
+    and renders doc.md from its output. doc.html is asserted to still carry
+    the ORIGINAL (unpolished) text, proving this cycle's polish wiring is
+    scoped to doc.md only."""
+    import pipeline.server as server_module
 
-    _prefix, _, _suffix = _POLISH_PROMPT_TEMPLATE.partition("{document}")
+    captured = {}
 
-    class _UppercasingPolishStub:
-        def chat(self, messages, **kwargs):
-            # generate_polish_pass wraps document_text in a fixed
-            # instruction prompt -- strip that wrapper back off so only the
-            # actual document content (not the instruction prose, which
-            # would fail the gate's "no invented content" check) is
-            # uppercased.
-            content = messages[0]["content"]
-            document = content[len(_prefix) : len(content) - len(_suffix)]
-            return document.upper()
+    def _fake_generate_polish_fields(narrative_text, step_results, llm):
+        captured["narrative_text"] = narrative_text
+        captured["step_results"] = step_results
+        polished_narrative = narrative_text.upper() if narrative_text else narrative_text
+        polished_steps = []
+        for step in step_results:
+            new_step = dict(step)
+            new_step["text"] = step["text"].upper()
+            if step.get("narration"):
+                new_step["narration"] = step["narration"].upper()
+            polished_steps.append(new_step)
+        meta = {"attempted": True, "fields_polished": [], "fields_kept_verbatim": {}}
+        return polished_narrative, polished_steps, meta
+
+    monkeypatch.setattr(server_module, "generate_polish_fields", _fake_generate_polish_fields)
 
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)
@@ -259,17 +269,34 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path):
         sessions_root=tmp_path / "sessions",
         llm_client_factory=stub_llm_client_factory,
         narrative_llm_client_factory=stub_llm_client_factory,
-        polish_llm_client_factory=lambda section: _UppercasingPolishStub(),
+        polish_llm_client_factory=lambda section: object(),
         config_path=cfg,
     )
     client = TestClient(app)
     session_id, status = _create_and_wait(client, tmp_path)
     assert status["status"] == "done"
+    assert captured, "generate_polish_fields was never called"
 
-    md_resp = client.get(f"/sessions/{session_id}/doc.md")
-    assert md_resp.status_code == 200
-    assert md_resp.text == md_resp.text.upper()
-    assert md_resp.text != md_resp.text.lower()  # sanity: not an empty/blank doc
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    if captured["narrative_text"]:
+        assert captured["narrative_text"].upper() in md
+    assert captured["step_results"], "sanity: expected at least one step"
+    for step in captured["step_results"]:
+        assert step["text"].upper() in md
+        if step.get("narration"):
+            assert step["narration"].upper() in md
+
+    # The other 5 export formats deliberately still render from the
+    # pre-polish step_results/narrative_text this cycle -- doc.html must
+    # carry the ORIGINAL text, not the polished/uppercased version.
+    # (render_html html.escape()s step text, e.g. "'" -> "&#x27;", so the
+    # comparison escapes the same way rather than checking a raw substring.)
+    import html as _html
+
+    html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    for step in captured["step_results"]:
+        assert _html.escape(step["text"]) in html_doc
+        assert _html.escape(step["text"].upper()) not in html_doc
 
 
 def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):
@@ -412,34 +439,49 @@ class _VerbatimNarrativeStub:
         )
 
 
-def test_polish_rejected_when_it_drops_claim_coverage(tmp_path):
-    """generate_polish_pass's own no-invented-content gate (polish.py's
-    _gate) only rejects a rewrite that ADDS unsupported content -- a
-    rewrite that purely REPHRASES an already-covered claim's exact wording
-    (dropping a couple of old words, adding a couple of new ones, well
-    under the gate's novel-content thresholds) sails straight through it,
-    silently breaking invariant L4 ("every claim ID must appear in output
-    or be [verify]-flagged"): the claim's literal text no longer appears
+def test_polish_rejected_when_it_drops_claim_coverage(tmp_path, monkeypatch):
+    """generate_polish_fields' own per-field gate (_field_gate) only rejects
+    a rewrite that ADDS unsupported content -- a rewrite that purely
+    REPHRASES an already-covered claim's exact wording (dropping a couple
+    of old words, adding a couple of new ones, well under the gate's
+    novel-content thresholds) sails straight through it, silently breaking
+    invariant L4 ("every claim ID must appear in output or be
+    [verify]-flagged"): the claim's literal text no longer appears
     anywhere, and it was never [verify]-flagged to begin with. This is the
-    safety net that must still catch it: when the polished text fails
-    validate_claim_coverage, _write_all_exports must discard the polish and
-    keep the known-good unpolished md (which already satisfies coverage by
-    construction), and record the rejection on the sidecar report."""
+    safety net that must still catch it: when the polished narrative fails
+    validate_claim_coverage, _write_all_exports must discard JUST the
+    narrative rewrite and keep the known-good original narrative_text
+    (which already satisfies coverage by construction) -- while a step's
+    text/narration polish (which claim-coverage never governs) is KEPT,
+    proving the revert is scoped to the narrative field, not a fallback to
+    the whole pre-polish document. generate_polish_fields' own field-level
+    prompt/JSON-parsing behavior has dedicated coverage in test_polish.py;
+    this test fakes it to isolate the server-side revert-on-failure wiring."""
+    import pipeline.server as server_module
+
     _target = "Then enter the computer name."
     _replacement = "Then type in the computer name."
+    captured = {}
 
-    class _ClaimRephrasingPolishStub:
-        def chat(self, messages, **kwargs):
-            from pipeline.polish import _POLISH_PROMPT_TEMPLATE
+    def _fake_generate_polish_fields(narrative_text, step_results, llm):
+        assert _target in narrative_text, (
+            "fixture assumption: claim-002's exact text must be present "
+            "(content-covered, not [verify]-flagged) in the unpolished narrative"
+        )
+        captured["narrative_text"] = narrative_text
+        captured["step_results"] = step_results
+        polished_narrative = narrative_text.replace(_target, _replacement)
+        polished_steps = []
+        for step in step_results:
+            new_step = dict(step)
+            new_step["text"] = step["text"].upper()
+            if step.get("narration"):
+                new_step["narration"] = step["narration"].upper()
+            polished_steps.append(new_step)
+        meta = {"attempted": True, "fields_polished": [], "fields_kept_verbatim": {}}
+        return polished_narrative, polished_steps, meta
 
-            prefix, _, suffix = _POLISH_PROMPT_TEMPLATE.partition("{document}")
-            content = messages[0]["content"]
-            document = content[len(prefix) : len(content) - len(suffix)]
-            assert _target in document, (
-                "fixture assumption: claim-002's exact text must be present "
-                "(content-covered, not [verify]-flagged) in the unpolished doc"
-            )
-            return document.replace(_target, _replacement)
+    monkeypatch.setattr(server_module, "generate_polish_fields", _fake_generate_polish_fields)
 
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)
@@ -451,7 +493,7 @@ def test_polish_rejected_when_it_drops_claim_coverage(tmp_path):
         sessions_root=tmp_path / "sessions",
         llm_client_factory=stub_llm_client_factory,
         narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
-        polish_llm_client_factory=lambda section: _ClaimRephrasingPolishStub(),
+        polish_llm_client_factory=lambda section: object(),
         config_path=cfg,
     )
     client = TestClient(app)
@@ -466,16 +508,230 @@ def test_polish_rejected_when_it_drops_claim_coverage(tmp_path):
     session_id = resp.json()["session_id"]
     status = _wait_for_terminal_status(client, session_id)
     assert status["status"] == "done"
+    assert captured, "generate_polish_fields was never called"
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
-    # The rephrasing polish was rejected -- doc.md fell back to the
-    # unpolished (claim-complete) render, still containing claim-002's
-    # exact original wording, no [verify] blockquotes needed.
+    # The rephrasing narrative polish was rejected -- doc.md's narrative
+    # section fell back to the unpolished (claim-complete) text, still
+    # containing claim-002's exact original wording, no [verify]
+    # blockquotes needed.
     assert _target in md
+    assert _replacement not in md
     assert "[verify]" not in md
+
+    # ...but step text/narration polish was NOT reverted alongside it --
+    # claim-coverage only governs the narrative field.
+    assert captured["step_results"], "sanity: expected at least one step"
+    saw_polished_narration = False
+    for step in captured["step_results"]:
+        assert step["text"].upper() in md
+        if step.get("narration"):
+            assert step["narration"].upper() in md
+            saw_polished_narration = True
+    assert saw_polished_narration, "sanity: expected at least one narrated step"
 
     report = client.get(f"/sessions/{session_id}/report").json()
     assert report.get("polish_rejected_claim_coverage") == ["claim-002"]
+
+
+# --- real end-to-end polish coverage (prompt build -> JSON parse -> gate) --
+#
+# Every polish test above fakes generate_polish_fields directly -- proving
+# the server-side WIRING (call it, render doc.md from its return, revert on
+# claim-coverage failure) but never exercising polish.py's own real prompt
+# text, its real JSON-array reply contract, or _field_gate together with
+# that wiring. _RealPromptParsingPolishStub below is a `.chat()` that
+# genuinely parses the real `_FIELDS_POLISH_PROMPT_TEMPLATE` prompt
+# `_build_fields_prompt` builds (the same `field_id: "text"` item-line
+# format `_build_field_items` emits) and replies with real JSON per
+# `_JSON_ARRAY_RE`'s `[{"field_id": ..., "text": ...}, ...]` contract -- so
+# a future regression in field-id mapping (`_build_field_items` vs. real
+# step_ids), the `generate_polish_fields` return-tuple order, or a broken
+# JSON regex would actually fail one of the two tests below.
+
+_PROMPT_ITEM_RE = re.compile(r'^(.+?): "(.*)"$', re.M)
+
+
+class _RealPromptParsingPolishStub:
+    """A `.chat()` that genuinely parses the real
+    `_FIELDS_POLISH_PROMPT_TEMPLATE` prompt text `generate_polish_fields`
+    (polish.py) sends -- via the same `field_id: "text"` item-line format
+    `_build_fields_prompt` emits -- and replies with real JSON per its
+    `[{"field_id": ..., "text": ...}, ...]` / `_JSON_ARRAY_RE` contract, not
+    a hardcoded reply that happens to match by coincidence. Applies
+    `transform` (default `str.upper`: a purely case-changing rewrite --
+    same content tokens once lowered, so it always clears `_field_gate`,
+    and `_claim_covered` also lowers both sides before comparing, so it
+    never breaks claim coverage either) to every field's text, except for
+    field ids present in `overrides`, whose per-field callable is used
+    instead -- letting a caller substitute a targeted, gate-passing
+    rephrase for one field (e.g. one that drops a claim's literal text)
+    while every other field still gets the default visible transform."""
+
+    def __init__(self, transform=str.upper, overrides=None):
+        self.transform = transform
+        self.overrides = overrides or {}
+        self.calls = []
+
+    def chat(self, messages, **kwargs):
+        content = messages[0]["content"]
+        self.calls.append(content)
+        items = _PROMPT_ITEM_RE.findall(content)
+        assert items, "expected at least one 'field_id: \"text\"' line in the real polish prompt"
+        rewrites = [
+            {"field_id": field_id, "text": self.overrides.get(field_id, self.transform)(text)}
+            for field_id, text in items
+        ]
+        return json.dumps(rewrites)
+
+
+_E2E_TRANSCRIPT = (
+    "First, open the console.\n\nThen enter the computer name.\n\nFinally, check the downloads."
+)
+
+
+def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
+    """Enables polish with `_RealPromptParsingPolishStub` (uppercasing every
+    field via a reply built from genuinely parsing the real prompt text) and
+    drives a real session end to end. Proves: narrative_text, step text, and
+    step narration all land polished (uppercased) in doc.md, while doc.html
+    -- deliberately still rendered from the pre-polish step_results/
+    narrative_text this cycle -- keeps the ORIGINAL text and never picks up
+    the polished version. Reuses test_polish_rejected_when_it_drops_claim_
+    coverage's transcript fixture (three claims, all covered verbatim by
+    _VerbatimNarrativeStub) so narrative_text, step text, AND at least one
+    step's narration are all exercised in one pass."""
+    import html as _html
+
+    stub = _RealPromptParsingPolishStub()
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
+        polish_llm_client_factory=lambda section: stub,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files.append(("transcript_file", ("narration.md", _E2E_TRANSCRIPT.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+    assert stub.calls, "the polish LLM client was never called"
+
+    items = _PROMPT_ITEM_RE.findall(stub.calls[0])
+    field_ids = [field_id for field_id, _ in items]
+    assert "narrative" in field_ids, "sanity: expected narrative_text to be one of the fields"
+    assert any(":narration" in fid for fid in field_ids), (
+        "sanity: expected at least one narrated step so narration polish is exercised too"
+    )
+
+    # No claim-coverage rejection should have happened here -- confirms the
+    # real JSON round trip actually succeeded (a parse failure would leave
+    # every field verbatim, and the per-field assertions below would catch
+    # that too, but this pins down *why* if they ever fail).
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "polish_rejected_claim_coverage" not in report
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    for field_id, original in items:
+        polished = original.upper()
+        assert polished in md, f"expected polished {field_id!r} in doc.md"
+        assert _html.escape(original) in html_doc, f"expected ORIGINAL {field_id!r} in doc.html"
+        assert _html.escape(polished) not in html_doc, (
+            f"doc.html must not carry polished {field_id!r} -- polish is doc.md-only this cycle"
+        )
+
+
+def test_polish_end_to_end_real_prompt_claim_coverage_rejection(tmp_path):
+    """Companion to the happy-path test above, at claim-coverage-rejection
+    granularity: a real, gate-passing narrative REPHRASE (drops claim-002's
+    literal wording -- "enter" -> "type in", well under _field_gate's
+    novel-content thresholds, so _field_gate alone lets it through) must
+    still get caught by _write_all_exports' validate_claim_coverage safety
+    net and reverted to the original narrative_text -- while step
+    text/narration polish (which claim coverage never governs) is kept,
+    proving the revert is scoped to just the narrative field. Uses the same
+    real-prompt-parsing stub as the happy-path test, with only the
+    narrative field's rewrite overridden to this specific claim-dropping
+    rephrase; every other field still gets the default (uppercase)
+    transform, so this also proves per-field independence end to end."""
+    import html as _html
+
+    _target = "Then enter the computer name."
+    _replacement = "Then type in the computer name."
+
+    def _drop_claim_002(text):
+        assert _target in text, (
+            "fixture assumption: claim-002's exact text must be present "
+            "(content-covered, not [verify]-flagged) in the unpolished narrative"
+        )
+        return text.replace(_target, _replacement)
+
+    stub = _RealPromptParsingPolishStub(overrides={"narrative": _drop_claim_002})
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
+        polish_llm_client_factory=lambda section: stub,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files.append(("transcript_file", ("narration.md", _E2E_TRANSCRIPT.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+    assert stub.calls, "the polish LLM client was never called"
+
+    items = _PROMPT_ITEM_RE.findall(stub.calls[0])
+    step_items = [(field_id, text) for field_id, text in items if field_id != "narrative"]
+    assert step_items, "sanity: expected at least one non-narrative field"
+    assert any(":narration" in field_id for field_id, _ in step_items), (
+        "sanity: expected at least one narrated step"
+    )
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    # The narrative rephrase was rejected -- doc.md's narrative section fell
+    # back to the unpolished (claim-complete) text, still containing
+    # claim-002's exact original wording, no [verify] blockquote needed.
+    assert _target in md
+    assert _replacement not in md
+    assert "[verify]" not in md
+
+    # ...but every OTHER field's (uppercase) polish is still kept -- the
+    # revert is scoped to the narrative field alone.
+    for field_id, original in step_items:
+        assert original.upper() in md, f"expected polished {field_id!r} to survive in doc.md"
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report.get("polish_rejected_claim_coverage") == ["claim-002"]
+
+    html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    for field_id, original in step_items:
+        assert _html.escape(original) in html_doc
+        assert _html.escape(original.upper()) not in html_doc
 
 
 def test_review_page_renders_sidecar_report(tmp_path):

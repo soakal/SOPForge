@@ -74,7 +74,7 @@ from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_manifest_steps
 from pipeline.narration_polish import polish_narration
 from pipeline.narrative import generate_narrative
-from pipeline.polish import generate_polish_pass
+from pipeline.polish import generate_polish_fields
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
@@ -230,8 +230,9 @@ def create_app(
     transcript has no structure for the deterministic placement to split on.
 
     polish_llm_client_factory: same shape, but built from config/models.toml's
-    `[polish]` section -- used only for the optional stage-4 whole-document
-    polish pass (_write_all_exports), gated on `[polish].enabled`."""
+    `[polish]` section -- used only for the optional stage-4 polish pass
+    (_write_all_exports), gated on `[polish].enabled`. Only doc.md's export
+    reflects this pass so far (per-field, via generate_polish_fields)."""
     app = FastAPI()
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -628,21 +629,18 @@ def create_app(
         pass's output below -- an empty default (the photo-build call site,
         which has no narrative claims) makes that check a no-op, byte-for-
         byte unchanged from before this param existed."""
-        md = render_markdown(
-            manifest,
-            step_results,
-            annotated_paths,
-            narrative_text=narrative_text,
-            base_dir=annotated_dir,
-        )
-        # Optional stage 4: a single formatting/tone pass over the assembled
-        # markdown. With no override, gated on [polish].enabled (default off
-        # -- see PolishConfig); an explicit override bypasses that toggle
-        # for this job (resolve_polish_config's "off" always skips, "local"/
-        # "haiku" always run). Only doc.md reflects this pass this cycle;
-        # the docx/pdf/html/single-html/md-bundle exports below render
-        # independently from step_results/narrative_text and are
-        # deliberately left unpolished for now.
+        # Optional stage 4: a per-field formatting/tone pass over
+        # narrative_text and each step's text/present narration
+        # (generate_polish_fields, polish.py) -- narration_polish.py's
+        # per-unit pattern, so a bad rewrite of one field can never discard a
+        # good rewrite of another. With no override, gated on
+        # [polish].enabled (default off -- see PolishConfig); an explicit
+        # override bypasses that toggle for this job (resolve_polish_config's
+        # "off" always skips, "local"/"haiku" always run). Only doc.md
+        # reflects this pass this cycle -- rendered from the polished fields
+        # below; the docx/pdf/html/single-html/md-bundle exports further down
+        # still render from the original (pre-polish) step_results/
+        # narrative_text and are deliberately left unpolished for now.
         current_cfg = load_models_config(resolved_config_path)
         if polish_override is not None:
             polish_section = resolve_polish_config(polish_override, current_cfg)
@@ -650,30 +648,45 @@ def create_app(
             polish_section = current_cfg.polish
         else:
             polish_section = None
+
+        md_narrative_text = narrative_text
+        md_step_results = step_results
         if polish_section is not None:
             polish_llm = make_polish_llm_client(polish_section)
             try:
-                polished_md = generate_polish_pass(md, polish_llm)
+                md_narrative_text, md_step_results, _polish_meta = generate_polish_fields(
+                    narrative_text, step_results, polish_llm
+                )
             finally:
                 close = getattr(polish_llm, "close", None)
                 if callable(close):
                     close()
-            # Safety net for invariant L4 (CLAUDE.md): the whole-doc polish
-            # LLM rewrites narrative prose freely, and unlike
-            # generate_polish_pass's own no-invented-content gate (which
-            # only checks the rewrite didn't ADD unsupported content), it
-            # has no way to know a claim's exact text is load-bearing --
-            # nothing stops a rephrase from making a claim's text (and any
-            # [verify] blockquote covering it) vanish. Re-run the same
-            # coverage check doc.md must already satisfy pre-polish; if
-            # polish broke it, discard the polish and keep the known-good
-            # unpolished md rather than ship a doc with a silently dropped
-            # claim.
-            ok, missing = validate_claim_coverage(polished_md, claims)
-            if ok:
-                md = polished_md
-            else:
+            # Safety net for invariant L4 (CLAUDE.md): generate_polish_fields's
+            # own per-field gate (_field_gate) only rejects a rewrite that
+            # ADDS unsupported content -- it has no way to know a claim's
+            # exact text is load-bearing, so nothing stops an otherwise-
+            # faithful rephrase of narrative_text from making a claim's text
+            # (and any [verify] blockquote covering it -- which lives inside
+            # narrative_text itself, see narrative.py's ensure_claim_coverage)
+            # vanish. Re-run the same coverage check doc.md must already
+            # satisfy pre-polish, against the polished narrative specifically
+            # (claims never live in step text/narration); if it broke
+            # coverage, discard just the narrative rewrite and keep the
+            # known-good original narrative_text rather than ship a doc with
+            # a silently dropped claim. Step text/narration polish carries no
+            # such risk and is kept either way.
+            ok, missing = validate_claim_coverage(md_narrative_text, claims)
+            if not ok:
                 report["polish_rejected_claim_coverage"] = missing
+                md_narrative_text = narrative_text
+
+        md = render_markdown(
+            manifest,
+            md_step_results,
+            annotated_paths,
+            narrative_text=md_narrative_text,
+            base_dir=annotated_dir,
+        )
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
         html_doc = render_html(
