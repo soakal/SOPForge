@@ -216,6 +216,31 @@ def test_vision_on_with_existing_screenshot_builds_multipart_content_and_succeed
     ]
 
 
+def test_vision_on_with_existing_screenshot_and_mismatched_reply_falls_back(tmp_path):
+    """Combines the vision-on multipart path with the round-trip-failure path:
+    a real screenshot on disk builds the two-block text+image_url content (so
+    this is a genuine vision call, not the missing-screenshot fall-through),
+    but the reply fails the round-trip gate -- must still fall back to the
+    template, exactly like the vision-off case, proving the fallback gate
+    runs identically regardless of use_vision."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    step = manifest.steps[0]  # click, Save button, SmartDeploy Console
+    screenshot_path = tmp_path / step.screenshot
+    screenshot_path.write_bytes(b"fake-png-bytes-for-test")
+
+    client = _RecordingClient(lambda idx: "Completely unrelated wrong sentence.")
+    text, used_fallback = generate_step_text(step, client, use_vision=True, screenshot_dir=tmp_path)
+
+    assert used_fallback is True
+    assert len(client.calls) == 1  # exactly one attempt, never retried
+    assert text == render_step_template(step)
+    content = client.calls[0][0]["content"]
+    assert content == [
+        {"type": "text", "text": _build_prompt(step)},
+        {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+    ]
+
+
 def test_vision_on_without_matching_screenshot_falls_through_to_plain_text(tmp_path):
     """A missing screenshot file is NOT a generation failure -- it just
     means vision can't be attached, so the call proceeds with the ordinary
