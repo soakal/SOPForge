@@ -4,6 +4,7 @@ path. The engine (sop_lib.SOPBuilder) is imported from SOP_Factory_2, not
 vendored or rewritten."""
 
 import inspect
+import json
 import re
 import zipfile
 from pathlib import Path
@@ -13,6 +14,7 @@ from PIL import Image
 
 from pipeline.docx_assembler import assemble_docx
 from pipeline.manifest import load_manifest
+from pipeline.polish import generate_polish_fields
 from pipeline.render import render_steps_template_mode
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
@@ -130,6 +132,108 @@ def test_verify_claim_renders_as_a_callout_not_raw_marker_text(tmp_path):
     assert "Needs verification:" in text
     assert "Something not in the narrative." in text
     assert "claim-001" not in text
+
+
+_PROMPT_ITEM_RE = re.compile(r'^(.+?): "(.*)"$', re.M)
+
+
+class _MarkerDroppingPolishStub:
+    """A `.chat()` that genuinely parses generate_polish_fields' real
+    prompt text (the `field_id: "text"` item-line format
+    `_build_fields_prompt`, polish.py, emits) and replies with a rewrite
+    per field: any line starting with the verify-blockquote marker "> " has
+    JUST that marker dropped (the rest of the line, including any digits,
+    kept verbatim) -- the exact reflow shape the Realist's real repro
+    proved dangerous, that used to sail through `_field_gate` (its literal-
+    fact check only requires a claim id's digits to survive as a substring
+    ANYWHERE in the rewrite, not at that exact line-start position) and
+    `validate_claim_coverage` (the claim's own text was still present,
+    just no longer recognizable as a callout). Every other line is
+    uppercased, so a genuine polish of the surrounding prose is still
+    provable. If a verify-blockquote line ever reached this stub, it WOULD
+    mangle it -- proving the real fix works because such a line structurally
+    never reaches here, not because this stub declines to attack it."""
+
+    def __init__(self):
+        self.calls = []
+
+    def chat(self, messages, **kwargs):
+        content = messages[0]["content"]
+        self.calls.append(content)
+        items = _PROMPT_ITEM_RE.findall(content)
+        assert items, "expected at least one 'field_id: \"text\"' line in the real polish prompt"
+        rewrites = []
+        for field_id, text in items:
+            mangled = "\n".join(
+                line[2:] if line.startswith("> ") else line.upper() for line in text.split("\n")
+            )
+            rewrites.append({"field_id": field_id, "text": mangled})
+        return json.dumps(rewrites)
+
+
+def test_polish_never_lets_a_verify_blockquote_reach_the_llm_and_docx_still_flags_it(tmp_path):
+    """Regression for the gap the Realist's real repro proved: a gate-
+    passing, claim-coverage-passing polish rewrite could reflow a
+    "> [verify] (claim-id): ..." line, dropping just the leading "> "
+    marker while keeping the claim's digits/text intact elsewhere in the
+    sentence. Neither `_field_gate` (polish.py) nor `validate_claim_coverage`
+    (claim_coverage.py) catches that -- both only check the claim's raw
+    content survives SOMEWHERE, not that it's still recognizable as a
+    callout -- so `docx_assembler.py`'s `parse_verify_line` would silently
+    stop recognizing the line and the "Needs verification" Word callout
+    would vanish with no warning recorded anywhere.
+
+    Uses the REAL `generate_polish_fields` (not a monkeypatch) with
+    `_MarkerDroppingPolishStub`, a stub LLM that reproduces that exact
+    reflow. The fix under test: `generate_polish_fields` now strips every
+    verify-blockquote line out of `narrative_text` before it's ever shown to
+    the LLM and splices it back verbatim afterward -- so this test also
+    confirms the stub's prompt calls never even contained the verify line,
+    then feeds the polished result into the REAL `assemble_docx` and
+    confirms the "Needs verification" callout still renders."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    step_results, _annotated_paths = render_steps_template_mode(manifest, screenshots, annotated)
+
+    verify_line = "> [verify] (claim-042): The device firmware is version 42."
+    narrative_text = f"Open the console and review the settings.\n{verify_line}\n"
+
+    stub = _MarkerDroppingPolishStub()
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, stub
+    )
+
+    assert stub.calls, "the polish LLM stub was never called"
+    for call in stub.calls:
+        assert "[verify]" not in call, (
+            "a verify-blockquote line reached the polish LLM prompt -- it must be "
+            "stripped out before the call, not merely survive gating afterward"
+        )
+
+    # The surrounding prose genuinely got polished (proves this isn't a
+    # no-op / gate-rejection making the test vacuous)...
+    assert "OPEN THE CONSOLE" in polished_narrative
+    # ...while the verify blockquote line itself survived byte-for-byte,
+    # never mangled, never dropped.
+    assert verify_line in polished_narrative
+    assert "narrative" in meta["fields_polished"]
+
+    output_path = tmp_path / "out.docx"
+    out, warnings = assemble_docx(
+        manifest, polished_steps, annotated, output_path, narrative_text=polished_narrative
+    )
+
+    assert warnings == []
+    with zipfile.ZipFile(out) as zf:
+        document_xml = zf.read("word/document.xml").decode("utf-8")
+    text = _document_text(document_xml)
+
+    assert "Needs verification:" in text
+    assert "The device firmware is version 42." in text
+    assert "claim-042" not in text
+    assert "[verify]" not in text
 
 
 def test_missing_screenshot_produces_a_warning_not_a_crash(tmp_path):

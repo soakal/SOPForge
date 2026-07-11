@@ -25,7 +25,7 @@ max_concurrency = 1
 [narrative]
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
-model = "qwen3:32b"
+model = "qwen3.6:27b"
 passes = 3
 
 [vision]
@@ -41,3 +41,28 @@ max_concurrency = 4
 [document]
 author = "SOPForge"
 doc_no_prefix = ""
+
+# Optional 4th stage: one formatting/tone pass over the assembled document
+# (see src/pipeline/polish.py). Off by default -- the model below
+# (gemma3:12b) is confirmed live on this deployment's Ollama host
+# (192.168.200.60:11434) and produced a genuine, gate-passing rewrite in
+# live testing on 2026-07-11. gemma3n:e4b was tried first but consistently
+# echoed the input document back unchanged instead of rewriting it (0/4
+# genuine rewrites across two prompt variants, including one with an
+# explicit "say NO_CHANGES if nothing to fix" escape hatch) -- ruled out as
+# a prompt-wording issue, treated as a model-capability limitation at that
+# size. Review the polish stage's output on a sample document before
+# setting enabled = true.
+#
+# The `polish` query param on POST /sessions/{id}/rerender (and
+# /ui/sessions/{id}/rerender) overrides this section for a single re-render
+# job without editing this file: "off" skips the stage even if enabled here
+# is true, "local" forces the ollama provider (keeping this section's own
+# endpoint/model), "haiku" forces Anthropic's Claude Haiku 4.5. Omitting the
+# param leaves the enabled/provider/model below in full effect. See
+# resolve_polish_config in src/pipeline/config.py.
+[polish]
+enabled = false
+provider = "ollama"
+endpoint = "http://192.168.200.60:11434/v1"
+model = "gemma3:12b"

@@ -33,6 +33,7 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -47,6 +48,8 @@ from PIL import Image
 
 from pipeline import __version__
 from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
+from pipeline.claim_coverage import validate_claim_coverage
+from pipeline.claims import extract_claims
 from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import (
@@ -55,6 +58,7 @@ from pipeline.config import (
     load_models_config,
     provider_api_key,
     provider_endpoint,
+    resolve_polish_config,
     runtime_config_path,
     save_models_config,
 )
@@ -69,11 +73,13 @@ from pipeline.library import upsert_entry
 from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_manifest_steps
 from pipeline.narration_polish import polish_narration
+from pipeline.narrative import generate_narrative
+from pipeline.polish import generate_polish_fields
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
-from pipeline.transcript import align_transcript_to_steps
+from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
 from pipeline.vision import caption_images
 from pipeline.webui.pages import (
     render_config_page,
@@ -101,6 +107,40 @@ def _synthesize_narration_from_steps(manifest, step_results):
     lines = [f"Windows involved: {', '.join(windows)}."] if windows else []
     lines.extend(result["text"] for result in step_results)
     return "\n".join(lines)
+
+
+def _narration_to_claims(text):
+    """Turns a block of narration text into task-07's claims.py shape (one
+    claim per non-empty line, synthetic index-based timestamps) so
+    generate_narrative's claim-coverage gate has facts to check the drafted
+    stage-2 narrative against. There's no real audio transcription here (no
+    per-segment timing) -- extract_claims' own contract only needs stable
+    ids in segment order, which a plain line split already gives it, without
+    inventing a second extraction path alongside the real transcription.py
+    one."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return extract_claims([{"text": ln, "start": float(i)} for i, ln in enumerate(lines)])
+
+
+def _claims_for_narrative(transcript_path, fallback_text):
+    """Builds Stage 2's claim list from whatever narration is available --
+    the uploaded transcript if there is one (the richer, human-authored
+    source), else the step-synthesized fallback text already computed for
+    the title. Dispatches on extension exactly like align_transcript_to_steps:
+    a .json transcript is real timestamped segments
+    (transcript._parse_json_segments), so its structured "text" fields go
+    straight into extract_claims; a .txt/.md transcript (and the synthetic
+    fallback, which is always plain prose) has no such structure, so it goes
+    through _narration_to_claims' line split instead. Treating the raw JSON
+    file as prose would feed extract_claims JSON syntax fragments ("{",
+    '"segments": [') as claim text, which then show up verbatim in
+    [verify] blockquotes in the rendered doc -- this dispatch is what keeps
+    that from happening."""
+    if transcript_path is not None and transcript_path.suffix.lower() == ".json":
+        segments = _parse_json_segments(transcript_path.read_text(encoding="utf-8"))
+        return extract_claims(segments)
+    text = transcript_path.read_text(encoding="utf-8") if transcript_path else fallback_text
+    return _narration_to_claims(text)
 
 
 def _assert_1to1_mapping(manifest, step_results):
@@ -172,6 +212,7 @@ def create_app(
     llm_client_factory=None,
     config_path=None,
     narrative_llm_client_factory=None,
+    polish_llm_client_factory=None,
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -186,7 +227,13 @@ def create_app(
     narrative_llm_client_factory: same shape, but built from config/models.toml's
     `[narrative]` section (previously unused by any live code) -- used only for
     the semantic transcript-placement/polish path (_apply_transcript), when a
-    transcript has no structure for the deterministic placement to split on."""
+    transcript has no structure for the deterministic placement to split on.
+
+    polish_llm_client_factory: same shape, but built from config/models.toml's
+    `[polish]` section -- used only for the optional stage-4 polish pass
+    (_write_all_exports), gated on `[polish].enabled`. Only doc.md's,
+    doc.html's, and the md-bundle's exports reflect this pass so far
+    (per-field, via generate_polish_fields)."""
     app = FastAPI()
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -245,6 +292,20 @@ def create_app(
     make_narrative_llm_client = narrative_llm_client_factory or (
         lambda: LLMClient(load_models_config(resolved_config_path).narrative)
     )
+
+    def make_polish_llm_client(section=None):
+        """section: a resolved PolishConfig to build the client from --
+        passed by _write_all_exports when a per-job `polish` override
+        (resolve_polish_config) is in play. Defaults to the current
+        [polish] section from config/models.toml, loaded fresh (not
+        cached), matching every other make_*_llm_client factory's promise
+        to reflect config edits without a server restart."""
+        if section is None:
+            section = load_models_config(resolved_config_path).polish
+        if polish_llm_client_factory is not None:
+            return polish_llm_client_factory(section)
+        return LLMClient(section)
+
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
     # session_ids awaiting step-review confirmation -- staged by _ingest_session
@@ -265,13 +326,13 @@ def create_app(
         mode = session_dir / "mode.txt"
         return mode.exists() and mode.read_text(encoding="utf-8").strip() == "photo"
 
-    def _generate(session_id):
+    def _generate(session_id, polish_override=None):
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
 
         # Manifest-free "screenshots + transcript" sessions take a different
         # path: no LLM step phrasing, no click-marker annotation.
         if _is_photo_mode(session_dir):
-            _generate_photo(session_id)
+            _generate_photo(session_id, polish_override=polish_override)
             return
 
         # One generation attempt per step, round-trip-gated with a
@@ -312,20 +373,46 @@ def create_app(
         # manifest-free photo builds already use for narration-based titles.
         # Fills the title only if one isn't already set, so a manifest that
         # DOES carry a title (or a previous run's title) is never overwritten.
-        if not manifest.session.title:
-            synthetic_narration = _synthesize_narration_from_steps(manifest, step_results)
-            if synthetic_narration.strip():
-                title_llm = make_llm_client()
-                try:
-                    gen_title, _overview = generate_title_and_overview(
-                        synthetic_narration, title_llm
-                    )
-                finally:
-                    close = getattr(title_llm, "close", None)
-                    if callable(close):
-                        close()
-                if gen_title:
-                    manifest.session.title = gen_title
+        synthetic_narration = _synthesize_narration_from_steps(manifest, step_results)
+        if not manifest.session.title and synthetic_narration.strip():
+            title_llm = make_llm_client()
+            try:
+                gen_title, _overview = generate_title_and_overview(synthetic_narration, title_llm)
+            finally:
+                close = getattr(title_llm, "close", None)
+                if callable(close):
+                    close()
+            if gen_title:
+                manifest.session.title = gen_title
+
+        # Stage 2: a multi-pass narrative paragraph (task-09) from whatever
+        # narration is available -- the uploaded transcript if there is one
+        # (the richer, human-authored source), else the step-synthesized
+        # narration already computed above for the title. Best-effort like
+        # everything else in this path: any failure just leaves
+        # narrative_text unset, and the doc ships with steps alone, no
+        # different from before this was wired up.
+        narrative_text = None
+        transcript_matches = sorted(session_dir.glob("transcript.*"))
+        transcript_path = transcript_matches[0] if transcript_matches else None
+        try:
+            claims = _claims_for_narrative(transcript_path, synthetic_narration)
+        except Exception:  # noqa: BLE001 - a bad transcript must never block Stage 2
+            claims = []
+        if claims:
+            narrative_llm = make_narrative_llm_client()
+            try:
+                narrative_text, _covered, _verify_ids = generate_narrative(
+                    claims,
+                    narrative_llm,
+                    passes=load_models_config(resolved_config_path).narrative.passes,
+                )
+            except Exception:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
+                narrative_text = None
+            finally:
+                close = getattr(narrative_llm, "close", None)
+                if callable(close):
+                    close()
 
         # narration_polish's minted verify_claims (dropped clauses from a
         # polished rewrite) finally give this hardcoded-empty parameter real
@@ -343,10 +430,19 @@ def create_app(
             }
 
         _write_all_exports(
-            session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
+            session_id,
+            manifest,
+            step_results,
+            annotated_paths,
+            annotated_dir,
+            session_dir,
+            report,
+            narrative_text=narrative_text,
+            polish_override=polish_override,
+            claims=claims,
         )
 
-    def _generate_photo(session_id):
+    def _generate_photo(session_id, polish_override=None):
         """Manifest-free mode: one step per uploaded image, in order. When
         [vision] is enabled, a vision model captions each screenshot from the
         image + narration; otherwise the transcript's own placement supplies the
@@ -503,6 +599,7 @@ def create_app(
             session_dir,
             report,
             narrative_text=narrative_text,
+            polish_override=polish_override,
         )
 
     def _write_all_exports(
@@ -514,23 +611,89 @@ def create_app(
         session_dir,
         report,
         narrative_text=None,
+        polish_override=None,
+        claims=(),
     ):
         """Render every output format + the review report from finished
-        step_results and annotated images. Shared by both generation modes."""
+        step_results and annotated images. Shared by both generation modes.
+
+        polish_override: a PolishMode ("off"/"local"/"haiku") for this job
+        only, resolved via resolve_polish_config -- e.g. from a `polish`
+        query param on /rerender. None (the default, used by every caller
+        except the rerender routes) means "no override": fall back to
+        whatever [polish].enabled/provider/model already say in
+        config/models.toml, byte-for-byte the same as before this param
+        existed.
+
+        claims: the Stage 2 narrative claim list (claims.py shape) the
+        assembled markdown was built to cover, checked against the polish
+        pass's output below -- an empty default (the photo-build call site,
+        which has no narrative claims) makes that check a no-op, byte-for-
+        byte unchanged from before this param existed."""
+        # Optional stage 4: a per-field formatting/tone pass over
+        # narrative_text and each step's text/present narration
+        # (generate_polish_fields, polish.py) -- narration_polish.py's
+        # per-unit pattern, so a bad rewrite of one field can never discard a
+        # good rewrite of another. With no override, gated on
+        # [polish].enabled (default off -- see PolishConfig); an explicit
+        # override bypasses that toggle for this job (resolve_polish_config's
+        # "off" always skips, "local"/"haiku" always run). doc.md, doc.html,
+        # doc.single.html, the md-bundle (export.md.zip), doc.docx, and
+        # doc.pdf all reflect this pass -- all six rendered from the
+        # polished fields below.
+        current_cfg = load_models_config(resolved_config_path)
+        if polish_override is not None:
+            polish_section = resolve_polish_config(polish_override, current_cfg)
+        elif current_cfg.polish.enabled:
+            polish_section = current_cfg.polish
+        else:
+            polish_section = None
+
+        md_narrative_text = narrative_text
+        md_step_results = step_results
+        if polish_section is not None:
+            polish_llm = make_polish_llm_client(polish_section)
+            try:
+                md_narrative_text, md_step_results, _polish_meta = generate_polish_fields(
+                    narrative_text, step_results, polish_llm
+                )
+            finally:
+                close = getattr(polish_llm, "close", None)
+                if callable(close):
+                    close()
+            # Safety net for invariant L4 (CLAUDE.md): generate_polish_fields's
+            # own per-field gate (_field_gate) only rejects a rewrite that
+            # ADDS unsupported content -- it has no way to know a claim's
+            # exact text is load-bearing, so nothing stops an otherwise-
+            # faithful rephrase of narrative_text from making a claim's text
+            # (and any [verify] blockquote covering it -- which lives inside
+            # narrative_text itself, see narrative.py's ensure_claim_coverage)
+            # vanish. Re-run the same coverage check doc.md must already
+            # satisfy pre-polish, against the polished narrative specifically
+            # (claims never live in step text/narration); if it broke
+            # coverage, discard just the narrative rewrite and keep the
+            # known-good original narrative_text rather than ship a doc with
+            # a silently dropped claim. Step text/narration polish carries no
+            # such risk and is kept either way.
+            ok, missing = validate_claim_coverage(md_narrative_text, claims)
+            if not ok:
+                report["polish_rejected_claim_coverage"] = missing
+                md_narrative_text = narrative_text
+
         md = render_markdown(
             manifest,
-            step_results,
+            md_step_results,
             annotated_paths,
-            narrative_text=narrative_text,
+            narrative_text=md_narrative_text,
             base_dir=annotated_dir,
         )
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
         html_doc = render_html(
             manifest,
-            step_results,
+            md_step_results,
             annotated_paths,
-            narrative_text=narrative_text,
+            narrative_text=md_narrative_text,
             base_dir=annotated_dir,
         )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
@@ -542,36 +705,40 @@ def create_app(
         docx_path = session_dir / "doc.docx"
         _out, docx_warnings = assemble_docx(
             manifest,
-            step_results,
+            md_step_results,
             annotated_dir,
             docx_path,
             date=doc_date,
             author=doc_cfg.author,
             doc_no=doc_no,
-            narrative_text=narrative_text,
+            narrative_text=md_narrative_text,
         )
         report["docx_warnings"] = docx_warnings
 
         pdf_path = session_dir / "doc.pdf"
         render_pdf(
             manifest,
-            step_results,
+            md_step_results,
             annotated_paths,
             pdf_path,
-            narrative_text=narrative_text,
+            narrative_text=md_narrative_text,
             date=doc_date,
             author=doc_cfg.author,
             doc_no=doc_no,
         )
 
         single_html = render_single_file_html(
-            manifest, step_results, annotated_paths, narrative_text=narrative_text
+            manifest, md_step_results, annotated_paths, narrative_text=md_narrative_text
         )
         (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
 
         md_bundle_dir = session_dir / "md_bundle"
         export_markdown_bundle(
-            manifest, step_results, annotated_paths, md_bundle_dir, narrative_text=narrative_text
+            manifest,
+            md_step_results,
+            annotated_paths,
+            md_bundle_dir,
+            narrative_text=md_narrative_text,
         )
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
 
@@ -866,24 +1033,32 @@ def create_app(
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")
-    def rerender(session_id: str):
+    def rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
         """Re-runs generation + all exports for an already-uploaded session
         against the current config/models.toml -- genuinely meaningful now
         that step generation is LLM-backed: e.g. after editing the config to
         point at a different model/endpoint, or setting up Anthropic
-        routing, without re-uploading the manifest/screenshots."""
+        routing, without re-uploading the manifest/screenshots.
+
+        `polish` (optional query param) overrides the polish stage for this
+        job only, via resolve_polish_config -- "off" forces it skipped
+        even if [polish].enabled=true, "local" forces the local ollama
+        provider, "haiku" forces Anthropic's Claude Haiku 4.5. Omitted
+        (the default) leaves the current [polish].enabled/provider/model
+        behavior untouched."""
         _require_known_session(session_id)
-        jobs.submit(session_id, lambda: _generate(session_id))
+        jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
 
     @app.post("/ui/sessions/{session_id}/rerender")
-    def ui_rerender(session_id: str):
+    def ui_rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
         """Same effect as POST /sessions/{id}/rerender, but redirects back
         to the session page instead of returning JSON -- the JSON route
         stays as-is for API/script callers, since a plain HTML <form> POST
-        would otherwise navigate the browser to a raw JSON blob."""
+        would otherwise navigate the browser to a raw JSON blob. See
+        rerender() above for what `polish` does."""
         _require_known_session(session_id)
-        jobs.submit(session_id, lambda: _generate(session_id))
+        jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/ui/sessions/{session_id}/transcript")

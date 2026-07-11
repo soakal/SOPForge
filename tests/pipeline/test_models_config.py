@@ -8,6 +8,7 @@ from pipeline.config import (
     default_config_path,
     dump_models_config_toml,
     load_models_config,
+    resolve_polish_config,
     save_models_config,
 )
 
@@ -19,7 +20,7 @@ def test_loads_committed_config():
     # stale relative to the repo's own committed default.
     config = load_models_config(default_config_path())
     assert config.steps.model == "qwen3:32b"
-    assert config.narrative.model == "qwen3:32b"
+    assert config.narrative.model == "qwen3.6:27b"
     assert config.steps.anthropic is False
     assert config.narrative.anthropic is False
     assert config.narrative.passes == 3
@@ -119,6 +120,88 @@ def test_max_concurrency_rejects_zero():
     data["steps"]["max_concurrency"] = 0
     with pytest.raises(ValidationError):
         ModelsConfig.model_validate(data)
+
+
+def test_polish_defaults_sanely_when_section_is_absent(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.polish.enabled is False
+    assert config.polish.provider == "ollama"
+    assert config.polish.model  # non-empty; default (gemma3:12b) is confirmed pulled/live on the Ollama host
+
+
+def test_polish_parses_explicit_section(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[polish]\nenabled = true\nprovider = "ollama"\nendpoint = "http://x"\nmodel = "gemma3n:e4b"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.polish.enabled is True
+    assert config.polish.model == "gemma3n:e4b"
+
+
+def test_polish_round_trips_through_dump_and_reload(tmp_path):
+    data = _base_cfg()
+    data["polish"] = {
+        "enabled": True,
+        "provider": "ollama",
+        "endpoint": "http://x",
+        "model": "gemma3n:e4b",
+    }
+    cfg = ModelsConfig.model_validate(data)
+    path = tmp_path / "models.toml"
+    save_models_config(cfg, path)
+    reloaded = load_models_config(path)
+    assert reloaded.polish.enabled is True
+    assert reloaded.polish.provider == "ollama"
+    assert reloaded.polish.model == "gemma3n:e4b"
+    assert "[polish]" in dump_models_config_toml(cfg)
+
+
+def test_resolve_polish_config_off_returns_none():
+    config = load_models_config(default_config_path())
+    assert resolve_polish_config("off", config) is None
+
+
+def test_resolve_polish_config_local_forces_ollama():
+    data = _base_cfg()
+    data["polish"] = {
+        "enabled": False,
+        "provider": "openai",
+        "endpoint": "http://x",
+        "model": "gemma3n:e4b",
+    }
+    config = ModelsConfig.model_validate(data)
+    resolved = resolve_polish_config("local", config)
+    assert resolved is not None
+    assert resolved.provider == "ollama"
+    assert resolved.enabled is True
+    # Everything else about the section (e.g. the configured model) is
+    # preserved -- only the provider (and enabled) are forced.
+    assert resolved.model == "gemma3n:e4b"
+
+
+def test_resolve_polish_config_haiku_forces_anthropic_claude_haiku():
+    config = load_models_config(default_config_path())
+    resolved = resolve_polish_config("haiku", config)
+    assert resolved is not None
+    assert resolved.provider == "anthropic"
+    assert resolved.model == "claude-haiku-4-5"
+    assert resolved.enabled is True
+
+
+def test_resolve_polish_config_rejects_unknown_mode():
+    config = load_models_config(default_config_path())
+    with pytest.raises(ValueError):
+        resolve_polish_config("bogus", config)
 
 
 def test_rejects_missing_required_field(tmp_path):

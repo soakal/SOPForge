@@ -33,10 +33,15 @@ _WORD_DOMINANCE_MIN_WORDS = 8
 _WORD_DOMINANCE_RATIO = 0.4
 
 
-def degenerate_reason(text):
-    """Returns a short reason string if `text` looks like degenerate model
-    decoding, else None. Order matters only for which reason is reported;
-    any single failing check is a reject."""
+def degenerate_shape_reason(text):
+    """Returns a short reason string if `text` has the SHAPE of degenerate
+    model decoding (leaked special token, immediate repetition loop, single-
+    word dominance), else None. Deliberately excludes the absolute
+    `_LENGTH_CAP` check below, which assumes short, per-item text (a caption
+    or a narration segment) -- callers operating on whole-document-scale
+    text, which can legitimately run to many KB, should use this instead of
+    `degenerate_reason` and rely on their own document-scale length sanity
+    check (e.g. a length-ratio-to-source check) rather than an absolute cap."""
     if _SPECIAL_TOKEN_RE.search(text):
         return "leaked a chat-template special token"
 
@@ -49,6 +54,20 @@ def degenerate_reason(text):
         _word, count = Counter(words).most_common(1)[0]
         if count / len(words) >= _WORD_DOMINANCE_RATIO:
             return "one word dominates the text (an interleaved repetition loop)"
+
+    return None
+
+
+def degenerate_reason(text):
+    """Returns a short reason string if `text` looks like degenerate model
+    decoding, else None. Order matters only for which reason is reported;
+    any single failing check is a reject. For short, per-item text only
+    (captions, narration segments) -- see `degenerate_shape_reason` for
+    whole-document-scale callers, which omits the absolute `_LENGTH_CAP`
+    check below."""
+    reason = degenerate_shape_reason(text)
+    if reason:
+        return reason
 
     if len(text) > _LENGTH_CAP:
         return f"text is implausibly long for a caption/narration ({len(text)} chars)"

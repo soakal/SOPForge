@@ -85,6 +85,57 @@ class SectionConfig(BaseModel):
         return self
 
 
+class PolishConfig(SectionConfig):
+    """Optional 4th pipeline stage: a single formatting/tone pass over the
+    already-assembled document (polish.py's generate_polish_pass). Reuses
+    SectionConfig's provider/endpoint/model routing wholesale -- same shape
+    as [steps]/[narrative] -- adding only the `enabled` toggle this stage
+    additionally needs (default off, so an existing config that predates
+    this section still loads with polish disabled)."""
+
+    enabled: bool = False
+
+
+# gemma3n:e4b was the original candidate but proved unreliable in live testing
+# (2026-07-11 diagnostic: 0/4 genuine rewrites across two prompt variants --
+# it echoes the input document back near-verbatim instead of rewriting, even
+# when given an explicit "say NO_CHANGES if nothing to fix" escape hatch,
+# ruling out a prompt-wording fix). gemma3:12b, run through the identical
+# prompt/document on the same host, produced a genuine gate-passing rewrite
+# on first try and is ~2x faster than gemma3:27b (also reliable). [polish]
+# .enabled still defaults to False so the polish stage stays opt-in until
+# its output has been reviewed on real (not just fixture) documents.
+_POLISH_DEFAULT_MODEL = "gemma3:12b"  # see comment above for why not gemma3n:e4b
+
+PolishMode = Literal["off", "local", "haiku"]
+
+# Claude Haiku 4.5. Using the floating alias (not the dated snapshot) per
+# Anthropic's guidance for configs -- it tracks the current Haiku 4.5
+# snapshot rather than pinning to one.
+_POLISH_HAIKU_MODEL = "claude-haiku-4-5"
+
+
+def resolve_polish_config(mode: PolishMode, cfg: "ModelsConfig") -> "PolishConfig | None":
+    """Per-job override for the optional polish stage, independent of the
+    saved [polish].enabled toggle: 'off' skips polish for this job entirely
+    (returns None, regardless of [polish].enabled); 'local' forces the
+    existing [polish] section onto the local ollama provider (keeping its
+    configured endpoint/model); 'haiku' forces Anthropic's Claude Haiku 4.5,
+    so a single job can use a stronger model without editing models.toml.
+    Both 'local' and 'haiku' return a section with enabled=True -- once a
+    mode is explicitly requested, [polish].enabled is no longer consulted
+    for that job."""
+    if mode == "off":
+        return None
+    if mode == "local":
+        return cfg.polish.model_copy(update={"provider": "ollama", "enabled": True})
+    if mode == "haiku":
+        return cfg.polish.model_copy(
+            update={"provider": "anthropic", "model": _POLISH_HAIKU_MODEL, "enabled": True}
+        )
+    raise ValueError(f"unknown polish mode: {mode!r}")
+
+
 class VisionConfig(BaseModel):
     """Vision-model captioning for the screenshots+transcript build mode."""
 
@@ -116,6 +167,7 @@ class ModelsConfig(BaseModel):
     narrative: SectionConfig
     vision: VisionConfig = Field(default_factory=VisionConfig)
     document: DocumentConfig = Field(default_factory=DocumentConfig)
+    polish: PolishConfig = Field(default_factory=lambda: PolishConfig(model=_POLISH_DEFAULT_MODEL))
 
 
 def provider_endpoint(provider, configured_endpoint):
@@ -213,6 +265,17 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         "[document]",
         f"author = {_toml_str(cfg.document.author)}",
         f"doc_no_prefix = {_toml_str(cfg.document.doc_no_prefix)}",
+        "",
+        "# Optional 4th stage: one formatting/tone pass over the assembled",
+        "# document (see src/pipeline/polish.py). Off by default -- the model",
+        "# below (gemma3:12b) is confirmed pulled on the Ollama host and",
+        "# produced a genuine rewrite in live testing (gemma3n:e4b did not --",
+        "# see _POLISH_DEFAULT_MODEL's comment for details).",
+        "[polish]",
+        f"enabled = {_toml_str(cfg.polish.enabled)}",
+        f"provider = {_toml_str(cfg.polish.provider)}",
+        f"endpoint = {_toml_str(cfg.polish.endpoint)}",
+        f"model = {_toml_str(cfg.polish.model)}",
         "",
     ]
     return "\n".join(lines)

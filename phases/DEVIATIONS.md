@@ -305,3 +305,59 @@ The same audit flagged that `install.bat`/`uninstall.bat`'s console
 window closes the instant `powershell.exe` exits, so a double-clicking
 user would never see an error (or even the success message) — fixed by
 adding `pause` after the `powershell.exe` call in both files.
+
+## Task D investigation: step-text generation is text-only; the screenshot is available but unused
+
+Task D is flagged "investigate FIRST before any vision building." This is that
+investigation — a reproducible trace, not a code change. No source or test file
+was touched to produce it.
+
+**Finding: today, the real-capture (manifest) step-text path never sends an
+image to the LLM, even though every step carries one.**
+
+Trace, with exact citations:
+
+- `generate_step_text` (`src/pipeline/generation.py:61-75`) is the sole
+  per-step LLM entry point for the manifest-based flow. It builds a prompt via
+  `_build_prompt` (`generation.py:30-58`) purely from manifest text fields —
+  `step.action` (line 47), `step.element.name`/`step.element.control_type`
+  (line 48), `step.window.title` (line 50) — and calls
+  `llm_client.chat([{"role": "user", "content": prompt}])` (line 67). The
+  message content is a plain string; no `images`, `image_url`, or base64
+  payload is constructed anywhere in this module.
+- `LLMClient.chat` (`src/pipeline/llm_client.py:69-84`) passes `messages`
+  straight through: `payload = {"model": self.config.model, "messages":
+  messages, **kwargs}` (line 80), POSTed as-is (line 81) to
+  `/chat/completions`. It does not add, inspect, or require an image in the
+  payload — whatever `generate_step_text` builds is exactly what goes over
+  the wire.
+- `generate_all_steps` (`generation.py:78-118`) — called by
+  `render_steps_llm_mode` (`src/pipeline/render.py:62-79`, itself called from
+  `_generate`, `src/pipeline/server.py:326`, the handler for the real
+  manifest/capture upload flow) — is the only caller of
+  `generate_step_text`. Nothing in that call chain reads `step.screenshot`.
+- The `Step` model (`src/pipeline/manifest.py:71-92`) has a `screenshot: str`
+  field (line 80) required and present on every step by the schema — so the
+  image is sitting right there on the same object `_build_prompt` already
+  reads `.action`/`.element`/`.window` from. It's available at step-text time;
+  it's just never wired into that prompt.
+- A vision-capable LLM call does exist in this codebase, but it lives on a
+  completely separate, manifest-free path: `caption_images` /
+  `_caption_one` (`src/pipeline/vision.py:39-125`) builds a multi-part
+  message with a base64 `image_url` content block (lines 62-68) and is
+  invoked only from `_generate_photo` (`src/pipeline/server.py:441-599`),
+  gated behind `vision_cfg.enabled` (line 486), at line 487. `_generate_photo`
+  handles the *synthetic*, one-step-per-uploaded-image build mode
+  (`POST /ui/build`), not the real-capture manifest flow that
+  `generate_step_text` serves.
+
+**Scope implication:** the real-capture step-text path and the vision-caption
+path are two independent, non-overlapping code paths today — one text-only
+(`generate_step_text`/`_generate`), one image-only
+(`caption_images`/`_generate_photo`). Making `generate_step_text` also send
+`step.screenshot` to the LLM is not swapping an existing wire for a better one
+— it's adding a new capability (a second content type, a new failure mode to
+handle in the round-trip/fallback gate, a cost/latency increase per step on
+every real-capture generation run). Per the Task D framing this is a decision
+for Brian to make explicitly, not something to build off the back of this
+investigation.
