@@ -47,6 +47,7 @@ from PIL import Image
 
 from pipeline import __version__
 from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
+from pipeline.claims import extract_claims
 from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import (
@@ -69,11 +70,12 @@ from pipeline.library import upsert_entry
 from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_manifest_steps
 from pipeline.narration_polish import polish_narration
+from pipeline.narrative import generate_narrative
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
-from pipeline.transcript import align_transcript_to_steps
+from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
 from pipeline.vision import caption_images
 from pipeline.webui.pages import (
     render_config_page,
@@ -101,6 +103,40 @@ def _synthesize_narration_from_steps(manifest, step_results):
     lines = [f"Windows involved: {', '.join(windows)}."] if windows else []
     lines.extend(result["text"] for result in step_results)
     return "\n".join(lines)
+
+
+def _narration_to_claims(text):
+    """Turns a block of narration text into task-07's claims.py shape (one
+    claim per non-empty line, synthetic index-based timestamps) so
+    generate_narrative's claim-coverage gate has facts to check the drafted
+    stage-2 narrative against. There's no real audio transcription here (no
+    per-segment timing) -- extract_claims' own contract only needs stable
+    ids in segment order, which a plain line split already gives it, without
+    inventing a second extraction path alongside the real transcription.py
+    one."""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return extract_claims([{"text": ln, "start": float(i)} for i, ln in enumerate(lines)])
+
+
+def _claims_for_narrative(transcript_path, fallback_text):
+    """Builds Stage 2's claim list from whatever narration is available --
+    the uploaded transcript if there is one (the richer, human-authored
+    source), else the step-synthesized fallback text already computed for
+    the title. Dispatches on extension exactly like align_transcript_to_steps:
+    a .json transcript is real timestamped segments
+    (transcript._parse_json_segments), so its structured "text" fields go
+    straight into extract_claims; a .txt/.md transcript (and the synthetic
+    fallback, which is always plain prose) has no such structure, so it goes
+    through _narration_to_claims' line split instead. Treating the raw JSON
+    file as prose would feed extract_claims JSON syntax fragments ("{",
+    '"segments": [') as claim text, which then show up verbatim in
+    [verify] blockquotes in the rendered doc -- this dispatch is what keeps
+    that from happening."""
+    if transcript_path is not None and transcript_path.suffix.lower() == ".json":
+        segments = _parse_json_segments(transcript_path.read_text(encoding="utf-8"))
+        return extract_claims(segments)
+    text = transcript_path.read_text(encoding="utf-8") if transcript_path else fallback_text
+    return _narration_to_claims(text)
 
 
 def _assert_1to1_mapping(manifest, step_results):
@@ -312,20 +348,46 @@ def create_app(
         # manifest-free photo builds already use for narration-based titles.
         # Fills the title only if one isn't already set, so a manifest that
         # DOES carry a title (or a previous run's title) is never overwritten.
-        if not manifest.session.title:
-            synthetic_narration = _synthesize_narration_from_steps(manifest, step_results)
-            if synthetic_narration.strip():
-                title_llm = make_llm_client()
-                try:
-                    gen_title, _overview = generate_title_and_overview(
-                        synthetic_narration, title_llm
-                    )
-                finally:
-                    close = getattr(title_llm, "close", None)
-                    if callable(close):
-                        close()
-                if gen_title:
-                    manifest.session.title = gen_title
+        synthetic_narration = _synthesize_narration_from_steps(manifest, step_results)
+        if not manifest.session.title and synthetic_narration.strip():
+            title_llm = make_llm_client()
+            try:
+                gen_title, _overview = generate_title_and_overview(synthetic_narration, title_llm)
+            finally:
+                close = getattr(title_llm, "close", None)
+                if callable(close):
+                    close()
+            if gen_title:
+                manifest.session.title = gen_title
+
+        # Stage 2: a multi-pass narrative paragraph (task-09) from whatever
+        # narration is available -- the uploaded transcript if there is one
+        # (the richer, human-authored source), else the step-synthesized
+        # narration already computed above for the title. Best-effort like
+        # everything else in this path: any failure just leaves
+        # narrative_text unset, and the doc ships with steps alone, no
+        # different from before this was wired up.
+        narrative_text = None
+        transcript_matches = sorted(session_dir.glob("transcript.*"))
+        transcript_path = transcript_matches[0] if transcript_matches else None
+        try:
+            claims = _claims_for_narrative(transcript_path, synthetic_narration)
+        except Exception:  # noqa: BLE001 - a bad transcript must never block Stage 2
+            claims = []
+        if claims:
+            narrative_llm = make_narrative_llm_client()
+            try:
+                narrative_text, _covered, _verify_ids = generate_narrative(
+                    claims,
+                    narrative_llm,
+                    passes=load_models_config(resolved_config_path).narrative.passes,
+                )
+            except Exception:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
+                narrative_text = None
+            finally:
+                close = getattr(narrative_llm, "close", None)
+                if callable(close):
+                    close()
 
         # narration_polish's minted verify_claims (dropped clauses from a
         # polished rewrite) finally give this hardcoded-empty parameter real
@@ -343,7 +405,14 @@ def create_app(
             }
 
         _write_all_exports(
-            session_id, manifest, step_results, annotated_paths, annotated_dir, session_dir, report
+            session_id,
+            manifest,
+            step_results,
+            annotated_paths,
+            annotated_dir,
+            session_dir,
+            report,
+            narrative_text=narrative_text,
         )
 
     def _generate_photo(session_id):

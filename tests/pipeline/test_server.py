@@ -121,6 +121,11 @@ def test_capture_session_gets_an_auto_generated_title(tmp_path):
     app = create_app(
         sessions_root=tmp_path / "sessions",
         llm_client_factory=lambda: _TitleGeneratingClient(),
+        # Stage 2 (generate_narrative) now also fires on every real-capture
+        # session -- stub it too, or this would make a real network attempt
+        # to the (usually unreachable in a dev/test environment) configured
+        # narrative endpoint, same reasoning as _stub_llm.py's own docstring.
+        narrative_llm_client_factory=stub_llm_client_factory,
         config_path=cfg,
     )
     client = TestClient(app)
@@ -302,6 +307,121 @@ def test_upload_with_transcript_places_narration_under_each_step(tmp_path):
 
     report = client.get(f"/sessions/{session_id}/report").json()
     assert "transcript" in report
+
+
+class _NarrativeGeneratingStub:
+    """Stands in for the [narrative]-section LLM used by generate_narrative
+    (task-09): a fixed reply regardless of prompt is enough to prove the
+    real-capture _generate path now actually calls it (previously dead code
+    -- see server.py's _generate), since none of the transcript's own claim
+    text appears in it, forcing every claim into claim-coverage's [verify]
+    fallback -- a second, independent signal (besides the reply text itself
+    landing in the doc) that generate_narrative really ran end to end."""
+
+    def chat(self, messages, **kwargs):
+        return "This SOP walks through configuring the deployment console end to end."
+
+
+def test_real_capture_session_gets_a_narrative_from_transcript_claims(tmp_path):
+    """Wires generate_narrative into the real-capture _generate path: the
+    narrative LLM's drafted text must land in the rendered md/html, and
+    every transcript-derived claim must still be accounted for -- covered by
+    the narrative's own content or flagged with a [verify] blockquote
+    (claim_coverage.py's gate), exercised end to end through the server
+    rather than in isolation like test_narrative_multipass.py."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _NarrativeGeneratingStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    transcript = (
+        "Step 1: First, open the console.\n\n"
+        "Step 2: Then enter the computer name.\n\n"
+        "Step 3: Finally, check the downloads."
+    )
+    files.append(("transcript_file", ("narration.md", transcript.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "This SOP walks through configuring the deployment console end to end." in md
+    # None of the fixed reply's words match the transcript lines it was fed
+    # as claims, so claim-coverage gating must have flagged all three.
+    assert md.count("[verify]") == 3
+
+    html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    assert "This SOP walks through configuring the deployment console end to end." in html_doc
+
+
+def test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json(tmp_path):
+    """Same wiring as the .md-based narrative test above, but with a
+    faster-whisper-shaped .json transcript (transcript._parse_json_segments'
+    documented input, transcript.py's own docstring) instead of a .md one.
+    Stage 2 must dispatch on extension the same way align_transcript_to_steps
+    already does -- parse the JSON into segments and extract claims from
+    each segment's "text" field -- rather than line-splitting the raw file
+    content, which would feed extract_claims JSON syntax fragments ("{",
+    '"segments": [', '"text": "..."') as claim text and ship them straight
+    into [verify] blockquotes in the rendered doc."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _NarrativeGeneratingStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    segment_texts = [
+        "First, open the console.",
+        "Then enter the computer name.",
+        "Finally, check the downloads.",
+    ]
+    transcript = json.dumps(
+        {
+            "segments": [
+                {"text": segment_texts[0], "start": 0.0},
+                {"text": segment_texts[1], "start": 20.0},
+                {"text": segment_texts[2], "start": 65.0},
+            ]
+        }
+    )
+    files.append(("transcript_file", ("narration.json", transcript.encode(), "application/json")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "This SOP walks through configuring the deployment console end to end." in md
+    # None of the fixed reply's words match the segments' text, so
+    # claim-coverage gating must have flagged all three -- one [verify]
+    # blockquote per segment, quoting that segment's actual text.
+    assert md.count("[verify]") == 3
+    for text in segment_texts:
+        assert text in md
+    # The regression: raw JSON transcript syntax must never leak into the
+    # rendered doc as if it were claim text.
+    for fragment in ("{", "}", '"segments"', '"text":', '"start":'):
+        assert fragment not in md
+
+    html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    for text in segment_texts:
+        assert text in html_doc
+    for fragment in ('"segments"', '"text":', '"start":'):
+        assert fragment not in html_doc
 
 
 class _NarrativeStub:
