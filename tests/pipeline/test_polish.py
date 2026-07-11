@@ -2,9 +2,24 @@
 assembled document. A rewrite is only trusted if a mechanical gate confirms
 it didn't invent or drop a fact; any failure at all -- an LLM exception, a
 gate rejection, a degenerate/empty reply -- must return the ORIGINAL
-document text byte-identical. generate_polish_pass must never raise."""
+document text byte-identical. generate_polish_pass must never raise.
 
-from pipeline.polish import _gate, generate_polish_pass
+generate_polish_fields is the field-level sibling entry point: one
+JSON-array call covering narrative_text and each step's "text"/present
+"narration" as separate items, each independently gated by _field_gate (the
+same checks _gate delegates to) and independently falling back to its own
+original text -- a bad rewrite of one field must never discard a good
+rewrite of another, and must never raise."""
+
+import json
+
+from pipeline.polish import (
+    _build_field_items,
+    _field_gate,
+    _gate,
+    generate_polish_fields,
+    generate_polish_pass,
+)
 
 # A realistic ~1.5KB, 19-step SOP document -- well over the old 600-char
 # _LENGTH_CAP (built for single captions/narration segments), while the
@@ -268,3 +283,278 @@ def test_generate_polish_pass_returns_polished_text_for_a_realistic_multistep_do
     assert result == rewrite
     assert result != _REALISTIC_DOCUMENT
     assert len(client.calls) == 1
+
+
+# --- generate_polish_fields / _field_gate ----------------------------------
+
+
+def test_field_gate_is_the_same_check_gate_delegates_to():
+    # _gate is now a thin whole-document alias of _field_gate (factored out
+    # so generate_polish_pass and generate_polish_fields share one
+    # implementation) -- both must agree on the same original/rewrite pair.
+    original = "click save then go to the c drive and open port 8420"
+    rewrite = "Click Save, then go to the C drive and open port 8420."
+    assert _field_gate(original, rewrite) == _gate(original, rewrite)
+
+
+def test_build_field_items_includes_narration_only_when_present_and_truthy():
+    step_results = [
+        {"step_id": "step-001", "text": "a", "narration": "b"},
+        {"step_id": "step-002", "text": "c", "narration": ""},  # falsy -- excluded
+        {"step_id": "step-003", "text": "d"},  # absent key -- excluded
+    ]
+    items = _build_field_items("narrative text", step_results)
+    assert [field_id for field_id, _ in items] == [
+        "narrative",
+        "step-001",
+        "step-001:narration",
+        "step-002",
+        "step-003",
+    ]
+
+
+def test_build_field_items_skips_empty_or_missing_narrative_text():
+    items_none = _build_field_items(None, [])
+    items_blank = _build_field_items("   ", [])
+    assert items_none == []
+    assert items_blank == []
+
+
+def test_generate_polish_fields_polishes_narrative_step_text_and_narration_together():
+    narrative_text = "Save the file to the reports folder."
+    step_results = [
+        {
+            "step_id": "step-001",
+            "text": "click save then store the file",
+            "narration": "click save then store the file",
+        }
+    ]
+    reply = json.dumps(
+        [
+            {"field_id": "narrative", "text": "Save the file to the reports folder promptly."},
+            {"field_id": "step-001", "text": "Click save, then store the file."},
+            {
+                "field_id": "step-001:narration",
+                "text": "Click save, then store the file carefully.",
+            },
+        ]
+    )
+    client = _StubClient(reply)
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, client
+    )
+
+    assert polished_narrative == "Save the file to the reports folder promptly."
+    assert polished_steps[0]["text"] == "Click save, then store the file."
+    assert polished_steps[0]["narration"] == "Click save, then store the file carefully."
+    assert set(meta["fields_polished"]) == {"narrative", "step-001", "step-001:narration"}
+    assert meta["fields_kept_verbatim"] == {}
+    assert len(client.calls) == 1
+
+
+def test_generate_polish_fields_leaves_step_without_narration_untouched():
+    step_results = [{"step_id": "step-001", "text": "click save"}]
+    reply = json.dumps(
+        [
+            {"field_id": "step-001", "text": "Click save."},
+            # A field the model was never asked for -- must be ignored, not
+            # applied, since this step never had a "narration" key.
+            {"field_id": "step-001:narration", "text": "This should be ignored."},
+        ]
+    )
+    client = _StubClient(reply)
+    polished_narrative, polished_steps, meta = generate_polish_fields(None, step_results, client)
+
+    sent_prompt = client.calls[0][0]["content"]
+    assert "step-001:narration" not in sent_prompt
+    assert polished_narrative is None
+    assert polished_steps[0]["text"] == "Click save."
+    assert "narration" not in polished_steps[0]
+    assert "step-001:narration" not in meta["fields_polished"]
+    assert "step-001:narration" not in meta["fields_kept_verbatim"]
+
+
+def test_generate_polish_fields_rejects_a_denylisted_word_in_one_field_but_keeps_others():
+    # Field-granularity version of test_gate_rejects_a_denylisted_word_
+    # smuggled_in_via_reused_vocabulary: a rewrite of ONE field (the step
+    # text) smuggles in a destructive instruction; that field alone must
+    # revert to its original while a good rewrite of the OTHER field
+    # (narrative_text) in the same call is still kept.
+    narrative_text = "Save the file to the reports folder using the workstation."
+    step_results = [{"step_id": "step-001", "text": "click save then store the file"}]
+    good_narrative_rewrite = (
+        "Save the file to the reports folder using the workstation, ensuring accuracy."
+    )
+    bad_step_rewrite = "Click save, then format the c drive to store the file."
+    reply = json.dumps(
+        [
+            {"field_id": "narrative", "text": good_narrative_rewrite},
+            {"field_id": "step-001", "text": bad_step_rewrite},
+        ]
+    )
+    client = _StubClient(reply)
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, client
+    )
+
+    assert polished_narrative == good_narrative_rewrite
+    assert polished_steps[0]["text"] == step_results[0]["text"]  # reverted, not bad_step_rewrite
+    assert (
+        meta["fields_kept_verbatim"]["step-001"]
+        == "introduced a high-risk or destructive instruction"
+    )
+    assert "step-001" not in meta["fields_polished"]
+    assert "narrative" in meta["fields_polished"]
+
+
+def test_generate_polish_fields_rejects_a_fabricated_cluster_in_one_field_but_keeps_others():
+    # Field-granularity version of test_gate_rejects_a_fabricated_extra_step:
+    # a rewrite of ONE field (a step's text, using the realistic multi-step
+    # fixture) appends a plausible-sounding but fully invented extra step;
+    # that field alone must revert while a good rewrite of narrative_text in
+    # the same call is still kept.
+    narrative_text = "This document walks through configuring the demo workstation."
+    step_results = [{"step_id": "step-001", "text": _REALISTIC_DOCUMENT}]
+    fabricated_step = (
+        "Step 20: Recalibrate the auxiliary telemetry sensor mounted in the "
+        "equipment closet and confirm all diagnostic indicators read nominal."
+    )
+    bad_step_rewrite = _faithful_rewrite(_REALISTIC_DOCUMENT) + "\n\n" + fabricated_step
+    good_narrative_rewrite = (
+        "This document walks through configuring the demo workstation carefully."
+    )
+    reply = json.dumps(
+        [
+            {"field_id": "narrative", "text": good_narrative_rewrite},
+            {"field_id": "step-001", "text": bad_step_rewrite},
+        ]
+    )
+    client = _StubClient(reply)
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, client
+    )
+
+    assert polished_narrative == good_narrative_rewrite
+    assert polished_steps[0]["text"] == _REALISTIC_DOCUMENT  # reverted, not bad_step_rewrite
+    assert meta["fields_kept_verbatim"]["step-001"] == "introduced unsupported content"
+    assert "step-001" not in meta["fields_polished"]
+    assert "narrative" in meta["fields_polished"]
+
+
+def test_generate_polish_fields_reverts_only_the_rejected_narration_field():
+    # A step's "narration" is a separate item/id from that same step's
+    # "text" -- a gate rejection on the narration rewrite must revert only
+    # that step's narration, leaving that step's text polish, and every
+    # other field, untouched.
+    narrative_text = "Save the report to the shared drive."
+    step_results = [
+        {
+            "step_id": "step-001",
+            "text": "click save then store the file",
+            "narration": "click save then store the file",
+        },
+        {"step_id": "step-002", "text": "click cancel"},
+    ]
+    good_narrative_rewrite = "Save the report to the shared drive promptly."
+    good_text_rewrite = "Click save, then store the file."
+    bad_narration_rewrite = "Click save, then format the c drive to store the file."
+    reply = json.dumps(
+        [
+            {"field_id": "narrative", "text": good_narrative_rewrite},
+            {"field_id": "step-001", "text": good_text_rewrite},
+            {"field_id": "step-001:narration", "text": bad_narration_rewrite},
+            {"field_id": "step-002", "text": "Click cancel."},
+        ]
+    )
+    client = _StubClient(reply)
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, client
+    )
+
+    assert polished_narrative == good_narrative_rewrite
+    step1 = next(s for s in polished_steps if s["step_id"] == "step-001")
+    step2 = next(s for s in polished_steps if s["step_id"] == "step-002")
+    assert step1["text"] == good_text_rewrite  # text polish kept
+    assert step1["narration"] == step_results[0]["narration"]  # narration reverted
+    assert step2["text"] == "Click cancel."
+    assert (
+        meta["fields_kept_verbatim"]["step-001:narration"]
+        == "introduced a high-risk or destructive instruction"
+    )
+    assert "step-001" in meta["fields_polished"]
+    assert "step-001:narration" not in meta["fields_polished"]
+
+
+def test_generate_polish_fields_keeps_original_for_field_omitted_from_reply():
+    narrative_text = "Save the file."
+    step_results = [
+        {"step_id": "step-001", "text": "click save"},
+        {"step_id": "step-002", "text": "click cancel"},
+    ]
+    reply = json.dumps(
+        [
+            {"field_id": "narrative", "text": "Save the file."},
+            {"field_id": "step-001", "text": "Click save."},
+            # step-002 omitted entirely from the reply
+        ]
+    )
+    client = _StubClient(reply)
+    _polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, client
+    )
+
+    step2 = next(s for s in polished_steps if s["step_id"] == "step-002")
+    assert step2["text"] == "click cancel"
+    assert meta["fields_kept_verbatim"]["step-002"] == "not returned by model"
+    assert "step-002" not in meta["fields_polished"]
+
+
+def test_generate_polish_fields_keeps_everything_on_llm_exception():
+    narrative_text = "Save the file."
+    step_results = [
+        {"step_id": "step-001", "text": "click save", "narration": "click save"},
+    ]
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, _RaisingClient()
+    )
+    assert polished_narrative == narrative_text
+    assert polished_steps == step_results
+    assert meta["attempted"] is True
+    assert meta["fields_kept_verbatim"] == {
+        "narrative": "polish call failed",
+        "step-001": "polish call failed",
+        "step-001:narration": "polish call failed",
+    }
+
+
+def test_generate_polish_fields_keeps_everything_on_malformed_json_reply():
+    narrative_text = "Save the file."
+    step_results = [{"step_id": "step-001", "text": "click save"}]
+    client = _StubClient("not json")
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, client
+    )
+    assert polished_narrative == narrative_text
+    assert polished_steps == step_results
+    assert meta["fields_kept_verbatim"] == {
+        "narrative": "polish call failed",
+        "step-001": "polish call failed",
+    }
+
+
+def test_generate_polish_fields_keeps_everything_on_none_reply():
+    narrative_text = "Save the file."
+    step_results = [{"step_id": "step-001", "text": "click save"}]
+    polished_narrative, polished_steps, meta = generate_polish_fields(
+        narrative_text, step_results, _NoneReplyClient()
+    )
+    assert polished_narrative == narrative_text
+    assert polished_steps == step_results
+    assert meta["fields_kept_verbatim"]["narrative"] == "polish call failed"
+
+
+def test_generate_polish_fields_is_a_noop_when_nothing_to_polish():
+    polished_narrative, polished_steps, meta = generate_polish_fields(None, [], _RaisingClient())
+    assert polished_narrative is None
+    assert polished_steps == []
+    assert meta["attempted"] is False

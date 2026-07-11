@@ -1,19 +1,30 @@
-"""Polish pass -- optional 4th pipeline stage: a single formatting/tone pass
-over an already-assembled document's text, using the LLM client. Unlike
-narration_polish.py (stage 2 of the narration pipeline, which rewrites many
-short per-step segments via one JSON-array call), this operates on the whole
-document as a single string and returns a single rewritten string -- but the
-same fail-safe discipline applies: a rewrite is only trusted if a mechanical
-gate confirms it didn't invent content, drop a literal fact, or come back
-degenerate. Any failure at all -- a raised exception, a gate rejection, an
-empty/non-string reply -- returns the ORIGINAL document text unchanged. One
-attempt, never retried, and this function itself never raises: a broken or
-misconfigured polish pass can never take down, or silently corrupt, an
-otherwise-correct document."""
+"""Polish pass -- optional 4th pipeline stage: a formatting/tone pass over an
+already-assembled document's text, using the LLM client. Two entry points
+share the same fail-safe discipline: a rewrite is only trusted if a
+mechanical gate confirms it didn't invent content, drop a literal fact, or
+come back degenerate.
 
+`generate_polish_pass` (the original entry point) operates on the whole
+document as a single string and returns a single rewritten string, gated as
+a unit by `_gate`. `generate_polish_fields` operates at field granularity --
+`narrative_text` and each step's `"text"`/`"narration"` submitted as
+separate items in one JSON-array LLM call, mirroring narration_polish.py
+(stage 2 of the narration pipeline)'s proven per-unit pattern -- with each
+field gated independently by `_field_gate` (the checks `_gate` delegates to,
+factored out so both entry points share one implementation). Any failure at
+all -- a raised exception, a gate rejection, an empty/non-string reply --
+returns the ORIGINAL text unchanged, at whatever granularity that entry
+point operates: the whole document for `generate_polish_pass`, just the one
+field for `generate_polish_fields`. One attempt, never retried, and neither
+function ever raises: a broken or misconfigured polish pass can never take
+down, or silently corrupt, an otherwise-correct document."""
+
+import json
 import re
 
 from pipeline.textgate import degenerate_shape_reason
+
+_JSON_ARRAY_RE = re.compile(r"\[.*\]", re.S)
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
@@ -127,19 +138,22 @@ def _has_digit_or_path_marker(chunk):
     return any(ch.isdigit() for ch in chunk) or any(ch in chunk for ch in "\\/:")
 
 
-def _gate(original, rewrite):
+def _field_gate(original, rewrite):
     """Returns (ok, reason). Mirrors narration_polish._gate's fail-safe
     checks (degenerate decoding, dropped/altered literal facts, invented
-    content, length sanity) but scoped to a whole document rather than a
-    per-step segment, and without the soft dropped-clause flagging -- a
-    whole-document pass has no per-step [verify] blockquote to attach one
-    to, so a dropped clause here is just a hard reject.
+    content, length sanity) but without the soft dropped-clause flagging --
+    a field-level pass has no per-step [verify] blockquote to attach one to
+    for `narrative_text` (which isn't step-scoped), so a dropped clause here
+    is just a hard reject. `original`/`rewrite` are a single field's text --
+    the whole document (`generate_polish_pass`, via `_gate` below), a step's
+    `"text"`, a step's `"narration"`, or `narrative_text`
+    (`generate_polish_fields`) -- the checks themselves don't care which.
 
     Uses `degenerate_shape_reason` rather than `degenerate_reason` -- the
     latter's absolute `_LENGTH_CAP` (600 chars) is sized for short per-step
     captions/narration segments and would reject any real multi-step
-    document outright. Document-scale length sanity is instead covered by
-    check 3 below (length ratio against the original)."""
+    document or narrative outright. Document-scale length sanity is instead
+    covered by check 3 below (length ratio against the original)."""
     reason = degenerate_shape_reason(rewrite)
     if reason:
         return False, reason
@@ -188,6 +202,14 @@ def _gate(original, rewrite):
     return True, None
 
 
+def _gate(original, rewrite):
+    """Returns (ok, reason). Whole-document alias of `_field_gate`, kept as
+    its own name for `generate_polish_pass`'s call site and this module's
+    existing tests -- the checks themselves are identical; a whole document
+    is just the one field `generate_polish_pass` gates."""
+    return _field_gate(original, rewrite)
+
+
 def generate_polish_pass(document_text, llm):
     """Runs one formatting/tone LLM pass over `document_text`. Returns the
     polished text if it passes the fail-safe gate; otherwise returns
@@ -211,3 +233,115 @@ def generate_polish_pass(document_text, llm):
         return document_text
 
     return reply
+
+
+_FIELDS_POLISH_PROMPT_TEMPLATE = (
+    "Below are text fields from a completed Standard Operating Procedure "
+    "document, each tagged with a field id. Perform ONE formatting and tone "
+    "pass ONLY on each field: fix grammar, punctuation, and phrasing; make "
+    "wording read consistently. Do NOT add, remove, or alter any fact, "
+    "number, name, step, or instruction -- every fact in a field's original "
+    "text must appear unchanged in your output for that field, and you may "
+    "ONLY rephrase. Keep each rewrite close in length to its original.\n\n"
+    "{items}\n\n"
+    'Respond with ONLY a JSON array: [{{"field_id": "narrative", "text": "..."}}, ...] '
+    "for every field id given above."
+)
+
+
+def _build_field_items(narrative_text, step_results):
+    """Returns the ordered list of (field_id, text) items to submit in one
+    polish call: `narrative_text` (when present/non-empty) as `"narrative"`,
+    then each step's `"text"` as its `step_id`, then -- only when that step
+    actually carries one -- its `"narration"` as `f"{step_id}:narration"`.
+    The narration truthiness check mirrors render_markdown's own
+    `result.get("narration")` check, so a step with no narration contributes
+    no item and is never sent to the model for that field."""
+    items = []
+    if narrative_text and narrative_text.strip():
+        items.append(("narrative", narrative_text))
+    for step in step_results:
+        step_id = step["step_id"]
+        items.append((step_id, step["text"]))
+        narration = step.get("narration")
+        if narration:
+            items.append((f"{step_id}:narration", narration))
+    return items
+
+
+def _build_fields_prompt(items):
+    lines = [f'{field_id}: "{text}"' for field_id, text in items]
+    return _FIELDS_POLISH_PROMPT_TEMPLATE.format(items="\n".join(lines))
+
+
+def generate_polish_fields(narrative_text, step_results, llm):
+    """Runs one formatting/tone LLM pass covering `narrative_text` and every
+    step's `"text"`/present `"narration"` as separate items in a single
+    JSON-array call (see `_build_field_items`) -- narration_polish.py's
+    proven per-unit pattern applied to stage-4 polish, so a bad rewrite of
+    one field can never discard a good rewrite of another the way
+    `generate_polish_pass`'s whole-document gate would.
+
+    Returns `(polished_narrative_text, polished_step_results, meta)`.
+    `polished_step_results` is a new list of whole step dicts (a shallow
+    copy of each original with `"text"`/`"narration"` possibly replaced),
+    not a text-only shadow structure. Each field is independently checked by
+    `_field_gate`; a field whose rewrite is missing from the reply or fails
+    the gate keeps its ORIGINAL text -- recorded in
+    `meta["fields_kept_verbatim"]`. Never raises: any exception raised by
+    the LLM call or while parsing its reply leaves every field at its
+    original text, exactly like `generate_polish_pass`'s "polish can never
+    corrupt or block a document" discipline."""
+    items = _build_field_items(narrative_text, step_results)
+
+    meta = {
+        "attempted": False,
+        "fields_polished": [],
+        "fields_kept_verbatim": {},
+    }
+    if not items:
+        return narrative_text, list(step_results), meta
+
+    meta["attempted"] = True
+    try:
+        reply = llm.chat([{"role": "user", "content": _build_fields_prompt(items)}])
+        match = _JSON_ARRAY_RE.search(reply)
+        rewrites = json.loads(match.group(0))
+        rewrite_by_id = {
+            r["field_id"]: r["text"]
+            for r in rewrites
+            if isinstance(r, dict)
+            and isinstance(r.get("field_id"), str)
+            and isinstance(r.get("text"), str)
+        }
+    except Exception:  # noqa: BLE001 - a bad response means every field stays original
+        meta["fields_kept_verbatim"] = {field_id: "polish call failed" for field_id, _ in items}
+        return narrative_text, list(step_results), meta
+
+    resolved = {}
+    for field_id, original in items:
+        rewrite = rewrite_by_id.get(field_id)
+        if rewrite is None:
+            resolved[field_id] = original
+            meta["fields_kept_verbatim"][field_id] = "not returned by model"
+            continue
+        ok, reason = _field_gate(original, rewrite)
+        if not ok:
+            resolved[field_id] = original
+            meta["fields_kept_verbatim"][field_id] = reason
+            continue
+        resolved[field_id] = rewrite
+        meta["fields_polished"].append(field_id)
+
+    polished_narrative_text = resolved.get("narrative", narrative_text)
+
+    polished_step_results = []
+    for step in step_results:
+        step_id = step["step_id"]
+        new_step = dict(step)
+        new_step["text"] = resolved.get(step_id, step["text"])
+        if step.get("narration"):
+            new_step["narration"] = resolved.get(f"{step_id}:narration", step["narration"])
+        polished_step_results.append(new_step)
+
+    return polished_narrative_text, polished_step_results, meta
