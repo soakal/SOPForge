@@ -637,12 +637,12 @@ def create_app(
         # good rewrite of another. With no override, gated on
         # [polish].enabled (default off -- see PolishConfig); an explicit
         # override bypasses that toggle for this job (resolve_polish_config's
-        # "off" always skips, "local"/"haiku" always run). Only doc.md,
-        # doc.html, and the md-bundle (export.md.zip) reflect this pass so
-        # far -- all three rendered from the polished fields below; the
-        # docx/pdf/single-html exports further down still render from the
-        # original (pre-polish) step_results/narrative_text and are
-        # deliberately left unpolished for now.
+        # "off" always skips, "local"/"haiku" always run). doc.md, doc.html,
+        # doc.single.html, and the md-bundle (export.md.zip) all reflect this
+        # pass -- all four rendered from the polished fields below; the
+        # docx/pdf exports further down still render from the original
+        # (pre-polish) step_results/narrative_text and are deliberately left
+        # unpolished for now.
         current_cfg = load_models_config(resolved_config_path)
         if polish_override is not None:
             polish_section = resolve_polish_config(polish_override, current_cfg)
@@ -730,7 +730,7 @@ def create_app(
         )
 
         single_html = render_single_file_html(
-            manifest, step_results, annotated_paths, narrative_text=narrative_text
+            manifest, md_step_results, annotated_paths, narrative_text=md_narrative_text
         )
         (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
 

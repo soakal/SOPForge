@@ -238,11 +238,12 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     about the server-side WIRING, so it fakes generate_polish_fields
     (uppercasing every field it's handed) and asserts against exactly what
     it captured/returned -- proving _write_all_exports actually calls it
-    and renders doc.md from its output. doc.html and the export.md.zip
-    md-bundle are both asserted to carry the SAME polished/uppercased text
-    as doc.md (all three now render from the returned polished fields),
-    proving this cycle extends the polish wiring from doc.md to doc.html
-    and the md-bundle too."""
+    and renders doc.md from its output. doc.html, doc.single.html, and the
+    export.md.zip md-bundle are all asserted to carry the SAME
+    polished/uppercased text as doc.md (all four now render from the
+    returned polished fields), proving this cycle extends the polish
+    wiring from doc.md to the rest of the HTML family and the md-bundle
+    too."""
     import pipeline.server as server_module
 
     captured = {}
@@ -300,6 +301,16 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     for step in captured["step_results"]:
         assert _html.escape(step["text"].upper()) in html_doc
         assert _html.escape(step["text"]) not in html_doc
+
+    # doc.single.html (render_single_file_html, export_html.py) now renders
+    # from the same polished md_step_results/md_narrative_text as doc.html
+    # this cycle -- same escaped-text assertions apply. (It doesn't render a
+    # step's "narration" field at all, polished or not, so only "text" is
+    # checked here.)
+    single_html = client.get(f"/sessions/{session_id}/doc.single.html").text
+    for step in captured["step_results"]:
+        assert _html.escape(step["text"].upper()) in single_html
+        assert _html.escape(step["text"]) not in single_html
 
     # export.md.zip's <slug>.md (export_markdown_bundle, export_md.py) now
     # renders from the same polished fields as doc.md/doc.html this cycle --
@@ -616,10 +627,14 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
     """Enables polish with `_RealPromptParsingPolishStub` (uppercasing every
     field via a reply built from genuinely parsing the real prompt text) and
     drives a real session end to end. Proves: narrative_text, step text, and
-    step narration all land polished (uppercased) in doc.md AND doc.html --
-    both now rendered from the same returned polished fields this cycle, so
-    doc.html picks up the polished version and never keeps the ORIGINAL
-    text. Reuses test_polish_rejected_when_it_drops_claim_coverage's
+    step narration all land polished (uppercased) in doc.md, doc.html, AND
+    doc.single.html -- all three now rendered from the same returned
+    polished fields this cycle, so each picks up the polished version and
+    never keeps the ORIGINAL text. (doc.single.html, render_single_file_html
+    in export_html.py, never renders a step's "narration" field at all --
+    polished or not -- so its per-field check below skips ":narration"
+    field_ids and only covers "narrative" and step "text".) Reuses
+    test_polish_rejected_when_it_drops_claim_coverage's
     transcript fixture (three claims, all covered verbatim by
     _VerbatimNarrativeStub) so narrative_text, step text, AND at least one
     step's narration are all exercised in one pass."""
@@ -667,6 +682,7 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
     html_doc = client.get(f"/sessions/{session_id}/doc.html").text
+    single_html = client.get(f"/sessions/{session_id}/doc.single.html").text
     zip_resp = client.get(f"/sessions/{session_id}/export.md.zip")
     with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as zf:
         bundle_md_name = next(name for name in zf.namelist() if name.endswith(".md"))
@@ -679,6 +695,17 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
             f"doc.html must not carry the original {field_id!r} -- doc.html now renders "
             "from the same polished fields as doc.md"
         )
+        # doc.single.html never renders a step's "narration" field at all
+        # (render_single_file_html only emits step "text" and narrative_text)
+        # -- skip ":narration" field_ids here, they'd never appear either way.
+        if ":narration" not in field_id:
+            assert _html.escape(polished) in single_html, (
+                f"expected polished {field_id!r} in doc.single.html"
+            )
+            assert _html.escape(original) not in single_html, (
+                f"doc.single.html must not carry the original {field_id!r} -- "
+                "doc.single.html now renders from the same polished fields as doc.md"
+            )
         # Guards against the real (non-faked) polish pass silently no-oping
         # onto the template-fallback path this cycle wires up too: proves
         # the md-bundle's <slug>.md genuinely carries the polished text, not
