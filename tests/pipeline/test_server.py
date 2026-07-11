@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from pipeline.config import default_config_path
+from pipeline.config import default_config_path, load_models_config, save_models_config
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 
@@ -190,6 +190,83 @@ def test_get_doc_md_and_html(tmp_path):
     html_resp = client.get(f"/sessions/{session_id}/doc.html")
     assert html_resp.status_code == 200
     assert html_resp.text.startswith("<!doctype html>")
+
+
+def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path):
+    """[polish].enabled=true routes the assembled markdown through
+    generate_polish_pass (polish.py) before doc.md is written -- the stub
+    client here uppercases the whole document, a transform the gate accepts
+    (every content token still traces back to the original once
+    lowercased, no digit/path literal is dropped, length ratio is
+    unchanged) but that's trivially visible in the written doc.md, proving
+    the polished text -- not the original render -- is what lands on disk."""
+    from pipeline.polish import _POLISH_PROMPT_TEMPLATE
+
+    _prefix, _, _suffix = _POLISH_PROMPT_TEMPLATE.partition("{document}")
+
+    class _UppercasingPolishStub:
+        def chat(self, messages, **kwargs):
+            # generate_polish_pass wraps document_text in a fixed
+            # instruction prompt -- strip that wrapper back off so only the
+            # actual document content (not the instruction prose, which
+            # would fail the gate's "no invented content" check) is
+            # uppercased.
+            content = messages[0]["content"]
+            document = content[len(_prefix) : len(content) - len(_suffix)]
+            return document.upper()
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        polish_llm_client_factory=lambda: _UppercasingPolishStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+
+    md_resp = client.get(f"/sessions/{session_id}/doc.md")
+    assert md_resp.status_code == 200
+    assert md_resp.text == md_resp.text.upper()
+    assert md_resp.text != md_resp.text.lower()  # sanity: not an empty/blank doc
+
+
+def test_polish_pass_is_a_no_op_when_disabled_by_default(tmp_path):
+    """[polish].enabled defaults to False -- doc.md must be byte-identical to
+    the unpolished render, and no polish client may even be constructed (a
+    factory that raises if called proves this stays a pure no-op: no client
+    construction, no network call)."""
+
+    def _explode():
+        raise AssertionError("polish_llm_client_factory must not be called when disabled")
+
+    client_default = _make_client(tmp_path)
+    session_id, status = _create_and_wait(client_default, tmp_path)
+    assert status["status"] == "done"
+    unpolished_md = client_default.get(f"/sessions/{session_id}/doc.md").text
+
+    cfg = tmp_path / "models2.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions2",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        polish_llm_client_factory=_explode,
+        config_path=cfg,
+    )
+    client_guarded = TestClient(app)
+    session_id2, status2 = _create_and_wait(client_guarded, tmp_path)
+    assert status2["status"] == "done"
+    guarded_md = client_guarded.get(f"/sessions/{session_id2}/doc.md").text
+
+    assert guarded_md == unpolished_md
 
 
 def test_review_page_renders_sidecar_report(tmp_path):

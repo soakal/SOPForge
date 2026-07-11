@@ -71,6 +71,7 @@ from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_manifest_steps
 from pipeline.narration_polish import polish_narration
 from pipeline.narrative import generate_narrative
+from pipeline.polish import generate_polish_pass
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
@@ -208,6 +209,7 @@ def create_app(
     llm_client_factory=None,
     config_path=None,
     narrative_llm_client_factory=None,
+    polish_llm_client_factory=None,
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -222,7 +224,11 @@ def create_app(
     narrative_llm_client_factory: same shape, but built from config/models.toml's
     `[narrative]` section (previously unused by any live code) -- used only for
     the semantic transcript-placement/polish path (_apply_transcript), when a
-    transcript has no structure for the deterministic placement to split on."""
+    transcript has no structure for the deterministic placement to split on.
+
+    polish_llm_client_factory: same shape, but built from config/models.toml's
+    `[polish]` section -- used only for the optional stage-4 whole-document
+    polish pass (_write_all_exports), gated on `[polish].enabled`."""
     app = FastAPI()
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -280,6 +286,9 @@ def create_app(
     )
     make_narrative_llm_client = narrative_llm_client_factory or (
         lambda: LLMClient(load_models_config(resolved_config_path).narrative)
+    )
+    make_polish_llm_client = polish_llm_client_factory or (
+        lambda: LLMClient(load_models_config(resolved_config_path).polish)
     )
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
@@ -593,6 +602,20 @@ def create_app(
             narrative_text=narrative_text,
             base_dir=annotated_dir,
         )
+        # Optional stage 4: a single formatting/tone pass over the assembled
+        # markdown, gated on [polish].enabled (default off -- see
+        # PolishConfig). Only doc.md reflects this pass this cycle; the
+        # docx/pdf/html/single-html/md-bundle exports below render
+        # independently from step_results/narrative_text and are
+        # deliberately left unpolished for now.
+        if load_models_config(resolved_config_path).polish.enabled:
+            polish_llm = make_polish_llm_client()
+            try:
+                md = generate_polish_pass(md, polish_llm)
+            finally:
+                close = getattr(polish_llm, "close", None)
+                if callable(close):
+                    close()
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
         html_doc = render_html(
