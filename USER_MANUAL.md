@@ -413,6 +413,34 @@ once. Off (`1`) by default: against an untuned single-slot Ollama
 server, raising it just queues requests and risks a queued step's own
 timeout expiring into a template fallback it didn't need.
 
+### Vision-augmented step generation (`use_vision`, off by default)
+
+Every step also carries its own screenshot, but by default it's never sent
+to the LLM — step text is written from the manifest's text fields alone
+(action, element name, window title). Setting `use_vision = true` under
+`[steps]` in `config/models.toml` attaches that step's screenshot to the
+same LLM call, so the model can describe what's actually on screen instead
+of working from text alone.
+
+This is **config-file only** — there's no toggle for it on the
+Configuration page (§7), and it's a different feature from the **Vision**
+row you *do* see there, which is for screenshots-only builds with no
+manifest (§5, "Building without a capture"). `use_vision` augments the
+normal, manifest-driven step generation described above; it doesn't
+replace it, and it needs a model that can actually see images (the default
+`[steps]` model, `qwen3:32b`, is text-only — you'd need to point `[steps]`
+at a vision-capable model like `qwen2.5vl:7b` for this to do anything).
+
+It's off by default because a live measurement (20 real steps from 2 real
+capture sessions, comparing the same model with and without the
+screenshot attached) found it doesn't reliably help: it fixed some steps
+that had been falling back to the template, but broke roughly the same
+number of steps that had been working fine without it — a net wash on
+accuracy, not a clear improvement — while running 25–50x slower per step
+(the vision call itself, not network latency). See
+`phases/05-vision-step-text-measurement.md` for the full data, including
+concrete before/after examples, if you're considering turning it on.
+
 ---
 
 ## 5. Using the review web UI
@@ -623,6 +651,51 @@ Saving writes to a **per-user** config at `%USERPROFILE%\SOPForge\models.toml`
 (seeded from the bundled default). Changes take effect on the next generation —
 no restart needed. You can also edit that file directly.
 
+### The polish stage (`[polish]`, config-file only, off by default)
+
+There's a fourth, optional stage beyond Steps/Narration/Vision: a single
+formatting/tone pass over the assembled document, meant to smooth out
+phrasing inconsistencies without changing any fact, number, or instruction.
+It's **not on the Configuration page** — enable it by editing
+`[polish]` in `%USERPROFILE%\SOPForge\models.toml` (or the bundled
+`config/models.toml`) directly:
+
+```toml
+[polish]
+enabled = false        # true to turn it on
+provider = "ollama"
+endpoint = "http://192.168.200.60:11434/v1"
+model = "gemma3:12b"
+```
+
+Same **ollama** / **openrouter** / **openai** / **anthropic** provider
+options as Steps/Narration. `enabled = false` (the default) means the
+stage never runs and never makes a network call — turning it on only
+affects documents generated afterward.
+
+Every polish rewrite is checked before it's used: it must not drop or
+invent a fact, must preserve any `[verify]` flags from the narration
+stage, and must not introduce a handful of specifically disallowed
+high-risk words (things like "format", "delete", "wipe"). If a rewrite
+fails any of these checks — or the LLM call fails outright — that
+section keeps its original, pre-polish text; a broken or misconfigured
+polish stage can never corrupt or block a document. It covers all six
+export formats (`doc.md`, `doc.html`, `doc.single.html`, the markdown
+bundle, `doc.docx`, `doc.pdf`) identically, so there's no drift between
+formats.
+
+Per-job, you can also override the saved setting without editing the
+config — see the `polish` query param on `POST /sessions/{id}/rerender`
+(§4 "Example commands per endpoint"): `off` skips it for that job even if
+`enabled = true`; `local` forces the Ollama provider; `haiku` forces
+Claude Haiku 4.5 regardless of what's configured.
+
+The local backend's success rate is modest (roughly a quarter to half of
+rewrites pass the checks above and actually get used — the rest silently
+keep the original text) — this is a model-capability limit, not a bug,
+and is exactly why it's off by default until you've reviewed its output
+on your own documents.
+
 ### API keys (security)
 
 API keys are **never stored in the config file** — they're read only from
@@ -674,6 +747,19 @@ form posts.
   stop recording — it doesn't retry later or queue for when the server comes
   back up. If it fails, use the library page's upload form (§5) once the
   server is running.
+- The polish stage's local backend (§7) only produces a usable rewrite
+  roughly a quarter to half of the time against a 12B-class model — the
+  rest silently keep the pre-polish text (never wrong, just unchanged).
+  A larger local model may do better (untested); the `haiku` remote
+  backend has never been exercised against a live API call in this
+  deployment, so its actual reliability is unverified. This is why
+  polish defaults to off.
+- Vision-augmented step generation (`use_vision`, §4) measured no net
+  accuracy improvement over text-only in a real-data comparison — it
+  traded some failures for others rather than reducing them — while
+  running 25–50x slower per step. See
+  `phases/05-vision-step-text-measurement.md` for the data. Off by
+  default for this reason.
 
 ---
 
