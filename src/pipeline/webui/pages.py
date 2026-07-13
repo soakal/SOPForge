@@ -311,6 +311,12 @@ _RECOMMENDED = {
         "openrouter": "anthropic/claude-sonnet-5",
         "openai": "gpt-4o",
     },
+    "polish": {
+        "ollama": "gemma3:12b",
+        "openrouter": "anthropic/claude-haiku-4.5",
+        "openai": "gpt-5.4-mini",
+        "anthropic": "claude-haiku-4-5",
+    },
 }
 _MODEL_SUGGESTIONS = {
     "steps": {
@@ -340,6 +346,12 @@ _MODEL_SUGGESTIONS = {
         "openrouter": ["anthropic/claude-sonnet-5", "openai/gpt-5.5"],
         "openai": ["gpt-5.5", "gpt-4o"],
         # deliberately no "anthropic" key -- vision excludes bare anthropic (see _VISION_PROVIDERS)
+    },
+    "polish": {
+        "ollama": ["gemma3:12b", "gemma3:27b"],
+        "openrouter": ["anthropic/claude-haiku-4.5", "anthropic/claude-sonnet-5"],
+        "openai": ["gpt-5.4-mini", "gpt-5.4-nano"],
+        "anthropic": ["claude-haiku-4-5", "claude-sonnet-5"],
     },
 }
 
@@ -399,7 +411,12 @@ def _config_row(key, heading, values, extra="", providers=None):
 
 
 def render_config_page(config, keystatus, saved=False):
-    steps, narr, vis = config["steps"], config["narrative"], config["vision"]
+    steps, narr, vis, polish = (
+        config["steps"],
+        config["narrative"],
+        config["vision"],
+        config["polish"],
+    )
     doc = config.get("document", {})
     saved_note = (
         '<div class="card" data-status="green" style="border-left:4px solid var(--ok)">'
@@ -415,6 +432,18 @@ def render_config_page(config, keystatus, saved=False):
         "</label>"
         f'<input type="text" name="vision_max_concurrency" value="{vis.get("max_concurrency", 4)}"></div>'
     )
+    polish_checked = " checked" if polish.get("enabled") else ""
+    polish_extra = (
+        '<div class="field"><label><input type="checkbox" name="polish_enabled"'
+        f"{polish_checked}> Enable polish pass</label>"
+        '<p class="muted">A single formatting/tone pass over the finished document. '
+        "Off by default: the local backend only produces a usable rewrite roughly a "
+        "quarter to half of the time (falls back to the original text otherwise, never "
+        "wrong, just unchanged) — review its output on a real document before relying "
+        "on it. Covers all six export formats identically. Can also be overridden "
+        "per-job via <code>?polish=off|local|haiku</code> on the rerender endpoint.</p></div>"
+    )
+    steps_vision_checked = " checked" if steps.get("use_vision") else ""
     document_card = (
         '<div class="card"><h2>Document</h2>'
         '<div class="field"><label>Author <small>(shown on the title page / revision '
@@ -434,6 +463,14 @@ def render_config_page(config, keystatus, saved=False):
         "config/models.toml's comment; raising this only helps against an Ollama server "
         "tuned for parallel requests)</small></label>"
         f'<input type="text" name="steps_max_concurrency" value="{steps.get("max_concurrency", 1)}"></div>'
+        '<div class="field"><label><input type="checkbox" name="steps_use_vision"'
+        f"{steps_vision_checked}> Attach each step's screenshot to the LLM call "
+        "<small>(experimental)</small></label>"
+        '<p class="muted">Off by default: a live comparison found no net accuracy '
+        "improvement over text-only (it traded some failures for others) while running "
+        "25–50x slower per step, and it needs a vision-capable model above — the default "
+        "qwen3:32b can't see images. See "
+        "<code>phases/05-vision-step-text-measurement.md</code> for the data.</p></div>"
     )
 
     key_rows = "".join(
@@ -456,7 +493,7 @@ def render_config_page(config, keystatus, saved=False):
         f"<tr><td>{html.escape(task)}</td>"
         + "".join(f"<td>{html.escape(_RECOMMENDED[task].get(p, '—'))}</td>" for p in _PROVIDERS)
         + "</tr>"
-        for task in ("steps", "narrative", "vision")
+        for task in ("steps", "narrative", "vision", "polish")
     )
     rec_table = (
         '<h2>Recommended models</h2><div class="card" style="overflow-x:auto"><table>'
@@ -476,6 +513,7 @@ def render_config_page(config, keystatus, saved=False):
         f"{_config_row('steps', 'Steps', steps, extra=steps_extra)}"
         f"{_config_row('narrative', 'Narration', narr, extra=passes_extra)}"
         f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra, providers=_VISION_PROVIDERS)}"
+        f"{_config_row('polish', 'Polish (optional 4th stage)', polish, extra=polish_extra)}"
         f"{document_card}"
         '<button type="submit">Save configuration</button></form>'
         f"{key_panel}{rec_table}"

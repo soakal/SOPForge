@@ -1242,6 +1242,7 @@ def create_app(
                 "model": _model_or_existing(form.get("steps_model", ""), existing.steps.model),
                 "max_concurrency": form.get("steps_max_concurrency")
                 or str(existing.steps.max_concurrency),
+                "use_vision": form.get("steps_use_vision") == "on",
             },
             "narrative": {
                 "provider": form.get("narrative_provider", "ollama"),
@@ -1258,6 +1259,12 @@ def create_app(
                 "model": _model_or_existing(form.get("vision_model", ""), existing.vision.model),
                 "max_concurrency": form.get("vision_max_concurrency")
                 or str(existing.vision.max_concurrency),
+            },
+            "polish": {
+                "enabled": form.get("polish_enabled") == "on",
+                "provider": form.get("polish_provider", "ollama"),
+                "endpoint": form.get("polish_endpoint", ""),
+                "model": _model_or_existing(form.get("polish_model", ""), existing.polish.model),
             },
             "document": {
                 "author": _model_or_existing(

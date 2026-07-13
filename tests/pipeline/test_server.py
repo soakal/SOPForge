@@ -1789,7 +1789,11 @@ def test_config_page_renders_and_saves(tmp_path):
     assert "Configuration" in page.text
     assert "qwen3:32b" in page.text  # current steps model shown
     assert 'name="steps_max_concurrency"' in page.text
+    assert 'name="steps_use_vision"' in page.text
     assert 'name="vision_max_concurrency"' in page.text
+    assert 'name="polish_enabled"' in page.text
+    assert 'name="polish_provider"' in page.text
+    assert 'name="polish_model"' in page.text
     assert 'name="document_author"' in page.text
     assert 'name="document_doc_no_prefix"' in page.text
 
@@ -1800,6 +1804,7 @@ def test_config_page_renders_and_saves(tmp_path):
             "steps_endpoint": "http://x/v1",
             "steps_model": "anthropic/claude-3.5-haiku",
             "steps_max_concurrency": "5",
+            "steps_use_vision": "on",
             "narrative_provider": "ollama",
             "narrative_endpoint": "http://192.168.200.60:11434/v1",
             "narrative_model": "qwen3:32b",
@@ -1809,6 +1814,10 @@ def test_config_page_renders_and_saves(tmp_path):
             "vision_model": "qwen2.5vl:7b",
             "vision_enabled": "on",
             "vision_max_concurrency": "2",
+            "polish_provider": "ollama",
+            "polish_endpoint": "http://192.168.200.60:11434/v1",
+            "polish_model": "gemma3:27b",
+            "polish_enabled": "on",
             "document_author": "Jane Q",
             "document_doc_no_prefix": "SOP",
         },
@@ -1820,8 +1829,12 @@ def test_config_page_renders_and_saves(tmp_path):
     assert cfg["steps"]["provider"] == "openrouter"
     assert cfg["steps"]["model"] == "anthropic/claude-3.5-haiku"
     assert cfg["steps"]["max_concurrency"] == 5
+    assert cfg["steps"]["use_vision"] is True
     assert cfg["vision"]["enabled"] is True
     assert cfg["vision"]["max_concurrency"] == 2
+    assert cfg["polish"]["enabled"] is True
+    assert cfg["polish"]["provider"] == "ollama"
+    assert cfg["polish"]["model"] == "gemma3:27b"
     assert cfg["document"]["author"] == "Jane Q"
     assert cfg["document"]["doc_no_prefix"] == "SOP"
 
@@ -1849,6 +1862,9 @@ def test_config_save_preserves_document_and_vision_concurrency_when_form_omits_t
             "vision_endpoint": "http://x/v1",
             "vision_model": "qwen2.5vl:7b",
             "vision_max_concurrency": "3",
+            "polish_provider": "ollama",
+            "polish_endpoint": "http://x/v1",
+            "polish_model": "gemma3:27b",
             "document_author": "Jane Q",
             "document_doc_no_prefix": "SOP",
         },
@@ -1879,6 +1895,7 @@ def test_config_save_preserves_document_and_vision_concurrency_when_form_omits_t
     assert cfg["steps"]["model"] == "qwen3:14b"  # the actual intended change took effect
     assert cfg["document"]["author"] == "Jane Q"  # preserved, not reset to "SOPForge"
     assert cfg["vision"]["max_concurrency"] == 3  # preserved, not reset to 4
+    assert cfg["polish"]["model"] == "gemma3:27b"  # preserved, not reset to the pydantic default
 
 
 def test_config_page_model_datalists(tmp_path):
@@ -1900,6 +1917,7 @@ def test_config_page_model_datalists(tmp_path):
         ("steps", "qwen3:32b"),
         ("narrative", "qwen3.6:27b"),
         ("vision", "qwen2.5vl:7b"),
+        ("polish", "gemma3:12b"),
     ):
         suggestions_id = f"{key}_model_suggestions"
         assert f'list="{suggestions_id}"' in text
