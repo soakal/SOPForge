@@ -79,18 +79,31 @@ a = Analysis(
         # by actually running the built EXE, not assumed.
         "pywinauto",
         "pywinauto.unittests",
-        "numpy",
         "playwright",
-        # Not on server.py's import graph today (no narration/LLM wiring
-        # into the live app yet — see phases/DEVIATIONS.md's task-09
-        # entry) but present in the pipeline package/venv; excluding them
-        # keeps the server EXE from pulling in faster-whisper's heavy
-        # transitive deps (ctranslate2, av, onnxruntime) for code paths
-        # this EXE never reaches. Revisit if/when narration gets wired in.
-        "faster_whisper",
-        "ctranslate2",
-        "av",
-        "onnxruntime",
+        # NOT excluding "numpy" (unlike earlier revisions of this spec) --
+        # faster_whisper's transitive deps (ctranslate2, onnxruntime) both
+        # require it at import time; excluding it would make the frozen EXE
+        # fail the moment transcription.Transcriber._get_model() actually
+        # imports faster_whisper, exactly the "revisit when narration gets
+        # wired in" this comment used to point at.
+        #
+        # faster_whisper/ctranslate2/av/onnxruntime themselves are also NOT
+        # excluded now that transcription.py's Transcriber is wired into
+        # server.py's generation path (see the [transcription] config
+        # section) -- a real `from faster_whisper import WhisperModel`
+        # inside pipeline source (transcription.py's lazy _get_model(), not
+        # a dynamically-loaded module like sop_lib.py) is on PyInstaller's
+        # own static-analysis import graph, so no extra hiddenimports
+        # should be needed for the pure-Python side. ctranslate2 ships
+        # native binary extensions, though, and PyInstaller's bundling of
+        # those has not been verified against a real build on this task --
+        # confirm with an actual `pyinstaller --noconfirm --clean
+        # sopforge-server.spec` + EXE smoke test (per CLAUDE.md's
+        # verification pipeline) before shipping, the same way the "docx"
+        # hiddenimport above was found by running the built EXE, not
+        # assumed. This also grows the EXE meaningfully (ctranslate2 +
+        # onnxruntime are heavy) -- an accepted tradeoff for local,
+        # no-cloud transcription.
     ],
     noarchive=False,
     optimize=0,
