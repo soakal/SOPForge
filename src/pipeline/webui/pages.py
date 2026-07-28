@@ -592,6 +592,18 @@ def render_session_page(session_id, title, date, report, config):
         transcript_note = f'<p class="muted">Transcript: {html.escape(transcript_text)}</p>'
     else:
         transcript_note = ""
+    narration_transcription_text = report.get("narration_transcription") or ""
+    if "could not be transcribed" in narration_transcription_text:
+        narration_transcription_note = (
+            '<section class="card" data-status="yellow"><h2>Narration transcription</h2>'
+            f"<p>{html.escape(narration_transcription_text)}</p></section>"
+        )
+    elif narration_transcription_text:
+        narration_transcription_note = (
+            f'<p class="muted">{html.escape(narration_transcription_text)}</p>'
+        )
+    else:
+        narration_transcription_note = ""
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (
@@ -612,6 +624,7 @@ def render_session_page(session_id, title, date, report, config):
         "factually correct, just written from the captured data rather than the "
         "language model.</p>"
         f"{transcript_note}"
+        f"{narration_transcription_note}"
         f"{sections}"
         "<h2>Narration transcript</h2>"
         '<div class="card">'

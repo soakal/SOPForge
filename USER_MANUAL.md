@@ -225,12 +225,32 @@ Run the tray app (`dist\sopforge\sopforge.exe`, or from source: `.\.venv\Scripts
   Console" instead of a raw timestamp+id.
 - Right-click → **Exit** closes the tray app.
 
+### Recording narration (mic), off by default
+
+The tray menu also has a checkable **Record narration (mic)** item. It's
+off by default — turning it on records your microphone alongside the next
+session you start (toggling it doesn't affect a session already in
+progress) and saves it as `narration.wav` next to the manifest. If your
+machine has no microphone, or the mic is busy/blocked when you start
+recording, the session still records normally — narration is just silently
+skipped, never an error. The preference persists across restarts
+(`%USERPROFILE%\SOPForge\capture_settings.toml`).
+
+On its own, recording the WAV doesn't do anything with it — turning it
+into placed narration under each step also requires enabling
+**transcription** on the server's Configuration page (§7), which is
+*also* off by default. With both on, the pipeline server transcribes the
+recording locally (no cloud) the same way an uploaded `.txt`/`.md`/`.json`
+transcript would be placed (§5) — you don't need to do anything extra at
+upload time.
+
 If no server was running, or the upload failed for any reason, nothing is
 lost — each session is also always written to
 `%USERPROFILE%\SOPForge\captures\<timestamp>\`:
 - `manifest.json` — the ordered list of recorded steps (this is ground truth;
   nothing downstream can add, drop, or reorder a step from this file).
 - Numbered screenshots, one per step.
+- `narration.wav`, if narration recording was on and a mic was available.
 
 Upload it later through the review web UI's upload form (§5) once the server
 is running, or via the API (§4).
@@ -585,9 +605,9 @@ listing three things a reviewer should check:
   silently dropped. Today this is populated by the semantic transcript
   pipeline's polish stage (§5): if it rewrites a step's narration for
   clarity but can't confirm every part of the original survived, the
-  uncertain part is flagged here rather than silently lost. (The
-  still-unwired audio claim-coverage narrative path would also report here if
-  it were live.)
+  uncertain part is flagged here rather than silently lost. A locally
+  transcribed recording (§3, §7) is placed through this exact same pipeline,
+  so it reports here too.
 - **Empty-metadata steps** (yellow if non-empty) — steps where no UI
   Automation element info was captured at all. These render using screen
   coordinates instead of an element name — still factual, just less specific.
@@ -696,6 +716,29 @@ keep the original text) — this is a model-capability limit, not a bug,
 and is exactly why it's off by default until you've reviewed its output
 on your own documents.
 
+### Narration transcription (`[transcription]`, off by default)
+
+If a capture session recorded audio (the tray's **Record narration (mic)**
+toggle, §3), the **Narration transcription** card on the Configuration
+page controls whether the server actually transcribes it:
+
+- **Transcribe recorded narration audio** — off by default. On: a
+  `narration.wav` sitting in a session's folder with no manually-uploaded
+  transcript gets run through a local speech-to-text model
+  (faster-whisper) before generation, and the result is placed onto steps
+  the same way an uploaded `.json` transcript would be (§5) — nothing
+  leaves your network.
+- **Model size**, **Device** (`cpu` / `cuda` / `auto`), **Compute type** —
+  passed straight to faster-whisper. `cpu`/`base`/`int8` (the defaults)
+  need no GPU and work everywhere; a bigger model size or `cuda` is more
+  accurate/faster if you have the hardware.
+
+An uploaded transcript always wins — if you've already added one by hand
+(§5), the WAV is never transcribed even with this on. A missing model or
+unavailable hardware just skips transcription for that session (noted in
+the sidecar report, §6); the document still generates normally from the
+steps alone.
+
 ### API keys (security)
 
 API keys are **never stored in the config file** — they're read only from
@@ -760,6 +803,10 @@ form posts.
   running 25–50x slower per step. See
   `phases/05-vision-step-text-measurement.md` for the data. Off by
   default for this reason.
+- Narration transcription (§3, §7) bundles faster-whisper's dependencies
+  (ctranslate2, onnxruntime) into `sopforge-server.exe`, meaningfully
+  growing its install size — an accepted tradeoff for local, no-cloud
+  transcription rather than a separate optional download.
 
 ---
 
