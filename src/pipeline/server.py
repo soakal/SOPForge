@@ -24,6 +24,7 @@ restore is possible."""
 
 import io
 import json
+import logging
 import mimetypes
 import os
 import shutil
@@ -80,6 +81,7 @@ from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
+from pipeline.transcription import Transcriber
 from pipeline.vision import caption_images
 from pipeline.webui.pages import (
     render_config_page,
@@ -89,6 +91,8 @@ from pipeline.webui.pages import (
     render_steps_review_page,
 )
 from pipeline.webui.review import render_review_page
+
+logger = logging.getLogger(__name__)
 
 
 def _synthesize_narration_from_steps(manifest, step_results):
@@ -213,6 +217,7 @@ def create_app(
     config_path=None,
     narrative_llm_client_factory=None,
     polish_llm_client_factory=None,
+    transcriber_factory=None,
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -233,7 +238,14 @@ def create_app(
     `[polish]` section -- used only for the optional stage-4 polish pass
     (_write_all_exports), gated on `[polish].enabled`. Only doc.md's,
     doc.html's, and the md-bundle's exports reflect this pass so far
-    (per-field, via generate_polish_fields)."""
+    (per-field, via generate_polish_fields).
+
+    transcriber_factory: cfg -> object with a .transcribe(audio_path) method
+    (matching transcription.Transcriber's interface), called once per
+    generation job that has a narration.wav and no explicit transcript
+    (see _maybe_transcribe_narration). Defaults to a real Transcriber built
+    from config/models.toml's `[transcription]` section. Tests override
+    this to a stub so a run never downloads/loads real Whisper weights."""
     app = FastAPI()
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -306,6 +318,13 @@ def create_app(
             return polish_llm_client_factory(section)
         return LLMClient(section)
 
+    def make_transcriber(cfg):
+        if transcriber_factory is not None:
+            return transcriber_factory(cfg)
+        return Transcriber(
+            model_size=cfg.model_size, device=cfg.device, compute_type=cfg.compute_type
+        )
+
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
     # session_ids awaiting step-review confirmation -- staged by _ingest_session
@@ -326,6 +345,45 @@ def create_app(
         mode = session_dir / "mode.txt"
         return mode.exists() and mode.read_text(encoding="utf-8").strip() == "photo"
 
+    def _maybe_transcribe_narration(session_dir):
+        """Best-effort: if this session has a narration.wav (opt-in mic
+        recording, see capture/narration.py) and no transcript.* has been
+        uploaded already -- an explicit human-supplied transcript always
+        wins over a derived one -- and [transcription].enabled is on,
+        transcribes it locally and writes transcript.json in exactly the
+        segment shape align_transcript_to_steps' .json branch already
+        parses, so _apply_transcript picks it up completely unchanged.
+        Runs on the background job thread (never the HTTP request path) --
+        CPU transcription can take real seconds and must never risk
+        upload_session's own timeout or make "stop recording" feel slow.
+        Never raises: a disabled toggle, missing model, or unavailable
+        hardware must degrade to "no transcript" for this session, not fail
+        the whole generation job. Returns a short report note, or None if
+        nothing happened."""
+        wav_path = session_dir / "narration.wav"
+        if not wav_path.exists():
+            return None
+        if any(session_dir.glob("transcript.*")):
+            return None
+        try:
+            transcription_cfg = load_models_config(resolved_config_path).transcription
+        except Exception:  # noqa: BLE001 - a bad config must not break generation
+            logger.exception("could not load [transcription] config for %s", session_dir)
+            return None
+        if not transcription_cfg.enabled:
+            return None
+        try:
+            segments = make_transcriber(transcription_cfg).transcribe(wav_path)
+        except Exception:  # noqa: BLE001 - missing model/hardware: skip, don't fail the job
+            logger.exception("narration transcription failed for %s", session_dir)
+            return "narration.wav could not be transcribed (see server log) -- doc generated from steps only"
+        if not segments:
+            return "narration.wav produced no speech segments"
+        (session_dir / "transcript.json").write_text(
+            json.dumps({"segments": segments}), encoding="utf-8"
+        )
+        return "narration.wav transcribed locally and placed onto steps"
+
     def _generate(session_id, polish_override=None):
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
 
@@ -334,6 +392,8 @@ def create_app(
         if _is_photo_mode(session_dir):
             _generate_photo(session_id, polish_override=polish_override)
             return
+
+        narration_transcription_note = _maybe_transcribe_narration(session_dir)
 
         # One generation attempt per step, round-trip-gated with a
         # template fallback (task-06) -- if the configured endpoint is
@@ -430,6 +490,8 @@ def create_app(
             report["transcript_placement"] = {
                 k: v for k, v in placement_meta.items() if k != "verify_claims"
             }
+        if narration_transcription_note:
+            report["narration_transcription"] = narration_transcription_note
 
         _write_all_exports(
             session_id,
@@ -819,14 +881,18 @@ def create_app(
                 result["narration"] = narration
         return note, placement_meta
 
-    def _ingest_session(manifest_json, files, transcript=None, stage=False):
+    def _ingest_session(manifest_json, files, transcript=None, stage=False, narration_wav=None):
         """Shared by the JSON API (POST /sessions) and the browser upload
         form (POST /ui/upload). `transcript`, if given, is a (filename,
-        text) tuple. When `stage` is True, the session is registered but not
-        submitted for generation -- it's left in `staged` so the user can
-        drop mis-captured steps via the steps-review page before generation
-        runs (see POST .../confirm-steps). Returns the new session_id, or
-        raises HTTPException on bad input."""
+        text) tuple. `narration_wav`, if given, is raw WAV bytes -- saved
+        unconditionally as session_dir/narration.wav; its validity (real
+        audio, transcribable) is only checked later at generation time
+        (_maybe_transcribe_narration), never a 400 at ingest. When `stage`
+        is True, the session is registered but not submitted for generation
+        -- it's left in `staged` so the user can drop mis-captured steps via
+        the steps-review page before generation runs (see POST
+        .../confirm-steps). Returns the new session_id, or raises
+        HTTPException on bad input."""
         try:
             manifest = load_manifest(json.loads(manifest_json))
         except Exception as exc:
@@ -895,6 +961,8 @@ def create_app(
             (session_dir / f"transcript.{transcript_ext}").write_text(
                 transcript[1], encoding="utf-8"
             )
+        if narration_wav is not None:
+            (session_dir / "narration.wav").write_bytes(narration_wav)
 
         sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
         if stage:
@@ -917,15 +985,30 @@ def create_app(
             ) from exc
         return (upload.filename, content)
 
+    def _read_narration_wav(upload):
+        """Turn an optional narration-audio UploadFile into raw bytes, or
+        None if none was provided. Unlike _read_transcript, this never
+        raises -- a WAV's validity is only meaningful at transcription time
+        (_maybe_transcribe_narration), not at ingest, so a malformed/empty
+        file here must never become an ingest-time 400."""
+        if upload is None or not upload.filename:
+            return None
+        return upload.file.read()
+
     @app.post("/sessions")
     def create_session(
         manifest_json: str = Form(...),
         files: list[UploadFile] = File(default=[]),
         transcript_file: UploadFile | None = File(default=None),
+        narration_wav_file: UploadFile | None = File(default=None),
         stage: bool = Form(False),
     ):
         session_id = _ingest_session(
-            manifest_json, files, _read_transcript(transcript_file), stage=stage
+            manifest_json,
+            files,
+            _read_transcript(transcript_file),
+            stage=stage,
+            narration_wav=_read_narration_wav(narration_wav_file),
         )
         return {"session_id": session_id, "status": _status_of(session_id)}
 
@@ -934,6 +1017,7 @@ def create_app(
         manifest_file: UploadFile = File(...),
         files: list[UploadFile] = File(default=[]),
         transcript_file: UploadFile | None = File(default=None),
+        narration_wav_file: UploadFile | None = File(default=None),
     ):
         try:
             manifest_json = manifest_file.file.read().decode("utf-8")
@@ -942,7 +1026,11 @@ def create_app(
                 status_code=400, detail=f"invalid manifest encoding: {exc}"
             ) from exc
         session_id = _ingest_session(
-            manifest_json, files, _read_transcript(transcript_file), stage=True
+            manifest_json,
+            files,
+            _read_transcript(transcript_file),
+            stage=True,
+            narration_wav=_read_narration_wav(narration_wav_file),
         )
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
