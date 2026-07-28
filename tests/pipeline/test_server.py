@@ -1796,6 +1796,10 @@ def test_config_page_renders_and_saves(tmp_path):
     assert 'name="polish_model"' in page.text
     assert 'name="document_author"' in page.text
     assert 'name="document_doc_no_prefix"' in page.text
+    assert 'name="transcription_enabled"' in page.text
+    assert 'name="transcription_model_size"' in page.text
+    assert 'name="transcription_device"' in page.text
+    assert 'name="transcription_compute_type"' in page.text
 
     resp = client.post(
         "/ui/config",
@@ -1820,6 +1824,10 @@ def test_config_page_renders_and_saves(tmp_path):
             "polish_enabled": "on",
             "document_author": "Jane Q",
             "document_doc_no_prefix": "SOP",
+            "transcription_enabled": "on",
+            "transcription_model_size": "small",
+            "transcription_device": "cuda",
+            "transcription_compute_type": "float16",
         },
         follow_redirects=False,
     )
@@ -1837,6 +1845,10 @@ def test_config_page_renders_and_saves(tmp_path):
     assert cfg["polish"]["model"] == "gemma3:27b"
     assert cfg["document"]["author"] == "Jane Q"
     assert cfg["document"]["doc_no_prefix"] == "SOP"
+    assert cfg["transcription"]["enabled"] is True
+    assert cfg["transcription"]["model_size"] == "small"
+    assert cfg["transcription"]["device"] == "cuda"
+    assert cfg["transcription"]["compute_type"] == "float16"
 
 
 def test_config_save_preserves_document_and_vision_concurrency_when_form_omits_them(tmp_path):
@@ -1867,6 +1879,9 @@ def test_config_save_preserves_document_and_vision_concurrency_when_form_omits_t
             "polish_model": "gemma3:27b",
             "document_author": "Jane Q",
             "document_doc_no_prefix": "SOP",
+            "transcription_model_size": "small",
+            "transcription_device": "cuda",
+            "transcription_compute_type": "float16",
         },
         follow_redirects=False,
     )
@@ -1896,6 +1911,9 @@ def test_config_save_preserves_document_and_vision_concurrency_when_form_omits_t
     assert cfg["document"]["author"] == "Jane Q"  # preserved, not reset to "SOPForge"
     assert cfg["vision"]["max_concurrency"] == 3  # preserved, not reset to 4
     assert cfg["polish"]["model"] == "gemma3:27b"  # preserved, not reset to the pydantic default
+    assert cfg["transcription"]["model_size"] == "small"  # preserved, not reset to "base"
+    assert cfg["transcription"]["device"] == "cuda"  # preserved, not reset to "cpu"
+    assert cfg["transcription"]["compute_type"] == "float16"  # preserved, not reset to "int8"
 
 
 def test_config_page_model_datalists(tmp_path):

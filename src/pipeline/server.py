@@ -1360,6 +1360,17 @@ def create_app(
                 ),
                 "doc_no_prefix": form.get("document_doc_no_prefix", ""),
             },
+            "transcription": {
+                "enabled": form.get("transcription_enabled") == "on",
+                "model_size": _model_or_existing(
+                    form.get("transcription_model_size", ""), existing.transcription.model_size
+                ),
+                "device": form.get("transcription_device") or existing.transcription.device,
+                "compute_type": _model_or_existing(
+                    form.get("transcription_compute_type", ""),
+                    existing.transcription.compute_type,
+                ),
+            },
         }
         try:
             # pydantic coerces "passes" from str and enforces ge=1; a non-numeric
