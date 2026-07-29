@@ -418,6 +418,7 @@ def render_config_page(config, keystatus, saved=False):
         config["polish"],
     )
     doc = config.get("document", {})
+    transcription = config.get("transcription", {})
     saved_note = (
         '<div class="card" data-status="green" style="border-left:4px solid var(--ok)">'
         "<p><strong>Saved.</strong> Changes take effect on the next generation.</p></div>"
@@ -452,6 +453,32 @@ def render_config_page(config, keystatus, saved=False):
         '<div class="field"><label>Document number prefix <small>(e.g. "SOP" — blank omits '
         "the document number entirely)</small></label>"
         f'<input type="text" name="document_doc_no_prefix" value="{html.escape(doc.get("doc_no_prefix", ""))}"></div>'
+        "</div>"
+    )
+    transcription_checked = " checked" if transcription.get("enabled") else ""
+    transcription_device = transcription.get("device", "cpu")
+    device_opts = "".join(
+        f'<option value="{d}"{" selected" if d == transcription_device else ""}>{d}</option>'
+        for d in ("cpu", "cuda", "auto")
+    )
+    transcription_card = (
+        '<div class="card"><h2>Narration transcription</h2>'
+        '<div class="field"><label><input type="checkbox" name="transcription_enabled"'
+        f"{transcription_checked}> Transcribe recorded narration audio</label>"
+        '<p class="muted">Off by default. When a capture session\'s optional tray '
+        '"Record narration (mic)" toggle produced a narration.wav, and no transcript '
+        "was uploaded by hand, enabling this runs it through a local speech-to-text "
+        "model (faster-whisper) before generation — nothing leaves your network. A "
+        "missing model or unavailable hardware just skips transcription for that "
+        "session; the document still generates from the steps alone.</p></div>"
+        '<div class="field"><label>Model size</label>'
+        f'<input type="text" name="transcription_model_size" '
+        f'value="{html.escape(transcription.get("model_size", "base"))}"></div>'
+        '<div class="field"><label>Device</label>'
+        f'<select name="transcription_device">{device_opts}</select></div>'
+        '<div class="field"><label>Compute type</label>'
+        f'<input type="text" name="transcription_compute_type" '
+        f'value="{html.escape(transcription.get("compute_type", "int8"))}"></div>'
         "</div>"
     )
     passes_extra = (
@@ -515,6 +542,7 @@ def render_config_page(config, keystatus, saved=False):
         f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra, providers=_VISION_PROVIDERS)}"
         f"{_config_row('polish', 'Polish (optional 4th stage)', polish, extra=polish_extra)}"
         f"{document_card}"
+        f"{transcription_card}"
         '<button type="submit">Save configuration</button></form>'
         f"{key_panel}{rec_table}"
     )
@@ -564,6 +592,18 @@ def render_session_page(session_id, title, date, report, config):
         transcript_note = f'<p class="muted">Transcript: {html.escape(transcript_text)}</p>'
     else:
         transcript_note = ""
+    narration_transcription_text = report.get("narration_transcription") or ""
+    if "could not be transcribed" in narration_transcription_text:
+        narration_transcription_note = (
+            '<section class="card" data-status="yellow"><h2>Narration transcription</h2>'
+            f"<p>{html.escape(narration_transcription_text)}</p></section>"
+        )
+    elif narration_transcription_text:
+        narration_transcription_note = (
+            f'<p class="muted">{html.escape(narration_transcription_text)}</p>'
+        )
+    else:
+        narration_transcription_note = ""
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (
@@ -584,6 +624,7 @@ def render_session_page(session_id, title, date, report, config):
         "factually correct, just written from the captured data rather than the "
         "language model.</p>"
         f"{transcript_note}"
+        f"{narration_transcription_note}"
         f"{sections}"
         "<h2>Narration transcript</h2>"
         '<div class="card">'

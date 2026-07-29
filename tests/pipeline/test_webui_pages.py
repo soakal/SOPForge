@@ -234,6 +234,34 @@ def test_transcript_collapse_warning_renders_as_a_flagged_card():
     assert 'data-status="yellow"><h2>Transcript placement</h2>' not in normal_page
 
 
+def test_narration_transcription_failure_renders_as_a_flagged_card():
+    from pipeline.webui.pages import render_session_page
+
+    failed_report = {
+        "narration_transcription": (
+            "narration.wav could not be transcribed (see server log) -- "
+            "doc generated from steps only"
+        )
+    }
+    page = render_session_page("sid", "Title", "date", failed_report, {})
+    assert '<section class="card" data-status="yellow"><h2>Narration transcription</h2>' in page
+    assert "could not be transcribed" in page
+
+    # A successful transcription note stays as plain muted text, not a
+    # flagged card.
+    ok_report = {
+        "narration_transcription": "narration.wav transcribed locally and placed onto steps"
+    }
+    ok_page = render_session_page("sid", "Title", "date", ok_report, {})
+    assert '<p class="muted">narration.wav transcribed locally' in ok_page
+    assert 'data-status="yellow"><h2>Narration transcription</h2>' not in ok_page
+
+    # No narration_transcription key at all (today's only path) -- no note.
+    no_report = {}
+    no_page = render_session_page("sid", "Title", "date", no_report, {})
+    assert "Narration transcription" not in no_page
+
+
 def test_processing_page_shows_progress_bar_when_available():
     from pipeline.webui.pages import render_session_processing_page
 

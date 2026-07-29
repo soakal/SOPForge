@@ -59,6 +59,18 @@ def upload_session(output_dir, server_url=None, timeout=10.0, transport=None):
             opened.append(fh)
             files.append(("files", (name, fh, "image/png")))
 
+        # Optional: only present when narration recording was on for this
+        # session AND a mic actually produced a WAV (Recorder.stop() leaves
+        # narration_wav null otherwise). A separate field from `files` (the
+        # screenshot list) so the server doesn't mistake it for one.
+        narration_wav = manifest.get("session", {}).get("narration_wav")
+        if narration_wav:
+            wav_path = output_dir / narration_wav
+            if wav_path.exists():
+                fh = wav_path.open("rb")
+                opened.append(fh)
+                files.append(("narration_wav_file", (narration_wav, fh, "audio/wav")))
+
         with httpx.Client(transport=transport, timeout=timeout) as client:
             resp = client.post(
                 f"{server_url}/sessions",
