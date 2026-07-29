@@ -14,12 +14,30 @@ criteria. Private — see [LICENSE](LICENSE).
 ## Install (packaged)
 
 Download **`SOPForge.zip`** from the repo's
-[Releases](https://github.com/soakal/SOPForge/releases) page, unzip, and run
-**`install.bat`** (or `install.ps1`). It installs both EXEs and, with autostart
-on by default, brings the capture tray + server up at logon. Record with
+[Releases](https://github.com/soakal/SOPForge/releases) page, unzip, and
+**double-click `install.bat`**. It installs both EXEs and, with autostart on
+by default, brings the capture tray + server up at logon. Record with
 **Ctrl+Alt+R**; the SOP appears in the review UI at `http://127.0.0.1:8420/ui`.
 Choose your AI from the tray → **Configuration** page (Ollama local by default,
 or OpenRouter / OpenAI / Anthropic — keys read from env vars, never stored).
+
+Use `install.bat` rather than running `install.ps1` directly — double-clicking
+a `.ps1` often just opens it in a text editor, or errors "running scripts is
+disabled on this system" (a Windows 11 default execution-policy thing, not
+specific to this script); `install.bat` runs `install.ps1` with that policy
+bypassed for you, and forwards any arguments (`install.bat -Port 9000
+-NoAutostart`). The default install path, `%ProgramFiles%\SOPForge`, needs
+administrator rights — **a UAC prompt will appear; accept it** to continue.
+To skip that entirely, install somewhere you already own, e.g.
+`install.bat -InstallPath "%LOCALAPPDATA%\SOPForge"`.
+
+**Signing/EDR note:** the EXEs are self-signed, trusted only on the machine
+that built them — on any other machine Windows will show "unknown publisher"
+and endpoint security (e.g. SentinelOne) may flag or block them, since the
+capture agent installs global keyboard/mouse hooks (which looks like a
+keylogger). Import `scripts/sopforge-signing-cert.cer` into Trusted Root, or
+have it allowlisted, to clear that.
+
 Full walkthrough (recording, config, transcripts, distribution): see
 [USER_MANUAL.md](USER_MANUAL.md).
 
