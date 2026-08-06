@@ -262,6 +262,36 @@ def test_narration_transcription_failure_renders_as_a_flagged_card():
     assert "Narration transcription" not in no_page
 
 
+def test_session_page_shows_llm_preflight_result_without_a_section_status_tag():
+    from pipeline.webui.pages import render_session_page
+
+    report = {
+        "llm_preflight": {
+            "provider": "ollama",
+            "model": "qwen3:32b",
+            "status": "error",
+            "detail": "connection refused",
+            "latency_ms": None,
+        }
+    }
+    page = render_session_page("sid", "Title", "date", report, {})
+    assert "LLM preflight" in page
+    assert "connection refused" in page
+    assert "qwen3:32b" in page
+    # Must be a plain <div>, not a <section data-status=...> -- the UI-smoke
+    # test counts exactly 3 of those, one per fixed sidecar-report category.
+    assert (
+        '<div class="card" style="border-left:4px solid var(--bad)"><strong>LLM preflight' in page
+    )
+
+
+def test_session_page_hides_llm_preflight_card_when_absent():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {})
+    assert "LLM preflight" not in page
+
+
 def test_processing_page_shows_progress_bar_when_available():
     from pipeline.webui.pages import render_session_processing_page
 

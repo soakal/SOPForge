@@ -2236,3 +2236,86 @@ def test_stop_endpoint_triggers_process_exit_without_terminating_this_test(tmp_p
     while time_module.monotonic() < deadline and not exit_calls:
         time_module.sleep(0.02)
     assert exit_calls == [0]
+
+
+def _make_client_with_preflight(tmp_path, probe_section_fn, preflight_enabled=True):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=probe_section_fn,
+        preflight_enabled=preflight_enabled,
+    )
+    return TestClient(app)
+
+
+def test_preflight_result_is_written_into_report_json(tmp_path):
+    # Like every other transcript/report test in this file that needs
+    # generation to reach "done": that requires the external sop_lib docx
+    # engine (see CLAUDE.md/README), not available in every dev sandbox --
+    # so the report assertion is gated on status, same established pattern
+    # as test_narration_transcription.py.
+    client = _make_client_with_preflight(
+        tmp_path, lambda section: {"status": "ok", "provider": "ollama", "detail": "fine"}
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    if status["status"] == "done":
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert report["llm_preflight"]["status"] == "ok"
+        assert report["llm_preflight"]["provider"] == "ollama"
+
+
+def test_preflight_is_skipped_by_default_when_an_llm_client_factory_is_injected(tmp_path):
+    """The default test client (_make_client) already injects
+    llm_client_factory=stub_llm_client_factory -- proving the probe is never
+    even called there is what guarantees the whole test suite makes no
+    extra network calls just from this feature landing. This assertion
+    doesn't depend on reaching "done": the probe would already have been
+    called (or not) before docx export."""
+    calls = []
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=lambda section: calls.append(section) or {"status": "ok"},
+        # preflight_enabled intentionally omitted -- exercising the default.
+    )
+    client = TestClient(app)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert calls == []
+    if status["status"] == "done":
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert "llm_preflight" not in report
+
+
+def test_generation_still_completes_when_preflight_reports_unreachable(tmp_path):
+    client = _make_client_with_preflight(
+        tmp_path, lambda section: {"status": "error", "detail": "connection refused"}
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    # The core invariant this test exists for: an unreachable-endpoint
+    # preflight must never be treated as a reason to fail the job.
+    assert status["status"] != "error" or status.get("error") != "connection refused"
+    if status["status"] == "done":
+        doc = client.get(f"/sessions/{session_id}/doc.docx")
+        assert doc.status_code == 200
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert report["llm_preflight"]["status"] == "error"
+
+
+def test_preflight_probe_raising_does_not_fail_the_job(tmp_path):
+    def boom(section):
+        raise RuntimeError("simulated probe crash")
+
+    client = _make_client_with_preflight(tmp_path, boom)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status.get("error") != "simulated probe crash"
+    if status["status"] == "done":
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert "llm_preflight" not in report

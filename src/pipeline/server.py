@@ -223,6 +223,7 @@ def create_app(
     polish_llm_client_factory=None,
     transcriber_factory=None,
     probe_section_fn=None,
+    preflight_enabled=None,
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -255,9 +256,22 @@ def create_app(
     probe_section_fn: section-config -> dict (matching preflight.probe_section's
     interface), used by POST /ui/config/test and, best-effort, once per
     generation job. Defaults to the real probe_section. Tests override this
-    to a stub/recorder so the suite never makes a real network call."""
+    to a stub/recorder so the suite never makes a real network call.
+
+    preflight_enabled: whether _generate probes the [steps] endpoint once
+    before generation and records the result on the sidecar report.
+    Defaults to `llm_client_factory is None` -- i.e. only when this app
+    actually talks to the real configured endpoint. An injected
+    llm_client_factory (every test, and any live-proof script) means
+    generation never touches that endpoint at all, so probing it would
+    both report on something the job doesn't use AND add a real network
+    round-trip to every test job; pass True explicitly to test the
+    preflight wiring itself against a stub probe."""
     app = FastAPI()
     probe = probe_section_fn or probe_section
+    run_preflight = (
+        preflight_enabled if preflight_enabled is not None else (llm_client_factory is None)
+    )
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -427,6 +441,14 @@ def create_app(
         # reply doesn't hold up, that step just falls back; nothing here
         # ever retries.
         models_cfg = load_models_config(resolved_config_path)
+
+        preflight_result = None
+        if run_preflight:
+            try:
+                preflight_result = probe(models_cfg.steps)
+            except Exception:  # noqa: BLE001 - preflight is diagnostics, never a gate
+                logger.exception("preflight probe failed for session %s", session_id)
+
         llm_client = make_llm_client()
         try:
             step_results, annotated_paths = render_steps_llm_mode(
@@ -518,6 +540,8 @@ def create_app(
             }
         if narration_transcription_note:
             report["narration_transcription"] = narration_transcription_note
+        if preflight_result:
+            report["llm_preflight"] = preflight_result
 
         _write_all_exports(
             session_id,

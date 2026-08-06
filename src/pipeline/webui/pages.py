@@ -643,6 +643,26 @@ def render_session_page(session_id, title, date, report, config):
         )
     else:
         narration_transcription_note = ""
+    preflight = report.get("llm_preflight")
+    if preflight:
+        # A div, deliberately NOT a <section data-status=...> -- the review
+        # page's UI-smoke test asserts an exact count of those for the three
+        # fixed sidecar-report categories, and this isn't one of them.
+        _preflight_color = {"ok": "--ok", "warn": "--warn", "error": "--bad"}.get(
+            preflight.get("status"), "--warn"
+        )
+        latency = preflight.get("latency_ms")
+        latency_text = f" ({latency}ms)" if latency is not None else ""
+        preflight_note = (
+            f'<div class="card" style="border-left:4px solid var({_preflight_color})">'
+            "<strong>LLM preflight</strong> &mdash; "
+            f"{html.escape(str(preflight.get('provider', '')))}/"
+            f"{html.escape(str(preflight.get('model', '')))}: "
+            f"{html.escape(str(preflight.get('status', '')))}{latency_text} "
+            f"&mdash; {html.escape(str(preflight.get('detail', '')))}</div>"
+        )
+    else:
+        preflight_note = ""
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (
@@ -662,6 +682,7 @@ def render_session_page(session_id, title, date, report, config):
         "a second look: <em>template-fallback</em> steps are still complete and "
         "factually correct, just written from the captured data rather than the "
         "language model.</p>"
+        f"{preflight_note}"
         f"{transcript_note}"
         f"{narration_transcription_note}"
         f"{sections}"
