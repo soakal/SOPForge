@@ -82,3 +82,15 @@ photos/documents, its own git history, install scripts), not a clean library, so
 vendoring it wholesale would leak proprietary business content into SOPForge's
 history. Override the path with the `SOPFORGE_SOP_FACTORY_2_DIR` env var if it's
 cloned somewhere else.
+
+**Test-suite constraint:** a clean clone (e.g. a fresh dev container or CI
+runner with no `SOP_Factory_2` checkout and no `SOPFORGE_SOP_FACTORY_2_DIR`
+set) cannot import `sop_lib`, so any test that needs a session to actually
+reach `doc.docx` (via `assemble_docx`) fails with `ModuleNotFoundError: No
+module named 'sop_lib'` — not a bug, just this dependency being unavailable.
+Most such tests already tolerate this gracefully (`if status["status"] ==
+"done": ...`), so `pytest -x -q` in that kind of environment is expected to
+report a fixed baseline of failures, all with that same root cause. To run
+the full suite for real, either clone `SOP_Factory_2` alongside this repo and
+point `SOPFORGE_SOP_FACTORY_2_DIR` at it, or run from a machine/build where
+it's already installed.
