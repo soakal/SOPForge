@@ -2106,6 +2106,89 @@ def test_csrf_rejects_lookalike_host(tmp_path):
     assert resp.status_code == 403
 
 
+def _make_client_with_probe(tmp_path, probe_section_fn):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=probe_section_fn,
+    )
+    return TestClient(app)
+
+
+def test_config_page_has_a_test_button_per_section(tmp_path):
+    client = _make_client(tmp_path)
+    page = client.get("/ui/config").text
+    for key in ("steps", "narrative", "vision", "polish"):
+        assert f'data-test-section="{key}"' in page
+        assert f'id="{key}_test_result"' in page
+    assert "/ui/config/test" in page
+
+
+def test_config_test_route_probes_the_saved_section(tmp_path):
+    calls = []
+    client = _make_client_with_probe(
+        tmp_path,
+        lambda section: calls.append(section) or {"status": "ok", "detail": "fine"},
+    )
+    resp = client.post("/ui/config/test", data={"section": "steps"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["section"] == "steps"
+    assert body["status"] == "ok"
+    assert len(calls) == 1
+    assert calls[0].model == "qwen3:32b"  # the bundled default steps model
+
+
+def test_config_test_route_uses_submitted_overrides_not_saved_values(tmp_path):
+    calls = []
+    client = _make_client_with_probe(
+        tmp_path,
+        lambda section: calls.append(section) or {"status": "ok", "detail": "fine"},
+    )
+    resp = client.post(
+        "/ui/config/test",
+        data={
+            "section": "steps",
+            "provider": "ollama",
+            "endpoint": "http://other-host/v1",
+            "model": "zzz",
+        },
+    )
+    assert resp.status_code == 200
+    assert calls[0].endpoint == "http://other-host/v1"
+    assert calls[0].model == "zzz"
+
+
+def test_config_test_route_rejects_unknown_section(tmp_path):
+    calls = []
+    client = _make_client_with_probe(tmp_path, lambda section: calls.append(section) or {})
+    resp = client.post("/ui/config/test", data={"section": "not-a-section"})
+    assert resp.status_code == 400
+    assert calls == []
+
+
+def test_config_test_route_rejects_invalid_provider_override(tmp_path):
+    calls = []
+    client = _make_client_with_probe(tmp_path, lambda section: calls.append(section) or {})
+    resp = client.post("/ui/config/test", data={"section": "steps", "provider": "not-a-provider"})
+    assert resp.status_code == 400
+    assert calls == []
+
+
+def test_config_test_route_is_csrf_guarded(tmp_path):
+    client = _make_client_with_probe(tmp_path, lambda section: {"status": "ok"})
+    resp = client.post(
+        "/ui/config/test",
+        data={"section": "steps"},
+        headers={"Origin": "http://evil.example.com"},
+    )
+    assert resp.status_code == 403
+
+
 def test_shutdown_rejects_cross_site_origin(tmp_path):
     # /shutdown is a state-changing POST -- the CSRF guard must cover it too, so
     # a malicious page can't auto-submit a form to kill the server.

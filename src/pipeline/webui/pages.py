@@ -406,8 +406,46 @@ def _config_row(key, heading, values, extra="", providers=None):
         f"onblur=\"if(!this.value)this.value=this.dataset.prev||''\">{datalist}</div>"
         f'<div class="field"><label>Endpoint <small>(Ollama / custom only)</small></label>'
         f'<input type="text" name="{key}_endpoint" value="{html.escape(values["endpoint"])}"></div>'
+        f'<div class="field"><button type="button" class="secondary" '
+        f'data-test-section="{key}">Test connection</button> '
+        f'<span class="muted" id="{key}_test_result"></span></div>'
         f"{extra}</div>"
     )
+
+
+# One delegated click listener for every "Test connection" button, appended
+# once to render_config_page's body. Reads the section's own provider/
+# endpoint/model inputs at click time -- the model field clears on focus and
+# restores on blur (see _config_row's onfocus/onblur above), and blur always
+# fires before this click handler, so .value is the field's real content by
+# the time this reads it.
+_CONFIG_TEST_SCRIPT = """<script>
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('[data-test-section]');
+  if (!btn) return;
+  var key = btn.getAttribute('data-test-section');
+  var result = document.getElementById(key + '_test_result');
+  var field = function(suffix) {
+    var el = document.querySelector('[name="' + key + suffix + '"]');
+    return el ? el.value : '';
+  };
+  result.textContent = 'Testing...';
+  var body = new URLSearchParams({
+    section: key,
+    provider: field('_provider'),
+    endpoint: field('_endpoint'),
+    model: field('_model')
+  });
+  fetch('/ui/config/test', {method: 'POST', body: body})
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      var latency = (d.latency_ms !== null && d.latency_ms !== undefined) ?
+        ' (' + d.latency_ms + 'ms)' : '';
+      result.textContent = d.status + ': ' + d.detail + latency;
+    })
+    .catch(function() { result.textContent = 'Test failed'; });
+});
+</script>"""
 
 
 def render_config_page(config, keystatus, saved=False):
@@ -545,6 +583,7 @@ def render_config_page(config, keystatus, saved=False):
         f"{transcription_card}"
         '<button type="submit">Save configuration</button></form>'
         f"{key_panel}{rec_table}"
+        f"{_CONFIG_TEST_SCRIPT}"
     )
     return _shell("SOPForge Configuration", body)
 

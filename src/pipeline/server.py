@@ -55,6 +55,9 @@ from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import (
     ModelsConfig,
+    PolishConfig,
+    SectionConfig,
+    VisionConfig,
     key_status,
     load_models_config,
     provider_api_key,
@@ -76,6 +79,7 @@ from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_man
 from pipeline.narration_polish import polish_narration
 from pipeline.narrative import generate_narrative
 from pipeline.polish import generate_polish_fields
+from pipeline.preflight import probe_section
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
@@ -218,6 +222,7 @@ def create_app(
     narrative_llm_client_factory=None,
     polish_llm_client_factory=None,
     transcriber_factory=None,
+    probe_section_fn=None,
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -245,8 +250,14 @@ def create_app(
     generation job that has a narration.wav and no explicit transcript
     (see _maybe_transcribe_narration). Defaults to a real Transcriber built
     from config/models.toml's `[transcription]` section. Tests override
-    this to a stub so a run never downloads/loads real Whisper weights."""
+    this to a stub so a run never downloads/loads real Whisper weights.
+
+    probe_section_fn: section-config -> dict (matching preflight.probe_section's
+    interface), used by POST /ui/config/test and, best-effort, once per
+    generation job. Defaults to the real probe_section. Tests override this
+    to a stub/recorder so the suite never makes a real network call."""
     app = FastAPI()
+    probe = probe_section_fn or probe_section
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -1324,6 +1335,38 @@ def create_app(
         return HTMLResponse(
             render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved))
         )
+
+    _CONFIG_TEST_SECTIONS = {
+        "steps": SectionConfig,
+        "narrative": SectionConfig,
+        "vision": VisionConfig,
+        "polish": PolishConfig,
+    }
+
+    @app.post("/ui/config/test")
+    async def ui_config_test(request: Request):
+        """Cheap reachability probe for one config section (the "Test
+        connection" button on /ui/config) -- probes the values currently in
+        the form, not necessarily the saved config, so a user can check a
+        change before saving it. Always 200 with the probe result in the
+        body; a probe failure is data for the page to display, not an HTTP
+        error. 400 only for a malformed request (unknown section, or an
+        invalid provider override)."""
+        form = await request.form()
+        name = form.get("section")
+        section_cls = _CONFIG_TEST_SECTIONS.get(name)
+        if section_cls is None:
+            raise HTTPException(status_code=400, detail=f"unknown section: {name!r}")
+        existing = load_models_config(resolved_config_path)
+        saved_section = getattr(existing, name)
+        overrides = {k: form.get(k) for k in ("provider", "endpoint", "model") if form.get(k)}
+        try:
+            # model_validate (not model_copy) so an invalid provider override
+            # from the form is caught here as a 400, never handed to probe_section.
+            section = section_cls.model_validate({**saved_section.model_dump(), **overrides})
+        except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> clear 400
+            raise HTTPException(status_code=400, detail=f"invalid section: {exc}") from exc
+        return JSONResponse({**probe(section), "section": name})
 
     @app.post("/ui/config")
     async def ui_config_save(request: Request):
