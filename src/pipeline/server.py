@@ -174,6 +174,19 @@ def _download_filename(manifest, ext):
     return f"{slug}.{ext}"
 
 
+def _load_step_index(session_dir):
+    """The per-step text/screenshot sidecar (steps.json) written by
+    _write_all_exports, as a list, or None if it doesn't exist or is
+    corrupt -- a session generated before this sidecar existed (or one
+    whose file somehow got clobbered) just degrades to plain step-id text
+    on the session page rather than erroring."""
+    path = Path(session_dir) / "steps.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))["steps"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
 def _zip_directory(directory):
     directory = Path(directory)
     buf = io.BytesIO()
@@ -855,6 +868,31 @@ def create_app(
             narrative_text=md_narrative_text,
         )
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
+
+        # Per-step text + screenshot sidecar, for the session page's report
+        # rows (webui/pages.py's _finding_row) to show a thumbnail and the
+        # actual generated text next to a flagged step instead of a bare
+        # step id. This is NOT the sidecar report (report.json, invariant
+        # L5) -- it's presentational data derived from the same md_step_results
+        # that already shipped in the doc, so it always agrees with what the
+        # user is reading.
+        screenshot_by_id = {s.id: s.screenshot for s in manifest.steps}
+        (session_dir / "steps.json").write_text(
+            json.dumps(
+                {
+                    "steps": [
+                        {
+                            "step_id": r["step_id"],
+                            "text": r.get("text", ""),
+                            "used_fallback": bool(r.get("used_fallback")),
+                            "screenshot": screenshot_by_id.get(r["step_id"], ""),
+                        }
+                        for r in md_step_results
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
 
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)

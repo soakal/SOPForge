@@ -157,6 +157,28 @@ def test_get_report_lists_expected_categories(tmp_path):
     assert "step-003" in report["empty_metadata_steps"]
 
 
+def test_steps_json_sidecar_is_written_with_text_and_screenshot_per_step(tmp_path):
+    """The per-step text/screenshot sidecar (steps.json) that the session
+    page's report rows (task-07) read -- one entry per manifest step, in
+    manifest order, agreeing with what actually shipped in doc.md. Needs
+    generation to reach "done" (docx export), same pre-existing sop_lib
+    sandbox constraint as every other end-to-end test in this file."""
+    client = _make_client(tmp_path)
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    session_id, status = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    steps_path = tmp_path / "sessions" / session_id / "steps.json"
+    assert steps_path.exists()
+    steps = json.loads(steps_path.read_text(encoding="utf-8"))["steps"]
+    assert [s["step_id"] for s in steps] == [s.id for s in manifest.steps]
+    doc_md = (tmp_path / "sessions" / session_id / "doc.md").read_text(encoding="utf-8")
+    for entry, manifest_step in zip(steps, manifest.steps):
+        assert entry["screenshot"] == manifest_step.screenshot
+        assert entry["text"] in doc_md
+        assert isinstance(entry["used_fallback"], bool)
+
+
 def test_steps_fallback_to_template_text_end_to_end_and_report_it(tmp_path):
     """StubLLMClient's reply (see _stub_llm.py) never round-trips against
     any manifest step, so a real capture session -- POST /sessions with

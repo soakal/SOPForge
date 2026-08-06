@@ -119,6 +119,26 @@ def test_render_html_contains_every_step_and_screenshot(tmp_path):
         assert str(path) in doc
 
 
+def test_render_html_anchors_each_step_heading_with_its_step_id(tmp_path):
+    """Each <h2> carries id="{step.id}" -- the session page's report rows
+    (task-07) link to doc.html#{step_id} to jump straight to a flagged
+    step."""
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    screenshots = tmp_path / "screenshots"
+    annotated = tmp_path / "annotated"
+    _make_screenshots(manifest, screenshots)
+    step_results, annotated_paths = render_steps_template_mode(manifest, screenshots, annotated)
+
+    doc = render_html(manifest, step_results, annotated_paths)
+
+    ids_found = []
+    for step in manifest.steps:
+        marker = f'<h2 id="{html.escape(step.id)}">'
+        assert marker in doc
+        ids_found.append(step.id)
+    assert len(ids_found) == len(set(ids_found))  # every step id is unique
+
+
 def test_image_refs_are_relative_when_base_dir_given_even_with_a_space_in_path(tmp_path):
     """Without base_dir, an absolute path is embedded verbatim — broken for
     Markdown's ![]() syntax if it contains a space or ), and unresolvable
