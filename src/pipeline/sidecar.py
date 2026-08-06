@@ -19,10 +19,16 @@ def build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id=
     claims_by_id: optional {claim_id: claim_dict} to include each claim's text.
 
     Returns a JSON-serializable dict with three lists — every doc-affecting
-    fact a reviewer needs to check, none of it inferred by a model."""
+    fact a reviewer needs to check, none of it inferred by a model. A fourth
+    key, "manually_edited_steps", is added ONLY when non-empty (the
+    per-step edit feature's `step_results` entries carry a
+    "manually_edited" flag when a human overrode the LLM/template text) --
+    conditional emission keeps this function's return shape unchanged for
+    every caller that predates that feature, and preserves the exact-shape
+    `==` a report with nothing flagged is tested against."""
     claims_by_id = claims_by_id or {}
 
-    return {
+    report = {
         "template_fallback_steps": [r["step_id"] for r in step_results if r["used_fallback"]],
         "verify_claims": [
             {"claim_id": cid, "text": claims_by_id.get(cid, {}).get("text")}
@@ -32,3 +38,7 @@ def build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id=
             step.id for step in manifest.steps if _step_has_empty_uia_metadata(step)
         ],
     }
+    manually_edited = [r["step_id"] for r in step_results if r.get("manually_edited")]
+    if manually_edited:
+        report["manually_edited_steps"] = manually_edited
+    return report

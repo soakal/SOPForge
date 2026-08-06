@@ -296,6 +296,30 @@ def test_session_page_hides_llm_preflight_card_when_absent():
     assert "LLM preflight" not in page
 
 
+def test_session_page_shows_manually_edited_steps_without_a_section_status_tag():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"manually_edited_steps": ["step-002", "step-005"]}
+    page = render_session_page("sid", "Title", "date", report, {})
+    assert "Manually edited steps" in page
+    assert "step-002" in page
+    assert "step-005" in page
+    assert (
+        '<div class="card" style="border-left:4px solid var(--warn)"><strong>Manually edited'
+        in page
+    )
+    # The fixed three sidecar-report <section data-status=...> categories
+    # must stay exactly 3 even with this card present (UI-smoke contract).
+    assert page.count('<section class="card" data-status="') == 3
+
+
+def test_session_page_hides_manually_edited_card_when_absent():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {})
+    assert "Manually edited steps" not in page
+
+
 def test_processing_page_shows_progress_bar_when_available():
     from pipeline.webui.pages import render_session_processing_page
 

@@ -730,6 +730,19 @@ def render_session_page(session_id, title, date, report, config, steps=None):
         )
     else:
         preflight_note = ""
+    manually_edited_ids = report.get("manually_edited_steps") or []
+    if manually_edited_ids:
+        # A div, deliberately NOT a <section data-status=...> -- same reason
+        # as preflight_note above: the fixed three sidecar-report categories
+        # keep their exact section count, new info is added alongside them.
+        manually_edited_note = (
+            '<div class="card" style="border-left:4px solid var(--warn)">'
+            "<strong>Manually edited steps</strong> &mdash; "
+            "these steps carry human-written text, not gated by the round-trip "
+            f"check: {html.escape(', '.join(manually_edited_ids))}</div>"
+        )
+    else:
+        manually_edited_note = ""
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (
@@ -750,6 +763,7 @@ def render_session_page(session_id, title, date, report, config, steps=None):
         "factually correct, just written from the captured data rather than the "
         "language model.</p>"
         f"{preflight_note}"
+        f"{manually_edited_note}"
         f"{transcript_note}"
         f"{narration_transcription_note}"
         f"{sections}"
