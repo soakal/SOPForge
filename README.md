@@ -90,7 +90,20 @@ reach `doc.docx` (via `assemble_docx`) fails with `ModuleNotFoundError: No
 module named 'sop_lib'` — not a bug, just this dependency being unavailable.
 Most such tests already tolerate this gracefully (`if status["status"] ==
 "done": ...`), so `pytest -x -q` in that kind of environment is expected to
-report a fixed baseline of failures, all with that same root cause. To run
-the full suite for real, either clone `SOP_Factory_2` alongside this repo and
-point `SOPFORGE_SOP_FACTORY_2_DIR` at it, or run from a machine/build where
-it's already installed.
+report a fixed baseline of failures, all with that same root cause.
+
+To get a real green run in a fresh sandbox/CI runner (confirmed working —
+turns the ~70-test baseline down to 0):
+
+```sh
+git clone --depth 1 https://github.com/soakal/SOP-Factory /tmp/sop-factory
+export SOPFORGE_SOP_FACTORY_2_DIR=/tmp/sop-factory/template
+pytest -x -q
+```
+
+`sop_lib.py` and `SOP_TEMPLATE_WITH_PHOTOS.docx` both live in that repo's
+`template/` subdirectory (not the repo root) — point the env var there, not
+at the clone's top level. Remember to `unset SOPFORGE_SOP_FACTORY_2_DIR`
+(or just open a fresh shell) before running `tests/pipeline/test_frozen_paths.py`
+on its own — its dev-mode-default assertions expect the env var to be unset,
+same as any real dev/CI environment that hasn't opted into an override.
