@@ -170,13 +170,21 @@ def test_steps_json_sidecar_is_written_with_text_and_screenshot_per_step(tmp_pat
         return
     steps_path = tmp_path / "sessions" / session_id / "steps.json"
     assert steps_path.exists()
-    steps = json.loads(steps_path.read_text(encoding="utf-8"))["steps"]
+    state = json.loads(steps_path.read_text(encoding="utf-8"))
+    # version 2 additionally persists narrative_text + per-step narration/
+    # manually_edited -- everything the per-step edit/regenerate feature's
+    # no-LLM re-export needs to rebuild every format from disk.
+    assert state["version"] == 2
+    assert "narrative_text" in state
+    steps = state["steps"]
     assert [s["step_id"] for s in steps] == [s.id for s in manifest.steps]
     doc_md = (tmp_path / "sessions" / session_id / "doc.md").read_text(encoding="utf-8")
     for entry, manifest_step in zip(steps, manifest.steps):
         assert entry["screenshot"] == manifest_step.screenshot
         assert entry["text"] in doc_md
         assert isinstance(entry["used_fallback"], bool)
+        assert isinstance(entry["manually_edited"], bool)
+        assert "narration" in entry
 
 
 def test_steps_fallback_to_template_text_end_to_end_and_report_it(tmp_path):

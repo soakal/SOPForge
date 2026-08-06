@@ -174,17 +174,25 @@ def _download_filename(manifest, ext):
     return f"{slug}.{ext}"
 
 
-def _load_step_index(session_dir):
-    """The per-step text/screenshot sidecar (steps.json) written by
-    _write_all_exports, as a list, or None if it doesn't exist or is
-    corrupt -- a session generated before this sidecar existed (or one
-    whose file somehow got clobbered) just degrades to plain step-id text
-    on the session page rather than erroring."""
+def _load_step_state(session_dir):
+    """The parsed steps.json sidecar (written by _write_all_exports) as a
+    dict, or None if it doesn't exist or is corrupt -- a session generated
+    before this sidecar existed (or one whose file somehow got clobbered)
+    degrades gracefully wherever this is consulted."""
     path = Path(session_dir) / "steps.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))["steps"]
-    except (OSError, ValueError, KeyError):
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return None
+
+
+def _load_step_index(session_dir):
+    """The steps.json sidecar's per-step list, or None -- see
+    _load_step_state. Kept as its own helper since most callers (the
+    session page's report rows) only need the list, not the wrapping
+    version/narrative_text envelope."""
+    state = _load_step_state(session_dir)
+    return state.get("steps") if state else None
 
 
 def _zip_directory(directory):
@@ -876,19 +884,30 @@ def create_app(
         # L5) -- it's presentational data derived from the same md_step_results
         # that already shipped in the doc, so it always agrees with what the
         # user is reading.
+        #
+        # version 2 additionally persists narrative_text and each step's
+        # narration/manually_edited -- everything _reexport_session (the
+        # per-step edit/regenerate feature) needs to rebuild all six export
+        # formats from disk without an LLM call. A step-edit route refuses to
+        # run against a version 1 (or missing) file rather than silently
+        # dropping narration/narrative from every format on re-export.
         screenshot_by_id = {s.id: s.screenshot for s in manifest.steps}
         (session_dir / "steps.json").write_text(
             json.dumps(
                 {
+                    "version": 2,
+                    "narrative_text": md_narrative_text,
                     "steps": [
                         {
                             "step_id": r["step_id"],
                             "text": r.get("text", ""),
                             "used_fallback": bool(r.get("used_fallback")),
+                            "manually_edited": bool(r.get("manually_edited")),
+                            "narration": r.get("narration"),
                             "screenshot": screenshot_by_id.get(r["step_id"], ""),
                         }
                         for r in md_step_results
-                    ]
+                    ],
                 }
             ),
             encoding="utf-8",
