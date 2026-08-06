@@ -47,6 +47,162 @@ def _make_manifest(n):
     return Manifest(schema_version="1.0", session=session, steps=steps)
 
 
+def _make_manifest_identical(
+    n, element_name="OK", control_type="Button", window_title="Test Window"
+):
+    """Like _make_manifest, but every step carries the SAME element
+    name/control_type/window -- so _build_prompt is byte-identical across
+    all n steps, exercising generate_all_steps' per-job memoization."""
+    session = Session(
+        id="sess-memo-test",
+        title="",
+        started_utc="2026-01-01T00:00:00.000Z",
+        ended_utc="2026-01-01T00:01:00.000Z",
+        machine="",
+        os_build="",
+        narration_wav=None,
+    )
+    steps = [
+        Step(
+            id=f"step-{i + 1:03d}",
+            ts_utc="2026-01-01T00:00:00.000Z",
+            action="click",
+            button="left",
+            screen=Screen(x=0, y=0, monitor=1),
+            screenshot=f"{i + 1:03d}.png",
+            window=Window(title=window_title, process="test.exe", class_="win32"),
+            element=Element(
+                name=element_name, control_type=control_type, automation_id="", framework="win32"
+            ),
+            redactions=[],
+        )
+        for i in range(n)
+    ]
+    return Manifest(schema_version="1.0", session=session, steps=steps)
+
+
+class _CountingClient:
+    """Records every call's content and replies with a fixed string (or
+    raises), regardless of which step triggered the call -- for memoization
+    tests that only care how many LLM calls happened."""
+
+    def __init__(self, reply=None, raises=None):
+        self.reply = reply
+        self.raises = raises
+        self.calls = []
+
+    def chat(self, messages, **kwargs):
+        self.calls.append(messages)
+        if self.raises is not None:
+            raise self.raises
+        return self.reply
+
+
+def test_identical_prompts_share_one_llm_call():
+    manifest = _make_manifest_identical(4)
+    client = _CountingClient(reply="Click OK in Test Window.")
+    results = generate_all_steps(manifest, client)
+    assert len(client.calls) == 1
+    assert [r["step_id"] for r in results] == [s.id for s in manifest.steps]
+    assert all(not r["used_fallback"] for r in results)
+    assert len({r["text"] for r in results}) == 1
+
+
+def test_memoized_reply_is_still_round_trip_gated_per_step():
+    """The important one: two steps sharing a byte-identical prompt (target
+    resolves to the same string via element.name-or-control_type either
+    way) but with different round_trip_ok-relevant fields -- step A has a
+    real element.name ("OK"), step B has an empty element.name and only a
+    control_type ("OK") -- round_trip_ok checks element.name when non-empty
+    but never checks control_type, so a reply that omits "OK" fails A's
+    gate but passes B's, even though both came from the exact same LLM
+    call."""
+    # control_type="OK" on both -- step_b's target resolves to control_type
+    # ("OK") since its name is empty, matching step_a's real name ("OK"), so
+    # _build_prompt is identical for both.
+    manifest = _make_manifest_identical(2, element_name="OK", control_type="OK")
+    step_a = manifest.steps[0].model_copy(
+        update={"element": manifest.steps[0].element.model_copy(update={"name": "OK"})}
+    )
+    step_b = manifest.steps[1].model_copy(
+        update={"element": manifest.steps[1].element.model_copy(update={"name": ""})}
+    )
+    manifest = manifest.model_copy(update={"steps": [step_a, step_b]})
+    assert _build_prompt(step_a) == _build_prompt(step_b)  # identical prompt, by construction
+
+    client = _CountingClient(reply="Click the button in Test Window.")  # never says "OK"
+    results = generate_all_steps(manifest, client)
+
+    assert len(client.calls) == 1
+    assert results[0]["used_fallback"] is True  # A: element.name="OK" must appear, doesn't
+    assert results[0]["text"] == render_step_template(step_a)
+    assert results[1]["used_fallback"] is False  # B: no element.name to check
+
+
+def test_shared_prompt_call_failure_falls_every_step_back_to_template():
+    manifest = _make_manifest_identical(3)
+    client = _CountingClient(raises=RuntimeError("simulated outage"))
+    results = generate_all_steps(manifest, client)
+    assert len(client.calls) == 1
+    assert all(r["used_fallback"] is True for r in results)
+    for step, result in zip(manifest.steps, results):
+        assert result["text"] == render_step_template(step)
+
+
+def test_memo_is_per_job_not_process_global():
+    manifest = _make_manifest_identical(3)
+    client_a = _CountingClient(reply="Click OK in Test Window.")
+    client_b = _CountingClient(reply="Click OK in Test Window.")
+    generate_all_steps(manifest, client_a)
+    generate_all_steps(manifest, client_b)
+    assert len(client_a.calls) == 1
+    assert len(client_b.calls) == 1
+
+
+def test_use_vision_disables_memoization(tmp_path):
+    manifest = _make_manifest_identical(3)
+    for step in manifest.steps:
+        (tmp_path / step.screenshot).write_bytes(b"fake-png-bytes-for-test")
+    client = _CountingClient(reply="Click OK in Test Window.")
+    results = generate_all_steps(manifest, client, use_vision=True, screenshot_dir=tmp_path)
+    assert len(client.calls) == 3
+    assert all(not r["used_fallback"] for r in results)
+    for step, call in zip(manifest.steps, client.calls):
+        screenshot_path = tmp_path / step.screenshot
+        content = call[0]["content"]
+        assert content == [
+            {"type": "text", "text": _build_prompt(step)},
+            {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
+        ]
+
+
+def test_identical_prompts_under_concurrency_preserve_order_and_share_one_call():
+    manifest = _make_manifest_identical(5)
+    client = _CountingClient(reply="Click OK in Test Window.")
+    results = generate_all_steps(manifest, client, max_concurrency=3)
+    assert len(client.calls) == 1
+    assert [r["step_id"] for r in results] == [s.id for s in manifest.steps]
+    assert all(not r["used_fallback"] for r in results)
+
+
+def test_progress_still_reports_once_per_step_with_memoized_prompts():
+    manifest = _make_manifest_identical(4)
+    client = _CountingClient(reply="Click OK in Test Window.")
+    calls = []
+    generate_all_steps(manifest, client, on_progress=lambda i, n: calls.append((i, n)))
+    assert calls == [(i, 4) for i in range(1, 5)]
+
+    calls_concurrent = []
+    generate_all_steps(
+        manifest,
+        client,
+        max_concurrency=3,
+        on_progress=lambda i, n: calls_concurrent.append((i, n)),
+    )
+    assert len(calls_concurrent) == 4
+    assert calls_concurrent[-1] == (4, 4)
+
+
 class _StaggeredClient:
     """Thread-safe stub whose reply delay/text is keyed by the step's element
     name embedded in the prompt (_build_prompt always includes it) -- lets a
@@ -113,7 +269,10 @@ def test_realistic_mock_achieves_at_least_95_percent_round_trip():
         results = generate_all_steps(manifest, client)
         total += len(results)
         total_ok += sum(1 for r in results if not r["used_fallback"])
-        assert len(client.calls) == len(manifest.steps)  # one attempt per step
+        # At most one attempt per DISTINCT prompt -- empty-elements-manifest.json
+        # has 3 steps that produce a byte-identical prompt (task-04's
+        # memoization), so this is strictly <= len(manifest.steps), not ==.
+        assert len(client.calls) == len({_build_prompt(s) for s in manifest.steps})
 
     assert total_ok / total >= 0.95
 
