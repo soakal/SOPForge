@@ -177,21 +177,25 @@ def test_live_generation_reports_progress_on_the_processing_page(tmp_path, monke
 
     reached_second_step = threading.Event()
     release = threading.Event()
-    real_generate_step_text = generation_module.generate_step_text
+    # generate_all_steps calls _request_reply directly (task-04's
+    # memoization refactor split generate_step_text into
+    # _request_reply + _finalize_reply) -- gate that, not the no-longer-
+    # called generate_step_text, or this event never fires.
+    real_request_reply = generation_module._request_reply
     call_count = {"n": 0}
 
-    def gated_generate_step_text(step, llm_client, use_vision=False, screenshot_dir=None):
+    def gated_request_reply(step, llm_client, use_vision=False, screenshot_dir=None):
         call_count["n"] += 1
         # Pause going into the SECOND call so step 1's progress (1 of 3) has
         # already been reported by the time this test inspects the page.
         if call_count["n"] == 2:
             reached_second_step.set()
             release.wait(timeout=5)
-        return real_generate_step_text(
+        return real_request_reply(
             step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir
         )
 
-    monkeypatch.setattr(generation_module, "generate_step_text", gated_generate_step_text)
+    monkeypatch.setattr(generation_module, "_request_reply", gated_request_reply)
 
     client = _make_client(tmp_path)
     manifest_path = FIXTURES / "sample-manifest.json"
