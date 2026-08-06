@@ -46,6 +46,49 @@ def test_load_edits_tolerates_a_corrupt_file(tmp_path):
     assert server_module._load_edits(tmp_path) == {}
 
 
+def test_load_edits_tolerates_valid_json_with_the_wrong_shape(tmp_path):
+    """Caught by automated PR review: json.loads(...)["steps"] only guards
+    OSError/ValueError/KeyError -- a file that parses fine as JSON but
+    isn't the expected object (a bare list/string/number, or a "steps"
+    value that isn't itself an object) must degrade to {} the same as a
+    missing file, not raise TypeError/AttributeError mid-generation."""
+    for bad_content in ("[]", '"just a string"', "123", '{"steps": "not an object"}', "{}"):
+        (tmp_path / "edits.json").write_text(bad_content, encoding="utf-8")
+        assert server_module._load_edits(tmp_path) == {}, bad_content
+
+
+def test_apply_manual_edits_tolerates_a_malformed_per_step_entry(tmp_path):
+    """A "steps" object whose per-step value isn't {"text": str, ...} (a
+    bare string, or a dict missing "text") must be treated as no-edit for
+    that step, not raise."""
+    (tmp_path / "edits.json").write_text(
+        json.dumps({"steps": {"step-001": "not a dict", "step-002": {"edited_utc": "x"}}}),
+        encoding="utf-8",
+    )
+    step_results = [
+        {"step_id": "step-001", "text": "original one", "used_fallback": False},
+        {"step_id": "step-002", "text": "original two", "used_fallback": False},
+    ]
+    applied = server_module._apply_manual_edits(tmp_path, step_results)
+    assert applied == []
+    assert step_results[0]["text"] == "original one"
+    assert step_results[1]["text"] == "original two"
+
+
+def test_load_step_state_tolerates_valid_json_with_the_wrong_shape(tmp_path):
+    for bad_content in ("[]", '"just a string"', "123"):
+        (tmp_path / "steps.json").write_text(bad_content, encoding="utf-8")
+        assert server_module._load_step_state(tmp_path) is None
+        assert server_module._load_step_index(tmp_path) is None
+
+
+def test_load_step_index_tolerates_a_non_list_steps_value(tmp_path):
+    (tmp_path / "steps.json").write_text(
+        json.dumps({"version": 2, "steps": "not a list"}), encoding="utf-8"
+    )
+    assert server_module._load_step_index(tmp_path) is None
+
+
 def test_apply_manual_edits_overwrites_text_and_flags_only_matching_steps(tmp_path):
     server_module._save_edit(tmp_path, "step-002", "A human wrote this.")
     step_results = [
@@ -335,6 +378,29 @@ def test_edit_on_a_pre_v2_session_returns_409(tmp_path):
     status = _wait_done(client, session_id)
     assert status["status"] == "error"
     assert "predates" in status["error"]
+
+
+def test_edit_on_a_damaged_steps_json_returns_409_not_a_crash(tmp_path):
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+    # version 2, but "steps" is a bare string -- parses as JSON fine, wrong shape.
+    (session_dir / "steps.json").write_text(
+        json.dumps({"version": 2, "narrative_text": None, "steps": "not a list"}),
+        encoding="utf-8",
+    )
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}",
+        data={"text": "should not apply"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "error"
+    assert "damaged" in status["error"] or "predates" in status["error"]
 
 
 def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path):

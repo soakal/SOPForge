@@ -177,23 +177,32 @@ def _download_filename(manifest, ext):
 
 def _load_step_state(session_dir):
     """The parsed steps.json sidecar (written by _write_all_exports) as a
-    dict, or None if it doesn't exist or is corrupt -- a session generated
-    before this sidecar existed (or one whose file somehow got clobbered)
-    degrades gracefully wherever this is consulted."""
+    dict, or None if it doesn't exist, isn't valid JSON, or -- even though
+    it parses -- isn't a JSON *object* (e.g. a damaged file containing a
+    bare list or string). A session generated before this sidecar existed
+    (or one whose file somehow got clobbered/truncated) degrades gracefully
+    wherever this is consulted, rather than an AttributeError from calling
+    .get() on the wrong type escaping into a generation job and failing it."""
     path = Path(session_dir) / "steps.json"
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _load_step_index(session_dir):
     """The steps.json sidecar's per-step list, or None -- see
     _load_step_state. Kept as its own helper since most callers (the
     session page's report rows) only need the list, not the wrapping
-    version/narrative_text envelope."""
+    version/narrative_text envelope. Also guards against a "steps" value
+    that isn't actually a list (same damaged-file class as
+    _load_step_state's own guard)."""
     state = _load_step_state(session_dir)
-    return state.get("steps") if state else None
+    if not state:
+        return None
+    steps = state.get("steps")
+    return steps if isinstance(steps, list) else None
 
 
 def _edits_path(session_dir):
@@ -202,16 +211,24 @@ def _edits_path(session_dir):
 
 def _load_edits(session_dir):
     """{step_id: {"text", "edited_utc"}} of every manual override on this
-    session, or {} if none exist / the file is missing or corrupt. A
-    per-step edit route writes here; steps.json (the derived, LLM-pipeline
-    output) is never the source of truth for an edit -- it gets rewritten
-    wholesale by every _write_all_exports call, so an override that must
-    survive a from-scratch rerender has to live in a file the pipeline only
-    ever reads, never overwrites."""
+    session, or {} if none exist / the file is missing or corrupt --
+    including "corrupt" in the sense of parsing as valid JSON that isn't
+    the expected shape (e.g. a bare list/string, or a "steps" value that
+    isn't itself an object), which must degrade the same way a missing
+    file does rather than raise mid-generation. A per-step edit route
+    writes here; steps.json (the derived, LLM-pipeline output) is never
+    the source of truth for an edit -- it gets rewritten wholesale by
+    every _write_all_exports call, so an override that must survive a
+    from-scratch rerender has to live in a file the pipeline only ever
+    reads, never overwrites."""
     try:
-        return json.loads(_edits_path(session_dir).read_text(encoding="utf-8"))["steps"]
-    except (OSError, ValueError, KeyError):
+        parsed = json.loads(_edits_path(session_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return {}
+    if not isinstance(parsed, dict):
+        return {}
+    edits = parsed.get("steps")
+    return edits if isinstance(edits, dict) else {}
 
 
 def _save_edit(session_dir, step_id, text):
@@ -248,7 +265,10 @@ def _apply_manual_edits(session_dir, step_results):
     applied = []
     for result in step_results:
         override = edits.get(result["step_id"])
-        if override is None:
+        # A malformed per-step entry (not a dict, or missing "text") is
+        # treated the same as "no edit for this step" rather than raising --
+        # matches _load_edits' own "corrupt degrades like missing" contract.
+        if not isinstance(override, dict) or not isinstance(override.get("text"), str):
             continue
         result["text"] = override["text"]
         result["used_fallback"] = False
@@ -1029,15 +1049,21 @@ def create_app(
         pass."""
         manifest, _screenshots_dir, annotated_dir, session_dir = sessions[session_id]
         state = _load_step_state(session_dir)
-        if state is None or state.get("version") != 2:
+        steps_list = state.get("steps") if state else None
+        if state is None or state.get("version") != 2 or not isinstance(steps_list, list):
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    "this session predates per-step editing (steps.json is missing or an "
-                    "older version) -- rerender it once before editing steps"
+                    "this session predates per-step editing (steps.json is missing, "
+                    "an older version, or damaged) -- rerender it once before editing steps"
                 ),
             )
-        by_id = {e["step_id"]: e for e in state["steps"]}
+        try:
+            by_id = {e["step_id"]: e for e in steps_list}
+        except (TypeError, KeyError) as exc:
+            raise HTTPException(
+                status_code=409, detail=f"steps.json is damaged ({exc}) -- rerender first"
+            ) from exc
         step_results = []
         for step in manifest.steps:
             entry = by_id.get(step.id)
