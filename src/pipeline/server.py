@@ -1530,7 +1530,11 @@ def create_app(
         config = load_models_config(resolved_config_path).model_dump()
         title = manifest.session.title or manifest.session.id
         date = manifest.session.started_utc
-        return HTMLResponse(render_session_page(session_id, title, date, report, config))
+        return HTMLResponse(
+            render_session_page(
+                session_id, title, date, report, config, steps=_load_step_index(session_dir)
+            )
+        )
 
     @app.post("/ui/sessions/{session_id}/confirm-steps")
     async def ui_confirm_steps(session_id: str, request: Request):

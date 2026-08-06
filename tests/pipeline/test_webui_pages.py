@@ -358,7 +358,7 @@ def test_session_page_shows_doc_preview_iframe(tmp_path):
 
     resp = client.get(f"/ui/sessions/{session_id}")
     assert resp.status_code == 200
-    assert f'<iframe src="/sessions/{session_id}/doc.html"' in resp.text
+    assert f'<iframe name="docpreview" src="/sessions/{session_id}/doc.html"' in resp.text
 
 
 def test_session_page_colors_sidecar_sections_correctly(tmp_path):
@@ -378,6 +378,72 @@ def test_session_page_colors_sidecar_sections_correctly(tmp_path):
     assert title_to_status["Template-fallback steps"] == "red"
     assert title_to_status["Verify claims"] == "green"
     assert title_to_status["Empty-metadata steps"] == "yellow"
+
+
+def test_report_findings_render_as_thumbnail_rows_linked_to_their_step():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    steps = [
+        {
+            "step_id": "step-002",
+            "text": "Click 'Save'.",
+            "used_fallback": True,
+            "screenshot": "002.png",
+        }
+    ]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    assert 'src="/sessions/sid/002.png"' in page
+    assert 'href="/sessions/sid/doc.html#step-002"' in page
+    assert 'target="docpreview"' in page
+    assert "Click &#x27;Save&#x27;." in page
+    # The section contract (data-status + <h2> first) must still hold.
+    assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
+
+
+def test_report_findings_degrade_to_plain_ids_without_a_step_index():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    page = render_session_page("sid", "Title", "date", report, {}, steps=None)
+    assert "step-002" in page
+    assert "<img" not in page.split("Template-fallback steps</h2>", 1)[1].split("</section>", 1)[0]
+    assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
+
+
+def test_session_page_has_a_named_doc_preview_iframe_and_lightbox():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {})
+    assert 'name="docpreview"' in page
+    assert 'id="lightbox"' in page
+
+
+def test_session_page_finding_thumbnails_and_deep_links_actually_resolve(tmp_path):
+    """End-to-end: the stub LLM (see _stub_llm.py) forces every step to
+    template-fallback, so the "Template-fallback steps" section is
+    populated -- every thumbnail src the page renders must actually
+    resolve, and every doc.html#step-xxx anchor must land on a real id in
+    that document (task-06)."""
+    client = _make_client(tmp_path)
+    session_id = _create_and_wait(client, tmp_path)
+
+    page = client.get(f"/ui/sessions/{session_id}").text
+    section = page.split("Template-fallback steps</h2>", 1)[1].split("</section>", 1)[0]
+    srcs = re.findall(r'src="(/sessions/[^"]+)"', section)
+    assert srcs  # the stub fails every step's round-trip, so this must be non-empty
+    for src in srcs:
+        resp = client.get(src)
+        assert resp.status_code == 200, src
+        assert resp.headers["content-type"].startswith("image/")
+
+    hrefs = re.findall(r'href="(/sessions/[^"]+/doc\.html#step-[^"]+)"', section)
+    assert hrefs
+    for href in hrefs:
+        path, step_id = href.split("#", 1)
+        doc = client.get(path)
+        assert doc.status_code == 200, href
+        assert f'id="{step_id}"' in doc.text
 
 
 def test_session_page_has_rerender_form(tmp_path):
