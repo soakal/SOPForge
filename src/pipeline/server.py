@@ -195,6 +195,67 @@ def _load_step_index(session_dir):
     return state.get("steps") if state else None
 
 
+def _edits_path(session_dir):
+    return Path(session_dir) / "edits.json"
+
+
+def _load_edits(session_dir):
+    """{step_id: {"text", "edited_utc"}} of every manual override on this
+    session, or {} if none exist / the file is missing or corrupt. A
+    per-step edit route writes here; steps.json (the derived, LLM-pipeline
+    output) is never the source of truth for an edit -- it gets rewritten
+    wholesale by every _write_all_exports call, so an override that must
+    survive a from-scratch rerender has to live in a file the pipeline only
+    ever reads, never overwrites."""
+    try:
+        return json.loads(_edits_path(session_dir).read_text(encoding="utf-8"))["steps"]
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+def _save_edit(session_dir, step_id, text):
+    edits = _load_edits(session_dir)
+    edits[step_id] = {"text": text, "edited_utc": datetime.now(timezone.utc).isoformat()}
+    _edits_path(session_dir).write_text(json.dumps({"steps": edits}), encoding="utf-8")
+
+
+def _clear_edit(session_dir, step_id):
+    """Removes one step's override, if any. Returns whether one existed."""
+    edits = _load_edits(session_dir)
+    if step_id not in edits:
+        return False
+    del edits[step_id]
+    _edits_path(session_dir).write_text(json.dumps({"steps": edits}), encoding="utf-8")
+    return True
+
+
+def _clear_all_edits(session_dir):
+    _edits_path(session_dir).unlink(missing_ok=True)
+
+
+def _apply_manual_edits(session_dir, step_results):
+    """Overwrites step_results[i]["text"] in place for any step_id present
+    in edits.json, and marks it used_fallback=False, manually_edited=True.
+    Never adds, removes, or reorders entries -- an override for a step_id
+    not present in step_results (e.g. a step later dropped via the
+    steps-review page) is silently ignored, so invariant L1's 1:1 mapping
+    can never be perturbed by this. Returns the list of step_ids actually
+    applied, in step_results order."""
+    edits = _load_edits(session_dir)
+    if not edits:
+        return []
+    applied = []
+    for result in step_results:
+        override = edits.get(result["step_id"])
+        if override is None:
+            continue
+        result["text"] = override["text"]
+        result["used_fallback"] = False
+        result["manually_edited"] = True
+        applied.append(result["step_id"])
+    return applied
+
+
 def _zip_directory(directory):
     directory = Path(directory)
     buf = io.BytesIO()
@@ -486,6 +547,7 @@ def create_app(
             if callable(close):
                 close()
         _assert_1to1_mapping(manifest, step_results)
+        _apply_manual_edits(session_dir, step_results)
 
         # Place an uploaded transcript's narration under each step (by step
         # label / order for .txt/.md, by timestamp for .json, or -- when
@@ -706,6 +768,12 @@ def create_app(
         for step_result, canonical_text in zip(step_results, canonicalized[2:]):
             step_result["text"] = canonical_text
 
+        # Applied AFTER canonicalize_terms, deliberately -- a human's exact
+        # wording (including spelling choices) must never get "corrected"
+        # by the consistency pass, the same reasoning as _write_all_exports'
+        # polish-restore below.
+        manually_edited = _apply_manual_edits(session_dir, step_results)
+
         verify_claims = (placement_meta or {}).get("verify_claims", [])
         report = {
             "template_fallback_steps": [],
@@ -725,6 +793,8 @@ def create_app(
             report["vision"] = vision_note
         if consistency_actions:
             report["consistency"] = consistency_actions
+        if manually_edited:
+            report["manually_edited_steps"] = manually_edited
         _write_all_exports(
             session_id,
             manifest,
@@ -796,6 +866,19 @@ def create_app(
                 close = getattr(polish_llm, "close", None)
                 if callable(close):
                     close()
+            # A human's exact wording must never be silently reworded by the
+            # polish pass -- generate_polish_fields has no concept of "this
+            # text is authoritative," it treats every step's text as equally
+            # eligible for rewriting. Restore the original (edited) text for
+            # any step flagged manually_edited; md_step_results is already a
+            # list of shallow copies (generate_polish_fields' own contract),
+            # so mutating it here doesn't touch step_results.
+            manual_text_by_id = {
+                r["step_id"]: r["text"] for r in step_results if r.get("manually_edited")
+            }
+            for r in md_step_results:
+                if r["step_id"] in manual_text_by_id:
+                    r["text"] = manual_text_by_id[r["step_id"]]
             # Safety net for invariant L4 (CLAUDE.md): generate_polish_fields's
             # own per-field gate (_field_gate) only rejects a rewrite that
             # ADDS unsupported content -- it has no way to know a claim's
@@ -1230,7 +1313,11 @@ def create_app(
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")
-    def rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
+    def rerender(
+        session_id: str,
+        polish: Literal["off", "local", "haiku"] | None = None,
+        discard_edits: bool = False,
+    ):
         """Re-runs generation + all exports for an already-uploaded session
         against the current config/models.toml -- genuinely meaningful now
         that step generation is LLM-backed: e.g. after editing the config to
@@ -1242,19 +1329,36 @@ def create_app(
         even if [polish].enabled=true, "local" forces the local ollama
         provider, "haiku" forces Anthropic's Claude Haiku 4.5. Omitted
         (the default) leaves the current [polish].enabled/provider/model
-        behavior untouched."""
+        behavior untouched.
+
+        `discard_edits` (optional query param, default False): any manual
+        per-step edits (POST .../steps/{step_id}) are PRESERVED across an
+        ordinary rerender by default -- a rerender is the documented remedy
+        for "I changed my config/model" or "I added a transcript", and
+        destroying a reviewer's hand-written fix as a side effect of that
+        would be a data-loss bug, not a feature. Pass discard_edits=true to
+        explicitly wipe every edit on this session and regenerate from
+        scratch."""
         _require_known_session(session_id)
+        if discard_edits:
+            _clear_all_edits(sessions[session_id][3])
         jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
 
     @app.post("/ui/sessions/{session_id}/rerender")
-    def ui_rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
+    def ui_rerender(
+        session_id: str,
+        polish: Literal["off", "local", "haiku"] | None = None,
+        discard_edits: bool = False,
+    ):
         """Same effect as POST /sessions/{id}/rerender, but redirects back
         to the session page instead of returning JSON -- the JSON route
         stays as-is for API/script callers, since a plain HTML <form> POST
         would otherwise navigate the browser to a raw JSON blob. See
-        rerender() above for what `polish` does."""
+        rerender() above for what `polish`/`discard_edits` do."""
         _require_known_session(session_id)
+        if discard_edits:
+            _clear_all_edits(sessions[session_id][3])
         jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
