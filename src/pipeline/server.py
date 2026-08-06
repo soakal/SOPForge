@@ -38,6 +38,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -598,6 +599,16 @@ def create_app(
                     close()
             if gen_title:
                 manifest.session.title = gen_title
+                # Persisted immediately (not just left on the in-memory
+                # Manifest) -- caught by automated PR review: without this,
+                # a server restart reloads the on-disk manifest, which still
+                # has an empty title, and _reexport_session (the per-step
+                # edit/regenerate path, which makes no LLM call and so can
+                # never re-derive a title) would then silently revert the
+                # document/library entry to the raw session id.
+                (session_dir / "manifest.json").write_text(
+                    json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
+                )
 
         # Stage 2: a multi-pass narrative paragraph (task-09) from whatever
         # narration is available -- the uploaded transcript if there is one
@@ -766,6 +777,12 @@ def create_app(
                     close()
             if gen_title and not manifest.session.title:
                 manifest.session.title = gen_title
+                # See _generate's identical comment: without persisting this,
+                # a restart or a later no-LLM edit re-export would revert the
+                # document/library entry to the raw session id.
+                (session_dir / "manifest.json").write_text(
+                    json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
+                )
 
         # Photo-mode has no manifest ground truth (element/window names) to
         # round-trip-gate step text against -- a raw narration transcript is
@@ -1763,7 +1780,14 @@ def create_app(
         change before saving it. Always 200 with the probe result in the
         body; a probe failure is data for the page to display, not an HTTP
         error. 400 only for a malformed request (unknown section, or an
-        invalid provider override)."""
+        invalid provider override).
+
+        The probe itself runs via run_in_threadpool: probe_section is a
+        synchronous httpx call with up to a ~6s combined connect/read
+        timeout, and this route is `async def` (it awaits request.form()),
+        so calling it directly would block the single event loop for that
+        long, stalling every other request to the server for the duration
+        of the probe. Caught by automated PR review."""
         form = await request.form()
         name = form.get("section")
         section_cls = _CONFIG_TEST_SECTIONS.get(name)
@@ -1778,7 +1802,8 @@ def create_app(
             section = section_cls.model_validate({**saved_section.model_dump(), **overrides})
         except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> clear 400
             raise HTTPException(status_code=400, detail=f"invalid section: {exc}") from exc
-        return JSONResponse({**probe(section), "section": name})
+        result = await run_in_threadpool(probe, section)
+        return JSONResponse({**result, "section": name})
 
     @app.post("/ui/config")
     async def ui_config_save(request: Request):

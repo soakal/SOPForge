@@ -144,6 +144,40 @@ def test_capture_session_gets_an_auto_generated_title(tmp_path):
     assert "Configure SmartDeploy Console" in page.text
 
 
+def test_auto_generated_title_is_persisted_to_manifest_json_on_disk(tmp_path):
+    """Caught by automated PR review: the auto-generated title used to live
+    only on the in-memory Manifest -- _restore_sessions_from_disk (a server
+    restart) reloads the on-disk manifest.json, which still has an empty
+    title for a real capture, and the no-LLM per-step edit/regenerate
+    re-export path (_reexport_session) can never re-derive one. Persisting
+    it immediately is what makes the title survive both."""
+
+    class _TitleGeneratingClient:
+        def chat(self, messages, **kwargs):
+            return '{"title": "Configure SmartDeploy Console", "overview": "Sets it up."}'
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=lambda: _TitleGeneratingClient(),
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    on_disk = json.loads(
+        (tmp_path / "sessions" / session_id / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert on_disk["session"]["title"] == "Configure SmartDeploy Console"
+
+
 def test_get_report_lists_expected_categories(tmp_path):
     client = _make_client(tmp_path)
     session_id, status = _create_and_wait(client, tmp_path)

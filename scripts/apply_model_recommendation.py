@@ -27,9 +27,17 @@ writing a model it never actually confirmed."""
 
 import argparse
 import sys
+from pathlib import Path
 
-from pipeline.config import load_models_config, runtime_config_path, save_models_config
-from pipeline.preflight import probe_section
+# Every other script in scripts/ does this before importing pipeline.* --
+# running this file directly (py -3.12 scripts/apply_model_recommendation.py
+# ...) puts scripts/ on sys.path[0], not src/, so `pipeline` isn't importable
+# without it. Caught by automated PR review.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "src"))
+
+from pipeline.config import load_models_config, runtime_config_path, save_models_config  # noqa: E402
+from pipeline.preflight import probe_section  # noqa: E402
 
 _LOCAL_SECTIONS = ("steps", "narrative", "vision", "polish")
 
