@@ -439,12 +439,111 @@ def test_report_findings_degrade_to_plain_ids_without_a_step_index():
     assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
 
 
+def test_render_session_page_tolerates_malformed_step_entries():
+    """Caught by automated PR review: a damaged steps.json entry (not a
+    dict, or missing "step_id") used to raise TypeError/KeyError building
+    steps_by_id, 500ing the whole review page instead of degrading the way
+    every other "corrupt" path in this feature does."""
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    steps = ["not a dict", {"screenshot": "no step_id here"}, None, 42]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    # Must not raise, and must still render the section (degraded to a
+    # plain id since no entry actually matched step-002).
+    assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
+    assert "step-002" in page
+
+
 def test_session_page_has_a_named_doc_preview_iframe_and_lightbox():
     from pipeline.webui.pages import render_session_page
 
     page = render_session_page("sid", "Title", "date", {}, {})
     assert 'name="docpreview"' in page
     assert 'id="lightbox"' in page
+
+
+def test_session_page_renders_an_edit_form_and_regenerate_button_per_step():
+    from pipeline.webui.pages import render_session_page
+
+    steps = [
+        {
+            "step_id": "step-001",
+            "text": "Click the 'Save' <button>.",
+            "used_fallback": False,
+            "manually_edited": False,
+            "screenshot": "001.png",
+        }
+    ]
+    page = render_session_page("sid", "Title", "date", {}, {}, steps=steps, can_regenerate=True)
+    assert 'id="edit-step-001"' in page
+    assert 'action="/ui/sessions/sid/steps/step-001"' in page
+    assert 'action="/ui/sessions/sid/steps/step-001/regenerate"' in page
+    assert '<textarea name="text"' in page
+    # The textarea content must be HTML-escaped (raw "<button>" would break markup).
+    assert "&lt;button&gt;" in page
+    assert "<button>" not in page.split('<textarea name="text"', 1)[1].split("</textarea>", 1)[0]
+
+
+def test_session_page_hides_regenerate_when_can_regenerate_is_false():
+    from pipeline.webui.pages import render_session_page
+
+    steps = [{"step_id": "step-001", "text": "x", "used_fallback": False, "screenshot": ""}]
+    page = render_session_page("sid", "Title", "date", {}, {}, steps=steps, can_regenerate=False)
+    assert 'action="/ui/sessions/sid/steps/step-001"' in page
+    assert "/regenerate" not in page
+
+
+def test_session_page_omits_the_editor_without_a_step_index():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {}, steps=None)
+    assert "Edit steps" not in page
+    assert "<textarea" not in page
+
+
+def test_finding_row_links_to_the_matching_editor_anchor():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    steps = [
+        {"step_id": "step-001", "text": "a", "used_fallback": False, "screenshot": ""},
+        {"step_id": "step-002", "text": "b", "used_fallback": True, "screenshot": ""},
+    ]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    assert 'href="#edit-step-002"' in page
+    assert 'id="edit-step-002"' in page
+
+
+def test_finding_row_shows_edited_badge_when_manually_edited():
+    from pipeline.webui.pages import render_session_page
+
+    # The badge is rendered by _finding_row, only reached via _step_section
+    # for the two step-id report categories -- empty_metadata_steps here
+    # puts step-002 through that path so the badge is actually exercised.
+    report = {"manually_edited_steps": ["step-002"], "empty_metadata_steps": ["step-002"]}
+    steps = [
+        {
+            "step_id": "step-002",
+            "text": "b",
+            "used_fallback": False,
+            "manually_edited": True,
+            "screenshot": "",
+        }
+    ]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    assert '<span class="pill edited">edited</span>' in page
+
+
+def test_discard_edits_button_shown_only_when_steps_were_manually_edited():
+    from pipeline.webui.pages import render_session_page
+
+    with_edits = render_session_page(
+        "sid", "Title", "date", {"manually_edited_steps": ["step-001"]}, {}
+    )
+    assert "discard_edits" in with_edits
+    without_edits = render_session_page("sid", "Title", "date", {}, {})
+    assert "discard_edits" not in without_edits
 
 
 def test_session_page_finding_thumbnails_and_deep_links_actually_resolve(tmp_path):

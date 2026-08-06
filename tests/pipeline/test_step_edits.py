@@ -6,6 +6,7 @@ session dir, exactly the way the future edit route will."""
 
 import json
 import shutil
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +16,19 @@ from pipeline.server import create_app
 import pipeline.server as server_module
 
 from _stub_llm import stub_llm_client_factory
+
+
+def _stub_assemble_docx(monkeypatch):
+    """Replaces the real docx renderer (which needs the external sop_lib
+    package, unavailable in this sandbox -- see README) with a trivial
+    stub, so a test can reach status "done" for real and actually verify
+    behavior instead of early-returning on `if status != "done"`."""
+
+    def fake(manifest, step_results, annotated_dir, docx_path, **kwargs):
+        Path(docx_path).write_bytes(b"fake docx")
+        return str(docx_path), []
+
+    monkeypatch.setattr(server_module, "assemble_docx", fake)
 
 
 def test_load_edits_defaults_to_empty_dict(tmp_path):
@@ -167,11 +181,11 @@ def _create_and_wait(client, tmp_path):
     return session_id, status, manifest
 
 
-def test_manual_edit_survives_a_full_rerender(tmp_path):
+def test_manual_edit_survives_a_full_rerender(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     edited_step = manifest.steps[0].id
     server_module._save_edit(session_dir, edited_step, "A human's exact fix.")
@@ -179,8 +193,7 @@ def test_manual_edit_survives_a_full_rerender(tmp_path):
     resp = client.post(f"/sessions/{session_id}/rerender")
     assert resp.status_code == 200
     status = _wait_done(client, session_id)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
 
     md = (session_dir / "doc.md").read_text(encoding="utf-8")
     assert "A human's exact fix." in md
@@ -189,11 +202,11 @@ def test_manual_edit_survives_a_full_rerender(tmp_path):
     assert edited_step not in report.get("template_fallback_steps", [])
 
 
-def test_rerender_with_discard_edits_drops_the_edit(tmp_path):
+def test_rerender_with_discard_edits_drops_the_edit(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     edited_step = manifest.steps[0].id
     server_module._save_edit(session_dir, edited_step, "A human's exact fix.")
@@ -202,8 +215,7 @@ def test_rerender_with_discard_edits_drops_the_edit(tmp_path):
     assert resp.status_code == 200
     assert not (session_dir / "edits.json").exists()
     status = _wait_done(client, session_id)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
 
     md = (session_dir / "doc.md").read_text(encoding="utf-8")
     assert "A human's exact fix." not in md
@@ -211,7 +223,9 @@ def test_rerender_with_discard_edits_drops_the_edit(tmp_path):
     assert "manually_edited_steps" not in report
 
 
-def test_manual_edit_is_not_rewritten_by_the_polish_pass(tmp_path):
+def test_manual_edit_is_not_rewritten_by_the_polish_pass(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
+
     def _uppercasing_polish(narrative_text, step_results, llm):
         polished_narrative = narrative_text.upper() if narrative_text else narrative_text
         polished = []
@@ -240,8 +254,7 @@ def test_manual_edit_is_not_rewritten_by_the_polish_pass(tmp_path):
         )
         client = TestClient(app)
         session_id, status, manifest = _create_and_wait(client, tmp_path)
-        if status["status"] != "done":
-            return
+        assert status["status"] == "done", status
         session_dir = tmp_path / "sessions" / session_id
         edited_step = manifest.steps[0].id
         other_step = manifest.steps[1].id
@@ -250,22 +263,29 @@ def test_manual_edit_is_not_rewritten_by_the_polish_pass(tmp_path):
         resp = client.post(f"/sessions/{session_id}/rerender")
         assert resp.status_code == 200
         status = _wait_done(client, session_id)
-        if status["status"] != "done":
-            return
+        assert status["status"] == "done", status
 
         md = (session_dir / "doc.md").read_text(encoding="utf-8")
         assert "lowercase human edit" in md
-        assert "LOWERCASE HUMAN EDIT" not in md
+        # Scope the "not rewritten" check to the edited step's OWN text
+        # field, not the whole document -- a narrative paragraph elsewhere
+        # in the doc may independently reference/quote the step (e.g. a
+        # [verify] claim synthesized from step text) and that occurrence IS
+        # legitimately subject to polish, since narrative_text isn't a
+        # manual-edit target the way a step's own text is.
+        state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
+        edited_entry = next(s for s in state["steps"] if s["step_id"] == edited_step)
+        assert edited_entry["text"] == "lowercase human edit"
         # sanity: a NON-edited step's text really did get uppercased, proving
         # the polish stub actually ran and this isn't a false negative.
-        state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
         other_entry = next(s for s in state["steps"] if s["step_id"] == other_step)
         assert other_entry["text"].isupper()
     finally:
         srv.generate_polish_fields = real_generate_polish_fields
 
 
-def test_edit_route_replaces_step_text_and_makes_no_llm_call(tmp_path):
+def test_edit_route_replaces_step_text_and_makes_no_llm_call(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     calls = []
 
     class _CountingStub:
@@ -283,8 +303,7 @@ def test_edit_route_replaces_step_text_and_makes_no_llm_call(tmp_path):
     )
     client = TestClient(app)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     step_id = manifest.steps[0].id
     calls_before_edit = len(calls)
@@ -296,8 +315,7 @@ def test_edit_route_replaces_step_text_and_makes_no_llm_call(tmp_path):
     )
     assert resp.status_code == 303
     status = _wait_done(client, session_id)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
 
     assert len(calls) == calls_before_edit  # the edit route made zero new LLM calls
 
@@ -314,11 +332,11 @@ def test_edit_route_replaces_step_text_and_makes_no_llm_call(tmp_path):
     assert step_id not in report.get("template_fallback_steps", [])
 
 
-def test_edit_never_changes_step_count_or_order(tmp_path):
+def test_edit_never_changes_step_count_or_order(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     step_id = manifest.steps[0].id
 
@@ -329,18 +347,17 @@ def test_edit_never_changes_step_count_or_order(tmp_path):
     )
     assert resp.status_code == 303
     status = _wait_done(client, session_id)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
 
     state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
     assert [s["step_id"] for s in state["steps"]] == manifest.step_ids()
 
 
-def test_edit_rejects_empty_text_unknown_step_and_unfinished_session(tmp_path):
+def test_edit_rejects_empty_text_unknown_step_and_unfinished_session(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     step_id = manifest.steps[0].id
 
     resp = client.post(f"/ui/sessions/{session_id}/steps/{step_id}", data={"text": "   "})
@@ -353,11 +370,11 @@ def test_edit_rejects_empty_text_unknown_step_and_unfinished_session(tmp_path):
     assert resp.status_code == 404
 
 
-def test_edit_on_a_pre_v2_session_returns_409(tmp_path):
+def test_edit_on_a_pre_v2_session_returns_409(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     step_id = manifest.steps[0].id
     # Hand-write a v1-shaped steps.json (no "version"/"narrative_text" keys)
@@ -380,11 +397,11 @@ def test_edit_on_a_pre_v2_session_returns_409(tmp_path):
     assert "predates" in status["error"]
 
 
-def test_edit_on_a_damaged_steps_json_returns_409_not_a_crash(tmp_path):
+def test_edit_on_a_damaged_steps_json_returns_409_not_a_crash(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     step_id = manifest.steps[0].id
     # version 2, but "steps" is a bare string -- parses as JSON fine, wrong shape.
@@ -403,7 +420,8 @@ def test_edit_on_a_damaged_steps_json_returns_409_not_a_crash(tmp_path):
     assert "damaged" in status["error"] or "predates" in status["error"]
 
 
-def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path):
+def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     calls = []
 
     class _RealisticStub:
@@ -429,8 +447,7 @@ def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path):
     )
     client = TestClient(app)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     step_id = manifest.steps[0].id
     calls_before = len(calls)
@@ -440,8 +457,7 @@ def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path):
     )
     assert resp.status_code == 303
     status = _wait_done(client, session_id)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
 
     assert len(calls) == calls_before + 1
     state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
@@ -449,11 +465,11 @@ def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path):
     assert entry["manually_edited"] is False
 
 
-def test_regenerate_discards_a_prior_manual_edit_for_that_step_only(tmp_path):
+def test_regenerate_discards_a_prior_manual_edit_for_that_step_only(tmp_path, monkeypatch):
+    _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
     step_a, step_b = manifest.steps[0].id, manifest.steps[1].id
     server_module._save_edit(session_dir, step_a, "edit A")
@@ -464,8 +480,7 @@ def test_regenerate_discards_a_prior_manual_edit_for_that_step_only(tmp_path):
     )
     assert resp.status_code == 303
     status = _wait_done(client, session_id)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
 
     edits = server_module._load_edits(session_dir)
     assert step_a not in edits
@@ -476,6 +491,7 @@ def test_regenerate_is_refused_for_photo_mode_sessions(tmp_path, monkeypatch):
     import io
     import re
 
+    _stub_assemble_docx(monkeypatch)
     monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
 
     client, _cfg = _make_client(tmp_path)
@@ -503,11 +519,105 @@ def test_regenerate_is_refused_for_photo_mode_sessions(tmp_path, monkeypatch):
     )
     assert resp.status_code == 303
     status = _wait_done(client, session_id)
-    if status["status"] != "done":
-        return
+    assert status["status"] == "done", status
 
     resp = client.post(f"/ui/sessions/{session_id}/steps/{step_ids[0]}/regenerate")
     assert resp.status_code == 409
+
+
+def test_editing_a_step_in_photo_mode_does_not_corrupt_the_report(tmp_path, monkeypatch):
+    """Caught by automated PR review: photo-mode sessions carry a SYNTHETIC
+    manifest (every step's window/element deliberately empty) and their
+    used_fallback means "no vision caption", not "template fallback" --
+    _generate_photo always hardcodes template_fallback_steps/
+    empty_metadata_steps to [] for exactly that reason. The edit route
+    isn't blocked for photo mode, so its re-export must preserve that same
+    semantics rather than rebuilding those two categories from the
+    synthetic manifest via build_sidecar_report, which would flag every
+    single step."""
+    import io
+    import re
+
+    _stub_assemble_docx(monkeypatch)
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    client, _cfg = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        from PIL import Image
+
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "Photo SOP"}, files=files, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    page = client.get(f"/ui/sessions/{session_id}")
+    step_ids = re.findall(r'name="keep" value="(step-\d+)"', page.text)
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={"keep": step_ids, **{f"pos-{sid}": str(i) for i, sid in enumerate(step_ids, 1)}},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "done", status
+
+    session_dir = tmp_path / "sessions" / session_id
+    report_before = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+    assert report_before["template_fallback_steps"] == []
+    assert report_before["empty_metadata_steps"] == []
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_ids[0]}",
+        data={"text": "edited photo step"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "done", status
+
+    report_after = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+    assert report_after["template_fallback_steps"] == []
+    assert report_after["empty_metadata_steps"] == []
+    assert step_ids[0] in report_after.get("manually_edited_steps", [])
+
+
+def test_regenerate_preserves_the_manual_edit_when_reexport_fails(tmp_path, monkeypatch):
+    """Caught by automated PR review: _regenerate_step used to clear the
+    manual edit BEFORE _reexport_session, which can 409 (e.g. a damaged/
+    stale steps.json) -- losing the human's text with nothing to replace
+    it. The edit must survive a failed regenerate attempt."""
+    _stub_assemble_docx(monkeypatch)
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done", status
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+    server_module._save_edit(session_dir, step_id, "my careful fix")
+
+    # Force _reexport_session to 409 by damaging steps.json's version gate.
+    (session_dir / "steps.json").write_text(
+        json.dumps({"steps": [{"step_id": step_id, "text": "x", "used_fallback": False}]}),
+        encoding="utf-8",
+    )
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}/regenerate", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "error"
+
+    edits = server_module._load_edits(session_dir)
+    assert edits[step_id]["text"] == "my careful fix"
 
 
 def _wait_done(client, session_id, timeout=10.0):

@@ -32,8 +32,9 @@ h2{font-size:1.15rem;margin:1.5em 0 .5em}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
 padding:18px 20px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
 .muted,small{color:var(--muted)}
-input[type=text],input[type=file],select{font:inherit;padding:9px 11px;border:1px solid var(--border);
+input[type=text],input[type=file],select,textarea{font:inherit;padding:9px 11px;border:1px solid var(--border);
 border-radius:9px;background:var(--card);color:var(--fg);max-width:440px;width:100%}
+textarea{min-height:6em;max-width:100%;resize:vertical;font-family:inherit}
 table{border-collapse:collapse;width:100%;font-size:.88em}
 th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;white-space:nowrap}
 th{background:rgba(0,0,0,.04)}
@@ -77,6 +78,10 @@ line-height:1;cursor:pointer;user-select:none}
 border-bottom:1px solid var(--border)}
 .finding:last-child{border-bottom:0}
 .finding img.shot{max-width:180px;border-radius:8px;border:1px solid var(--border);flex-shrink:0}
+details.stepedit{border-bottom:1px solid var(--border);padding:6px 0}
+details.stepedit:last-child{border-bottom:0}
+details.stepedit summary{cursor:pointer}
+.pill.edited{background:rgba(217,119,6,.15);color:var(--warn)}
 """
 
 
@@ -117,7 +122,9 @@ def _section(title, category, items):
 def _finding_row(session_id, step_id, entry):
     """One report finding (a flagged step_id) rendered as a thumbnail +
     generated text + a link into the doc preview iframe at that step's
-    anchor (render_html's id="{step_id}", task-06). `entry` is the
+    anchor (render_html's id="{step_id}", task-06), plus a link to that
+    step's editor (#edit-{step_id}, task-06's _step_editor) and an "edited"
+    badge when the step already carries a manual edit. `entry` is the
     matching steps.json record (or None if there wasn't one for this
     step_id -- degrades to a text-only row rather than a broken <img>)."""
     sid = html.escape(session_id)
@@ -130,10 +137,15 @@ def _finding_row(session_id, step_id, entry):
     )
     text = html.escape((entry or {}).get("text") or "")
     text_html = f'<div class="muted">{text}</div>' if text else ""
+    edited_badge = (
+        '<span class="pill edited">edited</span>' if (entry or {}).get("manually_edited") else ""
+    )
     return (
         f'<div class="finding">{thumb}'
         f'<div><a href="/sessions/{sid}/doc.html#{sid_step}" target="docpreview">'
-        f"<strong>{sid_step}</strong></a>{text_html}</div></div>"
+        f"<strong>{sid_step}</strong></a> "
+        f'<a class="muted" href="#edit-{sid_step}">Edit</a> {edited_badge}'
+        f"{text_html}</div></div>"
     )
 
 
@@ -155,6 +167,71 @@ def _step_section(title, category, step_ids, session_id, steps_by_id):
         body = '<p class="muted">None.</p>'
     return (
         f'<section class="card" data-status="{color}"><h2>{html.escape(title)}</h2>{body}</section>'
+    )
+
+
+def _step_editor(session_id, step_id, entry, can_regenerate):
+    """One collapsed <details> per step: a thumbnail, a textarea holding
+    its current text (editable via POST .../steps/{step_id}), and an
+    optional "Regenerate with AI" button (POST .../steps/{step_id}/
+    regenerate) -- omitted entirely when can_regenerate is False (photo-
+    mode sessions have no manifest ground truth to regenerate from)."""
+    sid = html.escape(session_id)
+    sid_step = html.escape(step_id)
+    screenshot = (entry or {}).get("screenshot") or ""
+    thumb = (
+        f'<img class="shot" src="/sessions/{sid}/{html.escape(screenshot)}" alt="{sid_step}">'
+        if screenshot
+        else ""
+    )
+    text = html.escape((entry or {}).get("text") or "")
+    summary_text = (entry or {}).get("text") or ""
+    summary_preview = html.escape(
+        summary_text if len(summary_text) <= 80 else summary_text[:77] + "..."
+    )
+    regenerate_form = (
+        f'<form method="post" action="/ui/sessions/{sid}/steps/{sid_step}/regenerate">'
+        '<button type="submit" class="secondary">Regenerate with AI</button></form>'
+        if can_regenerate
+        else ""
+    )
+    edited_badge = (
+        ' <span class="pill edited">edited</span>' if (entry or {}).get("manually_edited") else ""
+    )
+    return (
+        f'<details class="stepedit" id="edit-{sid_step}">'
+        f"<summary><strong>{sid_step}</strong>{edited_badge} "
+        f'<span class="muted">{summary_preview}</span></summary>'
+        f'<div class="finding">{thumb}'
+        '<div style="flex:1">'
+        f'<form method="post" action="/ui/sessions/{sid}/steps/{sid_step}">'
+        '<div class="field"><label>Step text</label>'
+        f'<textarea name="text" rows="4" required>{text}</textarea></div>'
+        '<div class="actions"><button type="submit">Save &amp; re-export</button></div>'
+        "</form>"
+        f'<div class="actions">{regenerate_form}</div>'
+        "</div></div></details>"
+    )
+
+
+def _edit_steps_card(session_id, steps, can_regenerate):
+    """A card listing every step as a collapsed editor -- not only flagged
+    ones, since "the phrasing is just fine except this one step" is not
+    necessarily a flagged condition. Returns "" when steps is None (a
+    session generated before steps.json existed)."""
+    if steps is None:
+        return ""
+    rows = "".join(
+        _step_editor(session_id, e["step_id"], e, can_regenerate)
+        for e in steps
+        if isinstance(e, dict) and "step_id" in e
+    )
+    return (
+        '<h2>Edit steps</h2><div class="card" id="edit-steps">'
+        '<p class="muted">Edits are saved immediately and survive a later re-render. '
+        "Regenerating a step discards its manual edit and asks the AI again."
+        + ("" if can_regenerate else " Regenerate isn't available for this build mode.")
+        + f"</p>{rows}</div>"
     )
 
 
@@ -645,13 +722,28 @@ def render_config_page(config, keystatus, saved=False):
     return _shell("SOPForge Configuration", body)
 
 
-def render_session_page(session_id, title, date, report, config, steps=None):
+def render_session_page(session_id, title, date, report, config, steps=None, can_regenerate=True):
     """steps: the steps.json sidecar's list (task-05), or None for a
     session generated before it existed -- report rows for
     template-fallback/empty-metadata steps show a thumbnail + the step's
     actual text, deep-linked into the doc preview, when available; None
-    degrades to the original plain step-id list (_step_section)."""
-    steps_by_id = {e["step_id"]: e for e in steps} if steps is not None else None
+    degrades to the original plain step-id list (_step_section). Also
+    drives the "Edit steps" card (task-06) -- every step gets a collapsed
+    editor there, not only flagged ones.
+
+    can_regenerate: whether the per-step "Regenerate with AI" button
+    appears -- False for screenshots+transcript ("photo mode") sessions,
+    which have no manifest ground truth to regenerate a step from."""
+    # Guard against a malformed entry (not a dict, or missing "step_id") in
+    # a damaged steps.json -- "corrupt degrades like missing" is the
+    # contract everywhere else this file is read (server.py's
+    # _load_step_state/_load_step_index), so a bad individual entry is
+    # dropped here rather than raising and 500ing the whole review page.
+    steps_by_id = (
+        {e["step_id"]: e for e in steps if isinstance(e, dict) and "step_id" in e}
+        if steps is not None
+        else None
+    )
     verify_items = [
         f"{c['claim_id']}: {c['text']}" if c.get("text") else c["claim_id"]
         for c in report.get("verify_claims", [])
@@ -767,6 +859,7 @@ def render_session_page(session_id, title, date, report, config, steps=None):
         f"{transcript_note}"
         f"{narration_transcription_note}"
         f"{sections}"
+        f"{_edit_steps_card(session_id, steps, can_regenerate)}"
         "<h2>Narration transcript</h2>"
         '<div class="card">'
         f'<form method="post" action="/ui/sessions/{sid}/transcript" enctype="multipart/form-data">'
@@ -778,7 +871,14 @@ def render_session_page(session_id, title, date, report, config, steps=None):
         '<div class="actions">'
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'
-        f'<form method="post" action="/ui/sessions/{sid}/delete">'
+        + (
+            f'<form method="post" action="/ui/sessions/{sid}/rerender?discard_edits=1">'
+            '<button type="submit" class="secondary">Re-render from scratch '
+            "(discard my edits)</button></form>"
+            if manually_edited_ids
+            else ""
+        )
+        + f'<form method="post" action="/ui/sessions/{sid}/delete">'
         '<button type="submit" class="secondary">Delete</button></form>'
         "</div>"
         f'<h2>Downloads</h2><ul class="dl">{downloads}</ul>'

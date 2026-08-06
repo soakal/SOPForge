@@ -1108,12 +1108,28 @@ def create_app(
             existing_report = json.loads(report_path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             pass
-        rebuilt = build_sidecar_report(manifest, step_results, [])
-        rebuilt.pop("verify_claims", None)  # preserve the existing narrative-derived list
-        existing_report.pop("template_fallback_steps", None)
-        existing_report.pop("empty_metadata_steps", None)
         existing_report.pop("manually_edited_steps", None)
-        existing_report.update(rebuilt)
+        manually_edited = [r["step_id"] for r in step_results if r.get("manually_edited")]
+        if manually_edited:
+            existing_report["manually_edited_steps"] = manually_edited
+        if _is_photo_mode(session_dir):
+            # Photo-mode sessions have a SYNTHETIC manifest (every step's
+            # window/element is deliberately empty, photo_build.py) and
+            # used_fallback there means "no vision caption", not "template
+            # fallback" -- build_sidecar_report's manifest-derived
+            # empty_metadata_steps/used_fallback-derived template_fallback_steps
+            # would therefore flag every single step. _generate_photo always
+            # hardcodes both to [] for exactly this reason; match that here
+            # rather than corrupting the report on the first edit.
+            existing_report["template_fallback_steps"] = []
+            existing_report["empty_metadata_steps"] = []
+        else:
+            rebuilt = build_sidecar_report(manifest, step_results, [])
+            rebuilt.pop("verify_claims", None)  # preserve the existing narrative-derived list
+            rebuilt.pop("manually_edited_steps", None)  # already handled above
+            existing_report.pop("template_fallback_steps", None)
+            existing_report.pop("empty_metadata_steps", None)
+            existing_report.update(rebuilt)
         if preflight_result:
             existing_report["llm_preflight"] = preflight_result
 
@@ -1585,12 +1601,18 @@ def create_app(
             close = getattr(llm, "close", None)
             if callable(close):
                 close()
-        _clear_edit(session_dir, step_id)
+        # _reexport_session BEFORE clearing the edit -- text_overrides always
+        # wins over a stale edits.json entry for this same step_id (applied
+        # after _apply_manual_edits inside _reexport_session), so ordering
+        # this way is safe, and it means a re-export that fails (409: the
+        # session's persisted state is too old/damaged) leaves the manual
+        # edit intact rather than deleting it with nothing to show for it.
         _reexport_session(
             session_id,
             text_overrides={step_id: (text, used_fallback)},
             preflight_result=preflight_result,
         )
+        _clear_edit(session_dir, step_id)
 
     @app.post("/ui/sessions/{session_id}/delete")
     def ui_delete(session_id: str):
@@ -1860,7 +1882,13 @@ def create_app(
         date = manifest.session.started_utc
         return HTMLResponse(
             render_session_page(
-                session_id, title, date, report, config, steps=_load_step_index(session_dir)
+                session_id,
+                title,
+                date,
+                report,
+                config,
+                steps=_load_step_index(session_dir),
+                can_regenerate=not _is_photo_mode(session_dir),
             )
         )
 
