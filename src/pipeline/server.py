@@ -345,6 +345,15 @@ def create_app(
         mode = session_dir / "mode.txt"
         return mode.exists() and mode.read_text(encoding="utf-8").strip() == "photo"
 
+    def _render_transcript_md(segments):
+        """Render whisper-shaped segments ([{"text", "start", ...}, ...]) as
+        readable Markdown: one timestamped line per segment. Mirrors
+        transcript.json 1:1 -- pure formatting, no content decisions."""
+        lines = [
+            f"**[{seg.get('start', 0.0):.1f}s]** {seg.get('text', '').strip()}" for seg in segments
+        ]
+        return "# Narration transcript\n\n" + "\n\n".join(lines) + "\n"
+
     def _maybe_transcribe_narration(session_dir):
         """Best-effort: if this session has a narration.wav (opt-in mic
         recording, see capture/narration.py) and no transcript.* has been
@@ -352,7 +361,10 @@ def create_app(
         wins over a derived one -- and [transcription].enabled is on,
         transcribes it locally and writes transcript.json in exactly the
         segment shape align_transcript_to_steps' .json branch already
-        parses, so _apply_transcript picks it up completely unchanged.
+        parses, so _apply_transcript picks it up completely unchanged. Also
+        writes transcript.md alongside it -- a human-readable sidecar (not
+        consumed by any pipeline code) so a user can open the transcript
+        directly instead of parsing JSON.
         Runs on the background job thread (never the HTTP request path) --
         CPU transcription can take real seconds and must never risk
         upload_session's own timeout or make "stop recording" feel slow.
@@ -381,6 +393,9 @@ def create_app(
             return "narration.wav produced no speech segments"
         (session_dir / "transcript.json").write_text(
             json.dumps({"segments": segments}), encoding="utf-8"
+        )
+        (session_dir / "transcript.md").write_text(
+            _render_transcript_md(segments), encoding="utf-8"
         )
         return "narration.wav transcribed locally and placed onto steps"
 
