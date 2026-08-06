@@ -70,6 +70,7 @@ from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import _slugify, export_markdown_bundle
 from pipeline.export_pdf import render_pdf
+from pipeline.generation import generate_step_text
 from pipeline.jobs import JobRunner
 from pipeline.library import remove_entry
 from pipeline.library import search as library_search
@@ -999,6 +1000,110 @@ def create_app(
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
 
+    def _reexport_session(session_id, text_overrides=None, preflight_result=None):
+        """Re-renders all six export formats + report.json + steps.json +
+        the library entry from the session's persisted steps.json state --
+        no LLM call of any kind. Used by the per-step edit route (a pure
+        text swap) and the regenerate route (text_overrides carries the one
+        freshly-generated step). Raises HTTPException(409) if the session's
+        persisted state is too old/incomplete to re-export faithfully --
+        refusing is the honest choice; silently re-exporting from a v1 (or
+        missing) steps.json would drop narration/narrative from every
+        format.
+
+        text_overrides: optional {step_id: (text, used_fallback)} applied
+        AFTER edits.json's manual-edit overrides -- lets the regenerate
+        route's fresh LLM result win over a (now-superseded, and by then
+        already-deleted) manual edit for that one step.
+
+        preflight_result: optional preflight.probe_section()-shaped dict to
+        attach to report["llm_preflight"], so the regenerate route's own
+        diagnostic probe is visible on the session page exactly like a full
+        generation's.
+
+        The polish stage is force-skipped (polish_override="off") --
+        steps.json already holds the text that shipped (polished, if
+        [polish] was on for the original generation), and re-polishing
+        polished text would compound rewrites the reviewer never asked
+        for. A full /rerender is the correct way to get a fresh polish
+        pass."""
+        manifest, _screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+        state = _load_step_state(session_dir)
+        if state is None or state.get("version") != 2:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "this session predates per-step editing (steps.json is missing or an "
+                    "older version) -- rerender it once before editing steps"
+                ),
+            )
+        by_id = {e["step_id"]: e for e in state["steps"]}
+        step_results = []
+        for step in manifest.steps:
+            entry = by_id.get(step.id)
+            if entry is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"steps.json is missing an entry for {step.id} -- rerender first",
+                )
+            result = {
+                "step_id": step.id,
+                "text": entry.get("text", ""),
+                "used_fallback": bool(entry.get("used_fallback")),
+                "manually_edited": bool(entry.get("manually_edited")),
+            }
+            if entry.get("narration"):
+                result["narration"] = entry["narration"]
+            step_results.append(result)
+
+        annotated_paths = []
+        for step in manifest.steps:
+            path = annotated_dir / step.screenshot
+            if not path.exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"annotated screenshot missing for {step.id} -- rerender first",
+                )
+            annotated_paths.append(path)
+
+        _apply_manual_edits(session_dir, step_results)
+        for step_id, (text, used_fallback) in (text_overrides or {}).items():
+            for result in step_results:
+                if result["step_id"] == step_id:
+                    result["text"] = text
+                    result["used_fallback"] = used_fallback
+                    result["manually_edited"] = False
+                    break
+        _assert_1to1_mapping(manifest, step_results)
+
+        existing_report = {}
+        report_path = session_dir / "report.json"
+        try:
+            existing_report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        rebuilt = build_sidecar_report(manifest, step_results, [])
+        rebuilt.pop("verify_claims", None)  # preserve the existing narrative-derived list
+        existing_report.pop("template_fallback_steps", None)
+        existing_report.pop("empty_metadata_steps", None)
+        existing_report.pop("manually_edited_steps", None)
+        existing_report.update(rebuilt)
+        if preflight_result:
+            existing_report["llm_preflight"] = preflight_result
+
+        _write_all_exports(
+            session_id,
+            manifest,
+            step_results,
+            annotated_paths,
+            annotated_dir,
+            session_dir,
+            existing_report,
+            narrative_text=state.get("narrative_text"),
+            polish_override="off",
+            claims=(),
+        )
+
     def _run_semantic_pipeline(content, manifest, step_contexts, per_step, note):
         """Shared by the real-capture flow (_apply_transcript) and the photo
         build flow (_generate_photo): when the deterministic placement
@@ -1386,6 +1491,80 @@ def create_app(
         (session_dir / f"transcript.{ext}").write_text(t_content, encoding="utf-8")
         jobs.submit(session_id, lambda: _generate(session_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    @app.post("/ui/sessions/{session_id}/steps/{step_id}")
+    async def ui_edit_step(session_id: str, step_id: str, request: Request):
+        """Replaces one step's text with human-written text, and re-exports
+        all six formats from disk -- no LLM call, so this is fast even on a
+        many-step session. The edit is durable: it's written to edits.json
+        BEFORE the fast re-export, so it survives a later full /rerender
+        (see rerender()'s docstring) rather than only lasting until the
+        next from-scratch generation."""
+        session_dir = _require_done(session_id)
+        manifest = sessions[session_id][0]
+        if step_id not in manifest.step_ids():
+            raise HTTPException(status_code=404, detail=f"unknown step: {step_id!r}")
+        form = await request.form()
+        text = (form.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="step text must not be empty")
+        if len(text) > 20000:
+            raise HTTPException(status_code=400, detail="step text is too long (max 20000 chars)")
+        _save_edit(session_dir, step_id, text)
+        jobs.submit(session_id, lambda: _reexport_session(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    @app.post("/ui/sessions/{session_id}/steps/{step_id}/regenerate")
+    def ui_regenerate_step(session_id: str, step_id: str):
+        """One fresh LLM call for exactly this step (generate_step_text --
+        the identical round-trip-gated/template-fallback path the original
+        generation used, invariants L2/L3), then a no-LLM re-export of all
+        six formats. Supersedes (and deletes) any manual edit on this step
+        -- the freshly-generated text wins. Not available for screenshots+
+        transcript ("photo mode") builds: there's no manifest ground truth
+        (real element/window names) to phrase a step from there, only a
+        synthetic placeholder manifest -- regenerating would just produce
+        garbage like "Click the position (0, 0) in the current window."."""
+        session_dir = _require_done(session_id)
+        if _is_photo_mode(session_dir):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "regenerate isn't available for screenshots+transcript builds "
+                    "(no manifest ground truth to phrase from)"
+                ),
+            )
+        manifest = sessions[session_id][0]
+        if step_id not in manifest.step_ids():
+            raise HTTPException(status_code=404, detail=f"unknown step: {step_id!r}")
+        jobs.submit(session_id, lambda: _regenerate_step(session_id, step_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    def _regenerate_step(session_id, step_id):
+        manifest, screenshots_dir, _annotated_dir, session_dir = sessions[session_id]
+        step = next(s for s in manifest.steps if s.id == step_id)
+        cfg = load_models_config(resolved_config_path)
+        preflight_result = None
+        if run_preflight:
+            try:
+                preflight_result = probe(cfg.steps)
+            except Exception:  # noqa: BLE001 - preflight is diagnostics, never a gate
+                logger.exception("preflight probe failed regenerating %s/%s", session_id, step_id)
+        llm = make_llm_client()
+        try:
+            text, used_fallback = generate_step_text(
+                step, llm, use_vision=cfg.steps.use_vision, screenshot_dir=screenshots_dir
+            )
+        finally:
+            close = getattr(llm, "close", None)
+            if callable(close):
+                close()
+        _clear_edit(session_dir, step_id)
+        _reexport_session(
+            session_id,
+            text_overrides={step_id: (text, used_fallback)},
+            preflight_result=preflight_result,
+        )
 
     @app.post("/ui/sessions/{session_id}/delete")
     def ui_delete(session_id: str):

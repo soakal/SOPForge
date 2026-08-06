@@ -222,6 +222,228 @@ def test_manual_edit_is_not_rewritten_by_the_polish_pass(tmp_path):
         srv.generate_polish_fields = real_generate_polish_fields
 
 
+def test_edit_route_replaces_step_text_and_makes_no_llm_call(tmp_path):
+    calls = []
+
+    class _CountingStub:
+        def chat(self, messages, **kwargs):
+            calls.append(messages)
+            return "stub reply that never matches any manifest, forcing template fallback"
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=lambda: _CountingStub(),
+        narrative_llm_client_factory=lambda: _CountingStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+    calls_before_edit = len(calls)
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}",
+        data={"text": "Click the 'Save' button precisely here."},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    if status["status"] != "done":
+        return
+
+    assert len(calls) == calls_before_edit  # the edit route made zero new LLM calls
+
+    md = (session_dir / "doc.md").read_text(encoding="utf-8")
+    assert "Click the 'Save' button precisely here." in md
+
+    state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
+    entry = next(s for s in state["steps"] if s["step_id"] == step_id)
+    assert entry["manually_edited"] is True
+    assert entry["used_fallback"] is False
+
+    report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+    assert step_id in report.get("manually_edited_steps", [])
+    assert step_id not in report.get("template_fallback_steps", [])
+
+
+def test_edit_never_changes_step_count_or_order(tmp_path):
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}",
+        data={"text": "An edit."},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    if status["status"] != "done":
+        return
+
+    state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
+    assert [s["step_id"] for s in state["steps"]] == manifest.step_ids()
+
+
+def test_edit_rejects_empty_text_unknown_step_and_unfinished_session(tmp_path):
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    step_id = manifest.steps[0].id
+
+    resp = client.post(f"/ui/sessions/{session_id}/steps/{step_id}", data={"text": "   "})
+    assert resp.status_code == 400
+
+    resp = client.post(f"/ui/sessions/{session_id}/steps/not-a-real-step", data={"text": "x"})
+    assert resp.status_code == 404
+
+    resp = client.post("/ui/sessions/not-a-real-session/steps/step-001", data={"text": "x"})
+    assert resp.status_code == 404
+
+
+def test_edit_on_a_pre_v2_session_returns_409(tmp_path):
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+    # Hand-write a v1-shaped steps.json (no "version"/"narrative_text" keys)
+    # to simulate a session generated before task-01 landed.
+    (session_dir / "steps.json").write_text(
+        json.dumps({"steps": [{"step_id": step_id, "text": "x", "used_fallback": False}]}),
+        encoding="utf-8",
+    )
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}",
+        data={"text": "should not apply"},
+        follow_redirects=False,
+    )
+    # The route itself only validates cheap preconditions before submitting
+    # the job -- the version check happens inside _reexport_session, on the
+    # background job, so the 409 surfaces via status, not the POST response.
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "error"
+    assert "predates" in status["error"]
+
+
+def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path):
+    calls = []
+
+    class _RealisticStub:
+        def chat(self, messages, **kwargs):
+            calls.append(messages)
+            content = messages[0]["content"]
+            # Echo back something round-trip-passing regardless of which step
+            # asked, by pulling the target name out of the prompt's own quotes.
+            import re
+
+            m = re.search(r"'([^']+)' in the '([^']+)' window", content)
+            if m:
+                return f"Click {m.group(1)} in the {m.group(2)} window."
+            return "Click somewhere."
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=lambda: _RealisticStub(),
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+    calls_before = len(calls)
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}/regenerate", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    if status["status"] != "done":
+        return
+
+    assert len(calls) == calls_before + 1
+    state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
+    entry = next(s for s in state["steps"] if s["step_id"] == step_id)
+    assert entry["manually_edited"] is False
+
+
+def test_regenerate_discards_a_prior_manual_edit_for_that_step_only(tmp_path):
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    session_dir = tmp_path / "sessions" / session_id
+    step_a, step_b = manifest.steps[0].id, manifest.steps[1].id
+    server_module._save_edit(session_dir, step_a, "edit A")
+    server_module._save_edit(session_dir, step_b, "edit B")
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_a}/regenerate", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    if status["status"] != "done":
+        return
+
+    edits = server_module._load_edits(session_dir)
+    assert step_a not in edits
+    assert step_b in edits
+
+
+def test_regenerate_is_refused_for_photo_mode_sessions(tmp_path, monkeypatch):
+    import io
+    import re
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    client, _cfg = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        from PIL import Image
+
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [("files", ("a.png", png((10, 10, 10)), "image/png"))]
+    resp = client.post(
+        "/ui/build", data={"title": "Photo SOP"}, files=files, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+
+    page = client.get(f"/ui/sessions/{session_id}")
+    step_ids = re.findall(r'name="keep" value="(step-\d+)"', page.text)
+    resp = client.post(
+        f"/ui/sessions/{session_id}/confirm-steps",
+        data={"keep": step_ids, **{f"pos-{sid}": str(i) for i, sid in enumerate(step_ids, 1)}},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    if status["status"] != "done":
+        return
+
+    resp = client.post(f"/ui/sessions/{session_id}/steps/{step_ids[0]}/regenerate")
+    assert resp.status_code == 409
+
+
 def _wait_done(client, session_id, timeout=10.0):
     import time
 
