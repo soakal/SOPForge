@@ -2257,6 +2257,37 @@ def test_read_capped_rejects_bytes_over_the_limit():
     assert exc_info.value.status_code == 413
 
 
+def test_oversized_upload_leaves_no_orphaned_session_directory(tmp_path, monkeypatch):
+    """Caught by automated PR review: an upload rejected by _copy_capped's
+    new size cap left session_dir (and every screenshot copied before the
+    limit hit) behind on disk forever -- never registered in `sessions`,
+    so nothing in the app could ever find or delete it. Must clean up the
+    same way the manifest-free upload path (_ingest_photo_session) already
+    does."""
+    monkeypatch.setattr(server_module, "_MAX_UPLOAD_FILE_BYTES", 10)
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    assert resp.status_code == 413
+
+    sessions_root = tmp_path / "sessions"
+    assert list(sessions_root.iterdir()) == []
+
+
+def test_testserver_host_is_not_trusted_outside_pytest(tmp_path, monkeypatch):
+    """Caught by automated PR review: a prior version hard-coded
+    "testserver" (Starlette TestClient's fixed Host/Origin default) into
+    the allowlist unconditionally, trusting it in a real shipped build
+    too. It must only be trusted while pytest itself is actually running
+    (PYTEST_CURRENT_TEST, which pytest sets for the duration of every
+    test and a real install never has set)."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "testserver"})
+    assert resp.status_code == 403
+
+
 def test_host_guard_rejects_a_dns_rebound_hostname(tmp_path):
     """Caught by a repo security audit: the CSRF guard only checks Origin,
     which a DNS-rebinding page's same-origin-looking GET may not send. A
@@ -2305,6 +2336,35 @@ def test_host_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
     client = TestClient(app)
     resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
     assert resp.status_code == 200
+
+
+def test_csrf_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
+    """Caught by automated PR review: the host-guard relaxation above
+    covered GET/Host, but the sibling _csrf_guard (Origin-based, state-
+    changing methods only) still hard-coded loopback-only -- so a browser
+    loading the UI from a LAN address, whose same-origin form POSTs
+    legitimately carry an Origin with that same LAN hostname, got every
+    button/form on the web UI rejected with 403 even though the whole
+    point of bind_host="0.0.0.0" is to serve exactly that browser."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="0.0.0.0",
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://192.168.1.50:8420",
+        },
+    )
+    assert resp.status_code != 403
 
 
 def _make_client_with_probe(tmp_path, probe_section_fn):

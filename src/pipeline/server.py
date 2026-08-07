@@ -379,6 +379,7 @@ def create_app(
     probe_section_fn=None,
     preflight_enabled=None,
     bind_host="127.0.0.1",
+    extra_allowed_hosts=(),
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -424,29 +425,47 @@ def create_app(
     preflight wiring itself against a stub probe.
 
     bind_host: the --host value the server is (or will be) bound to
-    (__main__.py). Only affects _host_guard's strictness: bound to a real
-    loopback address (the default), Host-header checking stays strict
-    (DNS-rebinding protection). Bound to anything else -- 0.0.0.0, a LAN
-    IP -- the operator has deliberately exposed this server beyond
-    loopback (USER_MANUAL.md's "server on another machine" setup, driven
-    by --host + the capture agent's SOPFORGE_SERVER_URL), so there's no
-    fixed set of legitimate Host values to allowlist in advance and the
-    guard steps aside entirely rather than 403ing every request. Caught by
-    automated PR review after the guard's first version hard-coded
-    loopback-only and broke that setup."""
+    (__main__.py). Only affects _host_guard's/_csrf_guard's strictness:
+    bound to a real loopback address (the default), Host/Origin-header
+    checking stays strict (DNS-rebinding/CSRF protection). Bound to
+    anything else -- 0.0.0.0, a LAN IP -- the operator has deliberately
+    exposed this server beyond loopback (USER_MANUAL.md's "server on
+    another machine" setup, driven by --host + the capture agent's
+    SOPFORGE_SERVER_URL), so there's no fixed set of legitimate
+    Host/Origin values to allowlist in advance and both guards step aside
+    entirely rather than 403ing every request. Caught by automated PR
+    review, twice: the guard's first version hard-coded loopback-only and
+    broke that setup, then the fix only touched _host_guard and missed
+    that _csrf_guard needed the identical relaxation.
+
+    extra_allowed_hosts: additional hostnames _host_guard/_csrf_guard
+    trust alongside the real loopback names, ONLY when bind_host is
+    loopback (the strict case) -- never set by production code
+    (__main__.py). Exists solely so the test suite can trust Starlette
+    TestClient's fixed "testserver" Host/Origin without that string being
+    baked into every real, shipped build. Caught by automated PR review:
+    a prior version hard-coded "testserver" into the production allowlist
+    itself."""
     app = FastAPI()
     probe = probe_section_fn or probe_section
     run_preflight = (
         preflight_enabled if preflight_enabled is not None else (llm_client_factory is None)
     )
 
-    _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
-    # "testserver" is Starlette TestClient's fixed default Host header (every
-    # test in this suite uses it) -- not a name an internet attacker's DNS
-    # can rebind to, since it has no TLD and can't be a real, publicly
-    # resolvable hostname. Safe to trust alongside the real local hostnames.
-    _ALLOWED_HOSTS = _LOCAL_HOSTS | {"testserver"}
-    _host_guard_strict = bind_host in _LOCAL_HOSTS
+    # "testserver" (Starlette TestClient's fixed Host/Origin default) is
+    # trusted ONLY when pytest is actually the one running -- gated on the
+    # PYTEST_CURRENT_TEST env var pytest itself sets for the duration of
+    # each test, never present in a real installed/frozen build -- so this
+    # can never widen a shipped server's trust. Caught by automated PR
+    # review: a prior version hard-coded "testserver" unconditionally.
+    _test_hosts = {"testserver"} if os.environ.get("PYTEST_CURRENT_TEST") else set()
+    _LOCAL_HOSTS = (
+        frozenset({"127.0.0.1", "localhost", "::1"})
+        | frozenset(extra_allowed_hosts)
+        | frozenset(_test_hosts)
+    )
+    _ALLOWED_HOSTS = _LOCAL_HOSTS
+    _host_guard_strict = bind_host in {"127.0.0.1", "localhost", "::1"}
 
     @app.middleware("http")
     async def _host_guard(request, call_next):
@@ -474,12 +493,28 @@ def create_app(
     @app.middleware("http")
     async def _csrf_guard(request, call_next):
         """CSRF guard for EVERY state-changing request. The server is
-        localhost-only, but a page on another site could still POST to it in the
-        user's browser (e.g. auto-submit a form to /shutdown or /ui/config).
-        Browsers attach an Origin header on cross-origin requests -- reject any
-        whose host isn't this local server. Programmatic clients (the capture
-        agent's auto-upload) send no Origin and are allowed. The host is matched
-        exactly (not a prefix), so 'http://127.0.0.1.evil.com' is rejected."""
+        localhost-only BY DEFAULT, but a page on another site could still
+        POST to it in the user's browser (e.g. auto-submit a form to
+        /shutdown or /ui/config). Browsers attach an Origin header on
+        every non-GET/HEAD request, including same-origin ones -- reject
+        any whose host isn't this local server. Programmatic clients (the
+        capture agent's auto-upload) send no Origin and are allowed. The
+        host is matched exactly (not a prefix), so
+        'http://127.0.0.1.evil.com' is rejected.
+
+        Skipped entirely under the same bind_host condition as
+        _host_guard: bound beyond loopback (the documented "server on
+        another machine" setup), a browser loading the UI from that LAN
+        address legitimately sends an Origin with that same LAN hostname
+        on every form POST -- comparing it against the loopback-only
+        _LOCAL_HOSTS would 403 the entire web UI (upload, rerender,
+        delete, config, per-step edit/regenerate). There's no fixed
+        allowlist that makes sense once the operator has deliberately
+        exposed the server, same reasoning as _host_guard. Caught by
+        automated PR review (the first version of this relaxation only
+        touched _host_guard, missing this sibling guard)."""
+        if not _host_guard_strict:
+            return await call_next(request)
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin and urlsplit(origin).hostname not in _LOCAL_HOSTS:
@@ -1424,22 +1459,36 @@ def create_app(
         screenshots_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            for upload in files:
-                # Wire-supplied filename must never be trusted as a path —
-                # Path(...).name strips any directory components (including
-                # "../" traversal), and resolving under screenshots_dir with
-                # a containment check catches anything that survives that.
-                name = Path(upload.filename or "").name
-                if not name:
-                    raise HTTPException(status_code=400, detail="uploaded file has no filename")
-                dest = (screenshots_dir / name).resolve()
-                if screenshots_dir.resolve() not in dest.parents:
-                    raise HTTPException(status_code=400, detail=f"invalid filename: {name!r}")
-                _copy_capped(upload.file, dest, _MAX_UPLOAD_FILE_BYTES, f"screenshot {name!r}")
+            try:
+                for upload in files:
+                    # Wire-supplied filename must never be trusted as a path —
+                    # Path(...).name strips any directory components (including
+                    # "../" traversal), and resolving under screenshots_dir with
+                    # a containment check catches anything that survives that.
+                    name = Path(upload.filename or "").name
+                    if not name:
+                        raise HTTPException(status_code=400, detail="uploaded file has no filename")
+                    dest = (screenshots_dir / name).resolve()
+                    if screenshots_dir.resolve() not in dest.parents:
+                        raise HTTPException(status_code=400, detail=f"invalid filename: {name!r}")
+                    _copy_capped(upload.file, dest, _MAX_UPLOAD_FILE_BYTES, f"screenshot {name!r}")
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"invalid upload: {exc}") from exc
         except HTTPException:
+            # A rejected upload (bad filename, oversized file, any other
+            # failure mid-copy) must not leave a session directory behind:
+            # it's never registered in `sessions` (that happens below, only
+            # on success), has no report.json, so _restore_sessions_from_disk
+            # never picks it up and ui_delete can never reach it -- an
+            # unreachable, permanent orphan otherwise. Same pattern
+            # _ingest_photo_session already uses. Caught by automated PR
+            # review (this became much more reachable once _copy_capped's
+            # 413 was added -- previously only the invalid-filename 400 hit
+            # it).
+            shutil.rmtree(session_dir, ignore_errors=True)
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"invalid upload: {exc}") from exc
 
         # Persisted so a server restart can rebuild `sessions` from disk
         # (_restore_sessions_from_disk) -- the manifest otherwise only ever
