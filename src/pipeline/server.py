@@ -1736,11 +1736,15 @@ def create_app(
     def _read_transcript(upload):
         """Turn an optional transcript UploadFile into a (filename, text)
         tuple, or None if none was provided. Raises a clear 400 if it isn't
-        UTF-8 text."""
+        UTF-8 text, or a 413 if it exceeds _MAX_UPLOAD_FILE_BYTES -- this
+        route previously read the whole upload into memory unbounded, the
+        same class of gap _read_capped was added for screenshots/images.
+        Caught by automated PR review."""
         if upload is None or not upload.filename:
             return None
+        raw = _read_capped(upload.file, _MAX_UPLOAD_FILE_BYTES, "transcript")
         try:
-            content = upload.file.read().decode("utf-8")
+            content = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise HTTPException(
                 status_code=400, detail=f"transcript must be UTF-8 text: {exc}"

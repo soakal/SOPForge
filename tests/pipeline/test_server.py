@@ -2312,6 +2312,23 @@ def test_oversized_photo_upload_is_capped_and_leaves_no_orphan(tmp_path, monkeyp
     assert list(sessions_root.iterdir()) == []
 
 
+def test_oversized_transcript_upload_is_rejected(tmp_path, monkeypatch):
+    """Caught by automated PR review: _read_transcript read the whole
+    upload into memory unbounded (upload.file.read().decode("utf-8")),
+    unlike every other upload path in this file, which all got explicit
+    per-file caps (_copy_capped/_read_capped)."""
+    monkeypatch.setattr(server_module, "_MAX_UPLOAD_FILE_BYTES", 10)
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files = files + [("transcript_file", ("transcript.txt", b"x" * 100, "text/plain"))]
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    assert resp.status_code == 413
+
+    sessions_root = tmp_path / "sessions"
+    assert list(sessions_root.iterdir()) == []
+
+
 def test_narration_wav_is_streamed_to_disk_not_buffered_in_memory(tmp_path, monkeypatch):
     """Caught by automated PR review: narration audio used to be fully
     read into a Python bytes object (_read_capped, chunk list + join) and
