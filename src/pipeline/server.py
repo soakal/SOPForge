@@ -28,6 +28,7 @@ import logging
 import mimetypes
 import os
 import shutil
+import socket
 import threading
 import time
 import uuid
@@ -534,14 +535,30 @@ def create_app(
     # specific LAN IP/hostname) IS a fixed, known value, so it's just
     # added to the trusted set below instead of relaxing the guards.
     _bind_all = bind_host in {"0.0.0.0", "::", "*", "", None}
-    _bind_host_entry = (
-        set() if _bind_all or bind_host in {"127.0.0.1", "localhost", "::1"} else {bind_host}
-    )
+    _bind_host_entry = set()
+    if not _bind_all and bind_host not in {"127.0.0.1", "localhost", "::1"}:
+        _bind_host_entry.add(bind_host)
+        # A remote browser reaching a specific bind address commonly types
+        # the machine's hostname/FQDN, not the raw IP the server was
+        # started with -- the two resolve to the same address but are
+        # different Host header values. Trust the machine's own
+        # hostname/FQDN too, so binding to one specific address doesn't
+        # 403 every request from someone who typed the computer name
+        # instead. Best-effort: socket lookups here are local (no network
+        # round-trip for gethostname; getfqdn only touches DNS if the
+        # hostname isn't already qualified) but must never crash app
+        # startup if they fail for any reason. Caught by automated PR
+        # review.
+        try:
+            _bind_host_entry.add(socket.gethostname())
+            _bind_host_entry.add(socket.getfqdn())
+        except OSError:
+            pass
     _LOCAL_HOSTS = (
         frozenset({"127.0.0.1", "localhost", "::1"})
         | frozenset(extra_allowed_hosts)
         | frozenset(_test_hosts)
-        | frozenset(h.lower() for h in _bind_host_entry)
+        | frozenset(h.lower() for h in _bind_host_entry if h)
     )
     _ALLOWED_HOSTS = _LOCAL_HOSTS
     _host_guard_strict = not _bind_all

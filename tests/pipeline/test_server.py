@@ -2498,6 +2498,30 @@ def test_host_guard_stays_strict_for_a_specific_fixed_bind_address(tmp_path):
     assert resp.status_code == 403
 
 
+def test_host_guard_trusts_this_machines_own_hostname_for_a_specific_bind_address(tmp_path):
+    """Caught by automated PR review: binding to one specific fixed
+    address (e.g. --host 192.168.1.50) only trusted that exact literal
+    string -- a remote browser reaching the machine by its computer
+    name/FQDN instead of the raw IP (the two resolve to the same address)
+    got a blanket 403 on every page. The server's own hostname must be
+    trusted too when bind_host is a specific address."""
+    import socket
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="192.168.1.50",
+    )
+    client = TestClient(app)
+
+    resp = client.get("/library", headers={"Host": f"{socket.gethostname()}:8420"})
+    assert resp.status_code == 200
+
+
 def _make_client_with_probe(tmp_path, probe_section_fn):
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)
