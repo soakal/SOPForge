@@ -17,6 +17,8 @@ from PIL import Image
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 
+import pipeline.server as server_module
+
 from _stub_llm import stub_llm_client_factory
 
 FIXTURES = Path(__file__).resolve().parent.parent.parent / "fixtures"
@@ -186,6 +188,25 @@ def test_ui_delete_removes_session_from_disk_library_and_memory(tmp_path):
     assert not session_dir.exists()
     assert not any(e["session_id"] == session_id for e in client.get("/library").json())
     assert client.get(f"/sessions/{session_id}/status").status_code == 404
+
+
+def test_ui_delete_forgets_the_sessions_edits_lock(tmp_path):
+    """Caught by automated PR review: _edits_locks is a module-global dict
+    that grows one entry per session ever edited, never pruned -- ui_delete
+    must remove the deleted session's entry so a long-running server's
+    memory doesn't creep up forever."""
+    sessions_root = tmp_path / "sessions"
+    client = _make_client(sessions_root)
+    session_id = _create_and_wait(client, tmp_path)
+    session_dir = sessions_root / session_id
+    key = str(session_dir.resolve())
+
+    server_module._edits_lock(session_dir)  # simulate a prior edit
+    assert key in server_module._edits_locks
+
+    resp = client.post(f"/ui/sessions/{session_id}/delete", follow_redirects=False)
+    assert resp.status_code == 303
+    assert key not in server_module._edits_locks
 
 
 def test_ui_delete_unknown_session_returns_404(tmp_path):

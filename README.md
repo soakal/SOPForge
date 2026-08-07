@@ -73,12 +73,16 @@ fallback it didn't need — so it defaults to `1` (strictly sequential).
 ## SOP Factory 2 dependency
 
 The docx assembler (Phase 2, task-15) extends the existing `SOPBuilder` engine
-from the private repo `soakal/SOP-Factory`, expected at
-`C:\Users\Brian\Documents\SOP_Factory_2` (`gh repo clone soakal/SOP-Factory
-SOP_Factory_2`). It is **imported at runtime via `sys.path`
-(`src/pipeline/docx_assembler.py`), never copied into this repo** — that
-directory is a full working project (active jobs, per-client archives with real
-photos/documents, its own git history, install scripts), not a clean library, so
-vendoring it wholesale would leak proprietary business content into SOPForge's
-history. Override the path with the `SOPFORGE_SOP_FACTORY_2_DIR` env var if it's
-cloned somewhere else.
+originally from the private repo `soakal/SOP-Factory`. The clean, reusable
+engine files — `sop_lib.py` and `SOP_TEMPLATE_WITH_PHOTOS.docx`, the only two
+files `src/pipeline/docx_assembler.py` reads — are **vendored directly into
+this repo** at `vendor/sop_factory_2/` (see that directory's README for
+provenance), so a clean clone builds and tests end-to-end with zero external
+dependency. This is only the engine, not `SOP-Factory`'s full working project
+(active jobs, per-client archives with real photos/documents, its own git
+history) — vendoring that wholesale would leak proprietary business content
+into SOPForge's history, so only the two engine files are here.
+
+Set the `SOPFORGE_SOP_FACTORY_2_DIR` env var to point at a different copy of
+the engine (e.g. while iterating on `sop_lib.py` itself upstream) if needed;
+otherwise nothing extra is required to run `pytest -x -q` in a fresh clone.

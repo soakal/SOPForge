@@ -146,6 +146,7 @@ def test_transcription_disabled_by_default_ignores_uploaded_wav(tmp_path):
     session_dir = tmp_path / "sessions" / session_id
     assert (session_dir / "narration.wav").exists()
     assert not (session_dir / "transcript.json").exists()
+    assert not (session_dir / "transcript.md").exists()
     assert calls == []
 
 
@@ -165,6 +166,9 @@ def test_transcription_enabled_writes_transcript_json_and_report_note(tmp_path):
     status = _wait_for_terminal_status(client, session_id)
     session_dir = tmp_path / "sessions" / session_id
     assert (session_dir / "transcript.json").exists()
+    md = (session_dir / "transcript.md").read_text(encoding="utf-8")
+    assert "narration for" in md
+    assert "0.0s" in md
     if status["status"] == "done":
         report = client.get(f"/sessions/{session_id}/report").json()
         assert "narration_transcription" in report
@@ -186,6 +190,7 @@ def test_transcription_failure_is_graceful(tmp_path):
     status = _wait_for_terminal_status(client, session_id)
     session_dir = tmp_path / "sessions" / session_id
     assert not (session_dir / "transcript.json").exists()
+    assert not (session_dir / "transcript.md").exists()
     if status["status"] == "done":
         report = client.get(f"/sessions/{session_id}/report").json()
         assert "could not be transcribed" in report.get("narration_transcription", "")
@@ -212,4 +217,5 @@ def test_explicit_transcript_wins_over_narration_wav(tmp_path):
     session_dir = tmp_path / "sessions" / session_id
     assert (session_dir / "transcript.txt").exists()
     assert not (session_dir / "transcript.json").exists()
+    assert not (session_dir / "transcript.md").exists()
     assert calls == []  # the transcriber must never even have been constructed

@@ -79,10 +79,9 @@ class SectionConfig(BaseModel):
     max_concurrency: int = Field(default=1, ge=1)
     # Only meaningful for [steps] (same steps-only handling as
     # max_concurrency above -- never dumped for [narrative]/[polish], see
-    # dump_models_config_toml). Off by default: generate_step_text does not
-    # yet branch on this flag, so it currently has no runtime effect --
-    # it's config plumbing for a later step that will gate screenshot-image
-    # attachment on the per-step generation call. Defaults False so every
+    # dump_models_config_toml). Gates whether generate_step_text attaches
+    # the step's screenshot to the per-step generation call (generation.py).
+    # Defaults False (measured cost/quality tradeoff, phase-05) so every
     # existing models.toml (which predates this field) still loads unchanged.
     use_vision: bool = False
 
@@ -149,6 +148,9 @@ class VisionConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # False here, but the shipped config/models.toml sets enabled=true --
+    # deliberate: this is the fallback for any [vision]-less models.toml
+    # from before the feature existed, not the product's actual default.
     enabled: bool = False
     endpoint: str = "http://192.168.200.60:11434/v1"
     model: str = "qwen2.5vl:7b"

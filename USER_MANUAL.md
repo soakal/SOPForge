@@ -180,14 +180,11 @@ See §9 below.
 
 - Windows 11 (the capture agent uses Windows-only APIs — UI Automation, low-level
   input hooks, GDI screen capture).
-- The SOP Factory 2 docx engine, cloned to `C:\Users\Brian\Documents\SOP_Factory_2`
-  (only needed for building `sopforge-server.exe` yourself, or running from source —
-  the packaged EXE bundles the two files it actually needs):
-  ```powershell
-  gh repo clone soakal/SOP-Factory C:\Users\Brian\Documents\SOP_Factory_2
-  ```
-  (Private repo — `gh auth login` with access to `soakal/SOP-Factory` first.)
-  If cloned elsewhere, set `SOPFORGE_SOP_FACTORY_2_DIR` to that path.
+- The SOP Factory 2 docx engine is vendored in-repo at `vendor/sop_factory_2/`
+  (`sop_lib.py` + `SOP_TEMPLATE_WITH_PHOTOS.docx`) — nothing to clone, it's
+  already there whether building `sopforge-server.exe` yourself or running
+  from source. Set `SOPFORGE_SOP_FACTORY_2_DIR` only if you want to point at
+  a different copy of the engine.
 - (Optional, for LLM-phrased steps) Either an Ollama server reachable at the
   endpoint in `config/models.toml` (default `http://192.168.200.60:11434/v1`,
   with the `qwen3:32b` model pulled), or Anthropic routing configured with

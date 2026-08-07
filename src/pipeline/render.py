@@ -165,7 +165,10 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
         heading = step_heading(n, step)
-        parts.append(f"<h2>{html.escape(heading)}</h2>")
+        # id=step.id anchors each step so a link like doc.html#step-003 (the
+        # session page's report rows, webui/pages.py's _finding_row) jumps
+        # straight to it.
+        parts.append(f'<h2 id="{html.escape(step.id)}">{html.escape(heading)}</h2>')
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         if result.get("narration"):
             parts.append(

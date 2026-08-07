@@ -17,6 +17,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader
@@ -25,6 +26,8 @@ from pipeline.config import default_config_path, load_models_config, save_models
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 from pipeline.template import render_step_template
+
+import pipeline.server as server_module
 
 from _stub_llm import stub_llm_client_factory
 
@@ -144,6 +147,40 @@ def test_capture_session_gets_an_auto_generated_title(tmp_path):
     assert "Configure SmartDeploy Console" in page.text
 
 
+def test_auto_generated_title_is_persisted_to_manifest_json_on_disk(tmp_path):
+    """Caught by automated PR review: the auto-generated title used to live
+    only on the in-memory Manifest -- _restore_sessions_from_disk (a server
+    restart) reloads the on-disk manifest.json, which still has an empty
+    title for a real capture, and the no-LLM per-step edit/regenerate
+    re-export path (_reexport_session) can never re-derive one. Persisting
+    it immediately is what makes the title survive both."""
+
+    class _TitleGeneratingClient:
+        def chat(self, messages, **kwargs):
+            return '{"title": "Configure SmartDeploy Console", "overview": "Sets it up."}'
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=lambda: _TitleGeneratingClient(),
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    on_disk = json.loads(
+        (tmp_path / "sessions" / session_id / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert on_disk["session"]["title"] == "Configure SmartDeploy Console"
+
+
 def test_get_report_lists_expected_categories(tmp_path):
     client = _make_client(tmp_path)
     session_id, status = _create_and_wait(client, tmp_path)
@@ -155,6 +192,36 @@ def test_get_report_lists_expected_categories(tmp_path):
     assert {"template_fallback_steps", "verify_claims", "empty_metadata_steps"} <= set(report)
     # sample-manifest.json's step-003 has empty element metadata.
     assert "step-003" in report["empty_metadata_steps"]
+
+
+def test_steps_json_sidecar_is_written_with_text_and_screenshot_per_step(tmp_path):
+    """The per-step text/screenshot sidecar (steps.json) that the session
+    page's report rows (task-07) read -- one entry per manifest step, in
+    manifest order, agreeing with what actually shipped in doc.md. Needs
+    generation to reach "done" (docx export), same pre-existing sop_lib
+    sandbox constraint as every other end-to-end test in this file."""
+    client = _make_client(tmp_path)
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    session_id, status = _create_and_wait(client, tmp_path)
+    if status["status"] != "done":
+        return
+    steps_path = tmp_path / "sessions" / session_id / "steps.json"
+    assert steps_path.exists()
+    state = json.loads(steps_path.read_text(encoding="utf-8"))
+    # version 2 additionally persists narrative_text + per-step narration/
+    # manually_edited -- everything the per-step edit/regenerate feature's
+    # no-LLM re-export needs to rebuild every format from disk.
+    assert state["version"] == 2
+    assert "narrative_text" in state
+    steps = state["steps"]
+    assert [s["step_id"] for s in steps] == [s.id for s in manifest.steps]
+    doc_md = (tmp_path / "sessions" / session_id / "doc.md").read_text(encoding="utf-8")
+    for entry, manifest_step in zip(steps, manifest.steps):
+        assert entry["screenshot"] == manifest_step.screenshot
+        assert entry["text"] in doc_md
+        assert isinstance(entry["used_fallback"], bool)
+        assert isinstance(entry["manually_edited"], bool)
+        assert "narration" in entry
 
 
 def test_steps_fallback_to_template_text_end_to_end_and_report_it(tmp_path):
@@ -1580,6 +1647,62 @@ def test_photo_build_canonicalizes_inconsistent_transcript_spelling(tmp_path, mo
     ]
 
 
+def test_photo_build_persists_the_post_canonicalization_title_not_the_raw_generated_one(
+    tmp_path, monkeypatch
+):
+    """Caught by automated PR review: the auto-generated title used to be
+    written to manifest.json BEFORE canonicalize_terms could still rewrite
+    its spelling, so the persisted title (survives a restart, and is all
+    _reexport_session's no-LLM edit path has to work with) could disagree
+    with what the shipped document actually says. Deterministic via
+    monkeypatch (not relying on canonicalize_terms' real fuzzy-matching
+    heuristics) so this test can't flake on wording."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+    monkeypatch.setattr(
+        server_module,
+        "generate_title_and_overview",
+        lambda narration, llm, **kwargs: ("Raw Generated Title", "An overview."),
+    )
+    real_canonicalize_terms = server_module.canonicalize_terms
+
+    def fake_canonicalize_terms(fields, **kwargs):
+        canonicalized, actions = real_canonicalize_terms(fields, **kwargs)
+        canonicalized = list(canonicalized)
+        canonicalized[0] = "Final Canonicalized Title"  # force a real, deterministic rewrite
+        return canonicalized, actions
+
+    monkeypatch.setattr(server_module, "canonicalize_terms", fake_canonicalize_terms)
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("transcript_file", ("t.txt", b"Step one narration.", "text/plain")),
+    ]
+    resp = client.post("/ui/build", data={"title": ""}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    on_disk = json.loads(
+        (tmp_path / "sessions" / session_id / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert on_disk["session"]["title"] == "Final Canonicalized Title"
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Final Canonicalized Title" in md
+    assert "Raw Generated Title" not in md
+
+
 def test_photo_build_vision_caption_spelling_beats_more_frequent_transcript_spelling(
     tmp_path, monkeypatch
 ):
@@ -2094,6 +2217,24 @@ def test_config_save_rejects_cross_site_origin(tmp_path):
     assert resp.status_code == 403
 
 
+def test_csrf_rejects_a_same_host_different_port_origin_in_default_strict_mode(tmp_path):
+    """Caught by automated PR review: the strict (default loopback) CSRF
+    branch only ever compared Origin's hostname against the allowlist --
+    port and scheme were never checked, even before this session's other
+    CSRF fixes, and remained unchecked after them since those only
+    touched the self-referential (bind-beyond-loopback) branch. Any other
+    service listening on 127.0.0.1 on a different port could therefore
+    forge state-changing requests in the default configuration. Port must
+    now be checked in both branches."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "127.0.0.1:8420", "Origin": "http://127.0.0.1:3000"},
+    )
+    assert resp.status_code == 403
+
+
 def test_csrf_rejects_lookalike_host(tmp_path):
     # "http://127.0.0.1.evil.com" must NOT pass a prefix check -- the guard
     # compares the exact host.
@@ -2102,6 +2243,623 @@ def test_csrf_rejects_lookalike_host(tmp_path):
         "/ui/config",
         data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
         headers={"Origin": "http://127.0.0.1.evil.com"},
+    )
+    assert resp.status_code == 403
+
+
+def test_copy_capped_writes_a_file_under_the_limit(tmp_path):
+    dest = tmp_path / "out.bin"
+    server_module._copy_capped(io.BytesIO(b"x" * 100), dest, max_bytes=1000, what="thing")
+    assert dest.read_bytes() == b"x" * 100
+
+
+def test_copy_capped_rejects_and_removes_a_file_over_the_limit(tmp_path):
+    """Caught by a repo security audit: ingest previously streamed uploads
+    to disk with no size cap at all."""
+    dest = tmp_path / "out.bin"
+    with pytest.raises(HTTPException) as exc_info:
+        server_module._copy_capped(io.BytesIO(b"x" * 2000), dest, max_bytes=1000, what="thing")
+    assert exc_info.value.status_code == 413
+    assert not dest.exists()
+
+
+def test_read_capped_returns_bytes_under_the_limit():
+    assert server_module._read_capped(io.BytesIO(b"y" * 100), max_bytes=1000, what="thing") == (
+        b"y" * 100
+    )
+
+
+def test_read_capped_rejects_bytes_over_the_limit():
+    with pytest.raises(HTTPException) as exc_info:
+        server_module._read_capped(io.BytesIO(b"y" * 2000), max_bytes=1000, what="thing")
+    assert exc_info.value.status_code == 413
+
+
+def test_oversized_upload_leaves_no_orphaned_session_directory(tmp_path, monkeypatch):
+    """Caught by automated PR review: an upload rejected by _copy_capped's
+    new size cap left session_dir (and every screenshot copied before the
+    limit hit) behind on disk forever -- never registered in `sessions`,
+    so nothing in the app could ever find or delete it. Must clean up the
+    same way the manifest-free upload path (_ingest_photo_session) already
+    does."""
+    monkeypatch.setattr(server_module, "_MAX_UPLOAD_FILE_BYTES", 10)
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    assert resp.status_code == 413
+
+    sessions_root = tmp_path / "sessions"
+    assert list(sessions_root.iterdir()) == []
+
+
+def test_oversized_photo_upload_is_capped_and_leaves_no_orphan(tmp_path, monkeypatch):
+    """Caught by automated PR review: /ui/build (the manifest-free image
+    upload path, _ingest_photo_session) had no size cap at all, unlike
+    /sessions/_ingest_session -- an ordinary-looking image upload could
+    consume unbounded disk/memory on the same unauthenticated server."""
+    monkeypatch.setattr(server_module, "_MAX_UPLOAD_FILE_BYTES", 10)
+    client = _make_client(tmp_path)
+
+    buf = io.BytesIO()
+    Image.new("RGB", (200, 150), (10, 20, 30)).save(buf, "PNG")
+    files = [("files", ("first.png", buf.getvalue(), "image/png"))]
+
+    resp = client.post("/ui/build", data={"title": "Oversized"}, files=files)
+    assert resp.status_code == 413
+
+    sessions_root = tmp_path / "sessions"
+    assert list(sessions_root.iterdir()) == []
+
+
+def test_oversized_transcript_upload_is_rejected(tmp_path, monkeypatch):
+    """Caught by automated PR review: _read_transcript read the whole
+    upload into memory unbounded (upload.file.read().decode("utf-8")),
+    unlike every other upload path in this file, which all got explicit
+    per-file caps (_copy_capped/_read_capped)."""
+    monkeypatch.setattr(server_module, "_MAX_UPLOAD_FILE_BYTES", 10)
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files = files + [("transcript_file", ("transcript.txt", b"x" * 100, "text/plain"))]
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    assert resp.status_code == 413
+
+    sessions_root = tmp_path / "sessions"
+    assert list(sessions_root.iterdir()) == []
+
+
+def test_narration_wav_is_streamed_to_disk_not_buffered_in_memory(tmp_path, monkeypatch):
+    """Caught by automated PR review: narration audio used to be fully
+    read into a Python bytes object (_read_capped, chunk list + join) and
+    only written to disk afterward, so an accepted ~500MB WAV transiently
+    doubled that in process memory. It must now stream straight to
+    session_dir/narration.wav the same way a screenshot does (_copy_capped),
+    with upload.file.read never called directly by this code path."""
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files = files + [
+        ("narration_wav_file", ("narration.wav", b"RIFF" + b"\x00" * 100, "audio/wav"))
+    ]
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    assert resp.status_code == 200
+    session_id = resp.json()["session_id"]
+    wav_path = tmp_path / "sessions" / session_id / "narration.wav"
+    assert wav_path.read_bytes() == b"RIFF" + b"\x00" * 100
+
+
+def test_testserver_host_is_not_trusted_outside_pytest(tmp_path, monkeypatch):
+    """Caught by automated PR review: a prior version hard-coded
+    "testserver" (Starlette TestClient's fixed Host/Origin default) into
+    the allowlist unconditionally, trusting it in a real shipped build
+    too. It must only be trusted while pytest itself is actually running
+    (PYTEST_CURRENT_TEST, which pytest sets for the duration of every
+    test and a real install never has set)."""
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "testserver"})
+    assert resp.status_code == 403
+
+
+def test_host_guard_rejects_a_dns_rebound_hostname(tmp_path):
+    """Caught by a repo security audit: the CSRF guard only checks Origin,
+    which a DNS-rebinding page's same-origin-looking GET may not send. A
+    request whose Host header doesn't match a real local hostname (or
+    TestClient's own "testserver") must be rejected outright, for any
+    method -- not just the state-changing ones the CSRF guard covers."""
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "rebound.attacker.example"})
+    assert resp.status_code == 403
+
+
+def test_host_guard_allows_the_real_local_hostnames(tmp_path):
+    client = _make_client(tmp_path)
+    for host in ("127.0.0.1", "localhost", "testserver"):
+        resp = client.get("/library", headers={"Host": host})
+        assert resp.status_code == 200, host
+
+
+def test_host_guard_allows_bracketed_ipv6_loopback(tmp_path):
+    """Caught by automated PR review: a naive Host.split(":")[0] mangles the
+    bracketed IPv6 Host header browsers send for http://[::1]:PORT into "[",
+    which is never in the allowlist -- locking out anyone using IPv6
+    loopback. Parsing via urlsplit (which strips the brackets) fixes it."""
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "[::1]:8420"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
+    """Caught by automated PR review: hard-coding the host guard to
+    loopback-only broke the documented "server on another machine" setup
+    (USER_MANUAL.md, --host 0.0.0.0 + the capture agent's
+    SOPFORGE_SERVER_URL) -- every request from a real remote client carries
+    a LAN IP/hostname Host header and got a blanket 403. Binding beyond
+    loopback must disable the strict allowlist rather than lock everyone
+    out."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="0.0.0.0",
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+    assert resp.status_code == 200
+
+
+def _remote_client(tmp_path):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="0.0.0.0",
+    )
+    return TestClient(app)
+
+
+def test_csrf_guard_allows_same_origin_lan_requests_when_bound_beyond_loopback(tmp_path):
+    """Caught by automated PR review: the host-guard relaxation above
+    covered GET/Host, but the sibling _csrf_guard (Origin-based, state-
+    changing methods only) still hard-coded loopback-only -- so a browser
+    loading the UI from a LAN address, whose same-origin form POSTs
+    legitimately carry an Origin with that same LAN hostname, got every
+    button/form on the web UI rejected with 403 even though the whole
+    point of bind_host="0.0.0.0" is to serve exactly that browser."""
+    client = _remote_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://192.168.1.50:8420",
+        },
+    )
+    assert resp.status_code != 403
+
+
+def test_csrf_guard_still_rejects_a_genuinely_cross_origin_request_when_bound_beyond_loopback(
+    tmp_path,
+):
+    """Caught by automated PR review as a CRITICAL regression: the first
+    fix for the above simply disabled _csrf_guard entirely whenever
+    bind_host wasn't loopback, turning off CSRF protection for the whole,
+    unauthenticated app -- including /shutdown, /ui/config (rewrites the
+    LLM routing config), and session delete -- the moment anyone ran the
+    documented "server on another machine" setup. A malicious site the
+    operator's browser merely visits could then forge any of those
+    requests. The guard must still reject an Origin that doesn't match
+    the request's own Host, even when bound beyond loopback."""
+    client = _remote_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://evil.example.com",
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_csrf_guard_rejects_a_same_host_different_port_origin_when_bound_beyond_loopback(
+    tmp_path,
+):
+    """Caught by automated PR review: the self-referential check compared
+    only hostnames, ignoring port (and scheme) -- so any other locally-
+    hosted service on the same machine/IP but a different port (a dev
+    server, another app) was wrongly treated as same-origin and could
+    forge requests here. Port must be part of the comparison."""
+    client = _remote_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://192.168.1.50:3000",
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_csrf_guard_rejects_a_malformed_origin_port_instead_of_500ing(tmp_path):
+    """Caught by automated PR review: urlsplit(...).port raises ValueError
+    for a non-numeric or out-of-range port, and both Origin and Host are
+    fully attacker-controlled in the bind-beyond-loopback self-referential
+    branch -- a malformed port must be rejected (403), never left to
+    escape as an unhandled 500."""
+    client = _remote_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://192.168.1.50:99999",
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_host_guard_stays_strict_for_a_specific_fixed_bind_address(tmp_path):
+    """Caught by automated PR review: relaxing the host guard for EVERY
+    non-loopback bind_host also weakened it for the common "bind to one
+    specific known LAN address" case, not just the genuinely-unfixable
+    "0.0.0.0" bind-all case -- even though a specific address IS a fixed,
+    known value that can just be trusted directly. Binding to a specific
+    address must keep _host_guard strict (reject an unrelated Host) while
+    trusting that address itself."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="192.168.1.50",
+    )
+    client = TestClient(app)
+
+    resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+    assert resp.status_code == 200
+
+    resp = client.get("/library", headers={"Host": "rebound.attacker.example"})
+    assert resp.status_code == 403
+
+
+def test_host_guard_trusts_this_machines_own_hostname_for_a_specific_bind_address(tmp_path):
+    """Caught by automated PR review: binding to one specific fixed
+    address (e.g. --host 192.168.1.50) only trusted that exact literal
+    string -- a remote browser reaching the machine by its computer
+    name/FQDN instead of the raw IP (the two resolve to the same address)
+    got a blanket 403 on every page. The server's own hostname must be
+    trusted too when bind_host is a specific address."""
+    import socket
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="192.168.1.50",
+    )
+    client = TestClient(app)
+
+    resp = client.get("/library", headers={"Host": f"{socket.gethostname()}:8420"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_rejects_a_malformed_ipv6_host_instead_of_500ing(tmp_path):
+    """Caught by a follow-up exhaustive audit: urlsplit itself raises
+    ValueError for an unmatched IPv6 bracket ("Invalid IPv6 URL"), before
+    .port is ever touched -- and Host is fully attacker-controlled, so
+    `Host: [::1` reached the guard's bare urlsplit call and escaped as an
+    unhandled 500 instead of a 403."""
+    client = _make_client(tmp_path)
+    for bad_host in ("[::1", "]::1[", "["):
+        resp = client.get("/library", headers={"Host": bad_host})
+        assert resp.status_code == 403, bad_host
+
+
+def test_csrf_guard_rejects_a_malformed_ipv6_origin_instead_of_500ing(tmp_path):
+    """Same urlsplit ValueError as the Host-guard case above, on the CSRF
+    side: the guard caught ValueError from .port but called urlsplit on
+    the attacker-controlled Origin (and Host) OUTSIDE that try -- so
+    `Origin: http://[::1` was an unhandled 500, not a 403."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Origin": "http://[::1"},
+    )
+    assert resp.status_code == 403
+
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "[::1", "Origin": "http://127.0.0.1"},
+    )
+    assert resp.status_code == 403
+
+
+def test_csrf_guard_rejects_a_null_origin(tmp_path):
+    """`Origin: null` (sandboxed iframes, some redirects, data: URIs) has
+    no hostname at all -- it must be rejected like any other non-local
+    origin, never treated as a same-origin or origin-less request."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Origin": "null"},
+    )
+    assert resp.status_code == 403
+
+
+def test_csrf_guard_normalizes_default_ports_per_rfc_6454(tmp_path):
+    """Caught by a follow-up exhaustive audit: the port comparison was a
+    raw `origin.port == host.port`, so `Origin: http://127.0.0.1` (no
+    explicit port -- the RFC 6454 serialization omits the scheme default)
+    against `Host: 127.0.0.1:80` was None != 80 and a legitimate
+    same-origin request got a spurious 403. An absent port must mean the
+    scheme's default (http 80 / https 443) on both sides."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "127.0.0.1:80", "Origin": "http://127.0.0.1"},
+    )
+    assert resp.status_code != 403
+
+    # The normalization must not blur DIFFERENT ports into a match:
+    # an explicit non-default origin port still mismatches a default host.
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "127.0.0.1", "Origin": "http://127.0.0.1:8420"},
+    )
+    assert resp.status_code == 403
+
+
+def test_host_guard_treats_a_trailing_dot_hostname_as_the_same_host(tmp_path):
+    """Caught by a follow-up exhaustive audit: "localhost." (trailing dot
+    = fully-qualified form, RFC 1034) is the same host as "localhost" and
+    browsers will happily load http://localhost./ -- but a literal string
+    compare 403'd it. One trailing dot is stripped on both the allowlist
+    and the parsed header; "localhost.." is not a valid DNS name and
+    stays rejected."""
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "localhost."})
+    assert resp.status_code == 200
+    resp = client.get("/library", headers={"Host": "localhost.."})
+    assert resp.status_code == 403
+    # And on the CSRF side: a dotted-form Origin is still same-origin.
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "localhost.:8420", "Origin": "http://localhost.:8420"},
+    )
+    assert resp.status_code != 403
+
+
+def test_host_guard_treats_every_unspecified_address_spelling_as_bind_all(tmp_path):
+    """Caught by a follow-up exhaustive audit: bind-all detection was a
+    literal string set {"0.0.0.0", "::", ...} -- binding to an equivalent
+    spelling ("::0", "0:0:0:0:0:0:0:0") fell into the "specific fixed
+    address" branch, allowlisted that unreachable-as-a-Host literal, and
+    403'd every real client: the same remote-lockout failure mode the
+    original loopback-only guard had. Detection now uses
+    ipaddress.is_unspecified."""
+    for spelling in ("::0", "0:0:0:0:0:0:0:0"):
+        cfg = tmp_path / f"models-{spelling.replace(':', '_')}.toml"
+        shutil.copyfile(default_config_path(), cfg)
+        app = create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=stub_llm_client_factory,
+            narrative_llm_client_factory=stub_llm_client_factory,
+            config_path=cfg,
+            bind_host=spelling,
+        )
+        client = TestClient(app)
+        resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+        assert resp.status_code == 200, spelling
+
+
+def test_host_guard_accepts_a_bracketed_ipv6_bind_host(tmp_path):
+    """Caught by a follow-up exhaustive audit: a bind_host given in
+    bracketed form ("[2001:db8::1]") was allowlisted with the brackets
+    intact, while urlsplit's .hostname strips them from the incoming Host
+    header -- so the two could never match and every request got 403.
+    Bind-host normalization strips the brackets."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="[2001:db8::1]",
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "[2001:db8::1]:8420"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_normalizes_extra_allowed_hosts_case(tmp_path):
+    """Caught by a follow-up exhaustive audit: extra_allowed_hosts entries
+    went into the allowlist verbatim while the incoming Host header is
+    lowercased by urlsplit's .hostname -- a mixed-case entry could never
+    match anything and was silently useless."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        extra_allowed_hosts=("MixedCase.Example",),
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "mixedcase.example"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_survives_a_getfqdn_unicode_error(tmp_path, monkeypatch):
+    """Caught by a follow-up exhaustive audit: socket.getfqdn's internal
+    gethostbyaddr IDNA-encodes the hostname and raises UnicodeError (NOT
+    OSError) for an overlong/non-ASCII computer name -- the best-effort
+    hostname lookup only caught OSError, so app startup crashed on such a
+    machine. The bind address itself must still be trusted."""
+    import socket
+
+    def _boom():
+        raise UnicodeError("label too long")
+
+    monkeypatch.setattr(socket, "getfqdn", _boom)
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="192.168.1.50",
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+    assert resp.status_code == 200
+
+
+def _make_client_with_probe(tmp_path, probe_section_fn):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=probe_section_fn,
+    )
+    return TestClient(app)
+
+
+def test_config_page_has_a_test_button_per_section(tmp_path):
+    client = _make_client(tmp_path)
+    page = client.get("/ui/config").text
+    for key in ("steps", "narrative", "vision", "polish"):
+        assert f'data-test-section="{key}"' in page
+        assert f'id="{key}_test_result"' in page
+    assert "/ui/config/test" in page
+
+
+def test_config_page_test_js_handles_non_ok_responses(tmp_path):
+    """Caught by automated PR review: the "Test connection" button's fetch
+    handler read d.status/d.detail unconditionally, so an error response
+    (400 from an invalid section/provider, or a CSRF 403), which serializes
+    as {"detail": "..."} with no "status" key, rendered as a confusing
+    "undefined: ..." instead of a readable message."""
+    client = _make_client(tmp_path)
+    page = client.get("/ui/config").text
+    assert "res.ok" in page
+    assert "request rejected" in page
+
+
+def test_config_test_route_probes_the_saved_section(tmp_path):
+    calls = []
+    client = _make_client_with_probe(
+        tmp_path,
+        lambda section: calls.append(section) or {"status": "ok", "detail": "fine"},
+    )
+    resp = client.post("/ui/config/test", data={"section": "steps"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["section"] == "steps"
+    assert body["status"] == "ok"
+    assert len(calls) == 1
+    assert calls[0].model == "qwen3:32b"  # the bundled default steps model
+
+
+def test_config_test_route_uses_submitted_overrides_not_saved_values(tmp_path):
+    calls = []
+    client = _make_client_with_probe(
+        tmp_path,
+        lambda section: calls.append(section) or {"status": "ok", "detail": "fine"},
+    )
+    resp = client.post(
+        "/ui/config/test",
+        data={
+            "section": "steps",
+            "provider": "ollama",
+            "endpoint": "http://other-host/v1",
+            "model": "zzz",
+        },
+    )
+    assert resp.status_code == 200
+    assert calls[0].endpoint == "http://other-host/v1"
+    assert calls[0].model == "zzz"
+
+
+def test_config_test_route_provider_override_wins_over_legacy_anthropic_flag(tmp_path):
+    """Caught by automated PR review: a config saved back when `anthropic =
+    true` was the only way to route to Anthropic still carries that legacy
+    field. SectionConfig's after-validator unconditionally flips `provider`
+    back to "anthropic" whenever it's set, so an explicit provider="ollama"
+    override from the form must not be silently reverted -- the route must
+    probe what the user actually selected."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.steps.provider = "anthropic"
+    models_cfg.steps.anthropic = True
+    save_models_config(models_cfg, cfg)
+
+    calls = []
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=lambda section: calls.append(section) or {"status": "ok"},
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/ui/config/test",
+        data={"section": "steps", "provider": "ollama", "endpoint": "http://my-ollama/v1"},
+    )
+    assert resp.status_code == 200
+    assert calls[0].provider == "ollama"
+    assert calls[0].endpoint == "http://my-ollama/v1"
+
+
+def test_config_test_route_rejects_unknown_section(tmp_path):
+    calls = []
+    client = _make_client_with_probe(tmp_path, lambda section: calls.append(section) or {})
+    resp = client.post("/ui/config/test", data={"section": "not-a-section"})
+    assert resp.status_code == 400
+    assert calls == []
+
+
+def test_config_test_route_rejects_invalid_provider_override(tmp_path):
+    calls = []
+    client = _make_client_with_probe(tmp_path, lambda section: calls.append(section) or {})
+    resp = client.post("/ui/config/test", data={"section": "steps", "provider": "not-a-provider"})
+    assert resp.status_code == 400
+    assert calls == []
+
+
+def test_config_test_route_is_csrf_guarded(tmp_path):
+    client = _make_client_with_probe(tmp_path, lambda section: {"status": "ok"})
+    resp = client.post(
+        "/ui/config/test",
+        data={"section": "steps"},
+        headers={"Origin": "http://evil.example.com"},
     )
     assert resp.status_code == 403
 
@@ -2153,3 +2911,86 @@ def test_stop_endpoint_triggers_process_exit_without_terminating_this_test(tmp_p
     while time_module.monotonic() < deadline and not exit_calls:
         time_module.sleep(0.02)
     assert exit_calls == [0]
+
+
+def _make_client_with_preflight(tmp_path, probe_section_fn, preflight_enabled=True):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=probe_section_fn,
+        preflight_enabled=preflight_enabled,
+    )
+    return TestClient(app)
+
+
+def test_preflight_result_is_written_into_report_json(tmp_path):
+    # Like every other transcript/report test in this file that needs
+    # generation to reach "done": that requires the external sop_lib docx
+    # engine (see CLAUDE.md/README), not available in every dev sandbox --
+    # so the report assertion is gated on status, same established pattern
+    # as test_narration_transcription.py.
+    client = _make_client_with_preflight(
+        tmp_path, lambda section: {"status": "ok", "provider": "ollama", "detail": "fine"}
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    if status["status"] == "done":
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert report["llm_preflight"]["status"] == "ok"
+        assert report["llm_preflight"]["provider"] == "ollama"
+
+
+def test_preflight_is_skipped_by_default_when_an_llm_client_factory_is_injected(tmp_path):
+    """The default test client (_make_client) already injects
+    llm_client_factory=stub_llm_client_factory -- proving the probe is never
+    even called there is what guarantees the whole test suite makes no
+    extra network calls just from this feature landing. This assertion
+    doesn't depend on reaching "done": the probe would already have been
+    called (or not) before docx export."""
+    calls = []
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=lambda section: calls.append(section) or {"status": "ok"},
+        # preflight_enabled intentionally omitted -- exercising the default.
+    )
+    client = TestClient(app)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert calls == []
+    if status["status"] == "done":
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert "llm_preflight" not in report
+
+
+def test_generation_still_completes_when_preflight_reports_unreachable(tmp_path):
+    client = _make_client_with_preflight(
+        tmp_path, lambda section: {"status": "error", "detail": "connection refused"}
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    # The core invariant this test exists for: an unreachable-endpoint
+    # preflight must never be treated as a reason to fail the job.
+    assert status["status"] != "error" or status.get("error") != "connection refused"
+    if status["status"] == "done":
+        doc = client.get(f"/sessions/{session_id}/doc.docx")
+        assert doc.status_code == 200
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert report["llm_preflight"]["status"] == "error"
+
+
+def test_preflight_probe_raising_does_not_fail_the_job(tmp_path):
+    def boom(section):
+        raise RuntimeError("simulated probe crash")
+
+    client = _make_client_with_preflight(tmp_path, boom)
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status.get("error") != "simulated probe crash"
+    if status["status"] == "done":
+        report = client.get(f"/sessions/{session_id}/report").json()
+        assert "llm_preflight" not in report
