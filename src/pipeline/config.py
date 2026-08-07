@@ -77,13 +77,6 @@ class SectionConfig(BaseModel):
     # template fallback it didn't need -- so any speedup from a
     # multi-GPU/parallel-capable Ollama server is opt-in, not assumed.
     max_concurrency: int = Field(default=1, ge=1)
-    # Only meaningful for [steps] (same steps-only handling as
-    # max_concurrency above -- never dumped for [narrative]/[polish], see
-    # dump_models_config_toml). Gates whether generate_step_text attaches
-    # the step's screenshot to the per-step generation call (generation.py).
-    # Defaults False (measured cost/quality tradeoff, phase-05) so every
-    # existing models.toml (which predates this field) still loads unchanged.
-    use_vision: bool = False
 
     @model_validator(mode="after")
     def _legacy_anthropic(self):
@@ -266,17 +259,12 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         "# Against an untuned single-slot server, raising this just queues",
         "# requests and risks a queued step's own timeout expiring into a",
         "# template fallback it didn't need. Default 1 (steps) is safe/sequential.",
-        "#",
-        "# use_vision (steps only): attaches each step's own screenshot to its",
-        "# generation call, for a vision-capable steps model. Default false --",
-        "# off keeps the exact plain-text prompt this app always sent.",
         "",
         "[steps]",
         f"provider = {_toml_str(cfg.steps.provider)}",
         f"endpoint = {_toml_str(cfg.steps.endpoint)}",
         f"model = {_toml_str(cfg.steps.model)}",
         f"max_concurrency = {_toml_str(cfg.steps.max_concurrency)}",
-        f"use_vision = {_toml_str(cfg.steps.use_vision)}",
         "",
         "[narrative]",
         f"provider = {_toml_str(cfg.narrative.provider)}",

@@ -184,16 +184,14 @@ def test_live_generation_reports_progress_on_the_processing_page(tmp_path, monke
     real_request_reply = generation_module._request_reply
     call_count = {"n": 0}
 
-    def gated_request_reply(step, llm_client, use_vision=False, screenshot_dir=None):
+    def gated_request_reply(step, llm_client):
         call_count["n"] += 1
         # Pause going into the SECOND call so step 1's progress (1 of 3) has
         # already been reported by the time this test inspects the page.
         if call_count["n"] == 2:
             reached_second_step.set()
             release.wait(timeout=5)
-        return real_request_reply(
-            step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir
-        )
+        return real_request_reply(step, llm_client)
 
     monkeypatch.setattr(generation_module, "_request_reply", gated_request_reply)
 

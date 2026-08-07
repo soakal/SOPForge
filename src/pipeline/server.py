@@ -901,7 +901,6 @@ def create_app(
                 llm_client,
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
                 max_concurrency=models_cfg.steps.max_concurrency,
-                use_vision=models_cfg.steps.use_vision,
             )
         finally:
             close = getattr(llm_client, "close", None)
@@ -2026,7 +2025,7 @@ def create_app(
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     def _regenerate_step(session_id, step_id):
-        manifest, screenshots_dir, _annotated_dir, session_dir = sessions[session_id]
+        manifest, _screenshots_dir, _annotated_dir, session_dir = sessions[session_id]
         step = next(s for s in manifest.steps if s.id == step_id)
         cfg = load_models_config(resolved_config_path)
         preflight_result = None
@@ -2037,9 +2036,7 @@ def create_app(
                 logger.exception("preflight probe failed regenerating %s/%s", session_id, step_id)
         llm = make_llm_client()
         try:
-            text, used_fallback = generate_step_text(
-                step, llm, use_vision=cfg.steps.use_vision, screenshot_dir=screenshots_dir
-            )
+            text, used_fallback = generate_step_text(step, llm)
         finally:
             close = getattr(llm, "close", None)
             if callable(close):
@@ -2299,7 +2296,6 @@ def create_app(
                 "model": _model_or_existing(form.get("steps_model", ""), existing.steps.model),
                 "max_concurrency": form.get("steps_max_concurrency")
                 or str(existing.steps.max_concurrency),
-                "use_vision": form.get("steps_use_vision") == "on",
             },
             "narrative": {
                 "provider": form.get("narrative_provider", "ollama"),

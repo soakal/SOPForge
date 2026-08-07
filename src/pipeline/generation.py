@@ -12,16 +12,11 @@ generate_all_steps additionally memoizes identical prompts within one job
 (two steps that produce byte-identical prompts share a single LLM call) --
 see its docstring for the invariant-preserving details."""
 
-import logging
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 
 from pipeline.roundtrip import round_trip_ok
 from pipeline.template import render_step_template
-from pipeline.vision import _image_data_url
-
-logger = logging.getLogger(__name__)
 
 # Bold markdown a model adds despite being told to write plain prose --
 # round_trip_ok only checks verb/entity presence, never formatting, so raw
@@ -68,24 +63,13 @@ def _build_prompt(step):
     )
 
 
-def _request_reply(step, llm_client, use_vision=False, screenshot_dir=None):
-    """Builds the content payload and makes exactly ONE chat() call for this
-    step. Returns the raw reply str, or None if the call failed at all --
-    never raises, never retries. `use_vision`/`screenshot_dir`: see
-    generate_step_text's docstring."""
+def _request_reply(step, llm_client):
+    """Makes exactly ONE chat() call for this step's prompt. Returns the raw
+    reply str, or None if the call failed at all -- never raises, never
+    retries."""
     prompt = _build_prompt(step)  # outside the try: a bug here is ours, not the LLM's
-    content = prompt
-    if use_vision and screenshot_dir is not None:
-        screenshot_path = Path(screenshot_dir) / step.screenshot
-        if screenshot_path.exists():
-            content = [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": _image_data_url(screenshot_path)}},
-            ]
-        else:
-            logger.warning("vision screenshot missing for %s", screenshot_path)
     try:
-        return llm_client.chat([{"role": "user", "content": content}])
+        return llm_client.chat([{"role": "user", "content": prompt}])
     except Exception:  # noqa: BLE001 - any generation failure means fallback, never retry
         return None
 
@@ -107,55 +91,31 @@ def _finalize_reply(reply, step):
     return text, False
 
 
-def generate_step_text(step, llm_client, use_vision=False, screenshot_dir=None):
+def generate_step_text(step, llm_client):
     """Returns (text, used_fallback). Exactly one LLM call attempt; any
     failure — HTTP error, malformed response body, or a round-trip mismatch
-    — falls back to the template, never retried.
-
-    `use_vision`/`screenshot_dir` are off by default (byte-identical to the
-    pre-vision call) -- passing both AND finding `screenshot_dir/step.screenshot`
-    on disk switches `content` from the plain prompt string to the two-block
-    text+image_url list vision models expect (same shape vision.py's
-    _caption_one already sends), reusing its base64 data-URL helper rather
-    than re-deriving it. A missing screenshot or any other reason vision
-    can't be attached just falls through to the plain-text prompt -- it is
-    NOT treated as a generation failure, so it never triggers a template
-    fallback by itself."""
-    reply = _request_reply(step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir)
+    — falls back to the template, never retried."""
+    reply = _request_reply(step, llm_client)
     return _finalize_reply(reply, step)
 
 
-def generate_all_steps(
-    manifest,
-    llm_client,
-    on_progress=None,
-    max_concurrency=1,
-    use_vision=False,
-    screenshot_dir=None,
-):
+def generate_all_steps(manifest, llm_client, on_progress=None, max_concurrency=1):
     """Returns [{"step_id", "text", "used_fallback"}, ...] in manifest order
     — invariant L1's 1:1 mapping preserved regardless of max_concurrency.
     `on_progress`, if given, is called as `on_progress(completed, total)`
     once per STEP (not per LLM call) so a caller (e.g. the session's job
     status) still sees progress reach (total, total) even when several
-    steps share one call. `use_vision`/`screenshot_dir` are forwarded
-    straight through to generate_step_text (off by default -- see its
-    docstring).
+    steps share one call.
 
-    Memoization: when `use_vision` is False, steps whose _build_prompt
-    output is byte-identical (e.g. several checkboxes ticked in the same
-    dialog) share at most ONE LLM call for that prompt -- a real capture
-    session's most repetitive stretches are exactly where this saves the
-    most wall-clock. round_trip_ok still runs per step against the shared
-    reply (_finalize_reply), so two steps sharing a prompt can still land on
-    different fallback outcomes if their manifest fields differ in a way
-    the round-trip check cares about; a shared call's failure falls every
-    step in that group back to its own (still complete and correct)
-    template. Memoization is disabled entirely when `use_vision` is True --
-    two steps sharing a prompt still carry different screenshots, and
-    reusing one step's reply for another would attribute one image's
-    reading to a different one, which is a fabrication this orchestrator
-    must never introduce.
+    Memoization: steps whose _build_prompt output is byte-identical (e.g.
+    several checkboxes ticked in the same dialog) share at most ONE LLM call
+    for that prompt -- a real capture session's most repetitive stretches
+    are exactly where this saves the most wall-clock. round_trip_ok still
+    runs per step against the shared reply (_finalize_reply), so two steps
+    sharing a prompt can still land on different fallback outcomes if their
+    manifest fields differ in a way the round-trip check cares about; a
+    shared call's failure falls every step in that group back to its own
+    (still complete and correct) template.
 
     max_concurrency=1 (default) keeps the original strictly sequential loop
     — safest against an Ollama instance that isn't tuned for concurrent
@@ -167,25 +127,17 @@ def generate_all_steps(
     pre-sized list, never appended in completion order, so a step that
     happens to finish first can never land in the wrong position."""
     total = len(manifest.steps)
-    memoize = not use_vision
 
     if max_concurrency <= 1 or total <= 1:
         results = []
         memo = {}  # prompt -> reply (None means that prompt's call already failed)
         for i, step in enumerate(manifest.steps, start=1):
-            if memoize:
-                prompt = _build_prompt(step)
-                if prompt in memo:
-                    reply = memo[prompt]
-                else:
-                    reply = _request_reply(
-                        step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir
-                    )
-                    memo[prompt] = reply
+            prompt = _build_prompt(step)
+            if prompt in memo:
+                reply = memo[prompt]
             else:
-                reply = _request_reply(
-                    step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir
-                )
+                reply = _request_reply(step, llm_client)
+                memo[prompt] = reply
             text, used_fallback = _finalize_reply(reply, step)
             results.append({"step_id": step.id, "text": text, "used_fallback": used_fallback})
             if on_progress:
@@ -194,22 +146,14 @@ def generate_all_steps(
 
     results = [None] * total
     # Group step indices by prompt (insertion order == manifest order) so
-    # only one request is dispatched per distinct prompt when memoizing;
-    # without memoization, every step is its own singleton group.
+    # only one request is dispatched per distinct prompt.
     groups = {}
     for i, step in enumerate(manifest.steps):
-        key = _build_prompt(step) if memoize else f"__step_{i}__"
-        groups.setdefault(key, []).append(i)
+        groups.setdefault(_build_prompt(step), []).append(i)
 
     with ThreadPoolExecutor(max_workers=min(max_concurrency, len(groups))) as pool:
         futures = {
-            pool.submit(
-                _request_reply,
-                manifest.steps[indices[0]],
-                llm_client,
-                use_vision=use_vision,
-                screenshot_dir=screenshot_dir,
-            ): indices
+            pool.submit(_request_reply, manifest.steps[indices[0]], llm_client): indices
             for indices in groups.values()
         }
         done = 0
