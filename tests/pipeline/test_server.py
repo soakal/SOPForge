@@ -2275,6 +2275,38 @@ def test_host_guard_allows_the_real_local_hostnames(tmp_path):
         assert resp.status_code == 200, host
 
 
+def test_host_guard_allows_bracketed_ipv6_loopback(tmp_path):
+    """Caught by automated PR review: a naive Host.split(":")[0] mangles the
+    bracketed IPv6 Host header browsers send for http://[::1]:PORT into "[",
+    which is never in the allowlist -- locking out anyone using IPv6
+    loopback. Parsing via urlsplit (which strips the brackets) fixes it."""
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "[::1]:8420"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
+    """Caught by automated PR review: hard-coding the host guard to
+    loopback-only broke the documented "server on another machine" setup
+    (USER_MANUAL.md, --host 0.0.0.0 + the capture agent's
+    SOPFORGE_SERVER_URL) -- every request from a real remote client carries
+    a LAN IP/hostname Host header and got a blanket 403. Binding beyond
+    loopback must disable the strict allowlist rather than lock everyone
+    out."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="0.0.0.0",
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+    assert resp.status_code == 200
+
+
 def _make_client_with_probe(tmp_path, probe_section_fn):
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)

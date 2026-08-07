@@ -378,6 +378,7 @@ def create_app(
     transcriber_factory=None,
     probe_section_fn=None,
     preflight_enabled=None,
+    bind_host="127.0.0.1",
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -420,7 +421,19 @@ def create_app(
     generation never touches that endpoint at all, so probing it would
     both report on something the job doesn't use AND add a real network
     round-trip to every test job; pass True explicitly to test the
-    preflight wiring itself against a stub probe."""
+    preflight wiring itself against a stub probe.
+
+    bind_host: the --host value the server is (or will be) bound to
+    (__main__.py). Only affects _host_guard's strictness: bound to a real
+    loopback address (the default), Host-header checking stays strict
+    (DNS-rebinding protection). Bound to anything else -- 0.0.0.0, a LAN
+    IP -- the operator has deliberately exposed this server beyond
+    loopback (USER_MANUAL.md's "server on another machine" setup, driven
+    by --host + the capture agent's SOPFORGE_SERVER_URL), so there's no
+    fixed set of legitimate Host values to allowlist in advance and the
+    guard steps aside entirely rather than 403ing every request. Caught by
+    automated PR review after the guard's first version hard-coded
+    loopback-only and broke that setup."""
     app = FastAPI()
     probe = probe_section_fn or probe_section
     run_preflight = (
@@ -433,6 +446,7 @@ def create_app(
     # can rebind to, since it has no TLD and can't be a real, publicly
     # resolvable hostname. Safe to trust alongside the real local hostnames.
     _ALLOWED_HOSTS = _LOCAL_HOSTS | {"testserver"}
+    _host_guard_strict = bind_host in _LOCAL_HOSTS
 
     @app.middleware("http")
     async def _host_guard(request, call_next):
@@ -443,8 +457,16 @@ def create_app(
         top-level navigation or certain request modes) whose Host header is
         the attacker's rebound domain, not this server's. Checking Host
         directly closes that gap regardless of method or Origin presence.
-        Caught by a repo security audit."""
-        host = (request.headers.get("host") or "").split(":")[0]
+        A no-op (see bind_host's docstring) when this server was bound to
+        anything beyond loopback -- there, "any Host but ours" isn't a
+        meaningful allowlist to begin with.
+
+        Host is parsed with urlsplit, not a raw ":"-split, so a bracketed
+        IPv6 literal (`Host: [::1]:8420`) resolves to `::1` rather than the
+        mangled `[` a naive split produces. Caught by automated PR review."""
+        if not _host_guard_strict:
+            return await call_next(request)
+        host = (urlsplit(f"//{request.headers.get('host') or ''}").hostname or "").lower()
         if host not in _ALLOWED_HOSTS:
             return JSONResponse({"detail": "invalid host header"}, status_code=403)
         return await call_next(request)
