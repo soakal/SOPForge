@@ -684,6 +684,78 @@ def test_regenerate_never_overwrites_a_manual_edit_with_a_template_fallback(tmp_
     assert entry["manually_edited"] is True
 
 
+def test_regenerate_declines_a_fallback_over_a_prior_successful_generation_too(
+    tmp_path, monkeypatch
+):
+    """Caught by automated PR review: the manual-edit-only guard above was
+    asymmetric -- a step whose current text came from a PRIOR successful
+    (non-fallback) generation, not a manual edit, could still be silently
+    downgraded to generic template wording by a later regenerate attempt
+    that happened to hit a transient LLM outage. The decline must key off
+    the step's own persisted used_fallback flag, not "is there a manual
+    edit", so it protects both kinds of good text symmetrically."""
+    import re
+
+    _stub_assemble_docx(monkeypatch)
+    mode = {"fallback": False}
+
+    class _SwitchableStub:
+        def chat(self, messages, **kwargs):
+            if mode["fallback"]:
+                return "stub reply that never matches any manifest, forcing template fallback"
+            content = messages[0]["content"]
+            m = re.search(r"'([^']+)' in the '([^']+)' window", content)
+            if m:
+                return f"Click {m.group(1)} in the {m.group(2)} window."
+            return "Click somewhere."
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=lambda: _SwitchableStub(),
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done", status
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+
+    # A real (non-fallback) regenerate gives this step genuine, non-manually
+    # -edited persisted text to protect.
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}/regenerate", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "done", status
+    state = server_module._load_step_state(session_dir)
+    entry = next(e for e in state["steps"] if e["step_id"] == step_id)
+    good_text = entry["text"]
+    assert entry["used_fallback"] is False
+    assert entry["manually_edited"] is False
+
+    # The LLM now fails; a second regenerate attempt must decline rather
+    # than replace the good text with template boilerplate.
+    mode["fallback"] = True
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}/regenerate", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "done", status
+
+    state = server_module._load_step_state(session_dir)
+    entry = next(e for e in state["steps"] if e["step_id"] == step_id)
+    assert entry["text"] == good_text
+    assert entry["used_fallback"] is False
+
+    report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+    assert report.get("regenerate_declined_steps") == [step_id]
+
+
 def test_a_refused_edit_never_hides_the_sessions_finished_downloads(tmp_path, monkeypatch):
     """Caught by automated PR review: jobs.submit turns any exception into
     a terminal "error" status (JobRunner._worker), which used to make

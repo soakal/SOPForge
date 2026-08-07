@@ -2275,6 +2275,45 @@ def test_oversized_upload_leaves_no_orphaned_session_directory(tmp_path, monkeyp
     assert list(sessions_root.iterdir()) == []
 
 
+def test_oversized_photo_upload_is_capped_and_leaves_no_orphan(tmp_path, monkeypatch):
+    """Caught by automated PR review: /ui/build (the manifest-free image
+    upload path, _ingest_photo_session) had no size cap at all, unlike
+    /sessions/_ingest_session -- an ordinary-looking image upload could
+    consume unbounded disk/memory on the same unauthenticated server."""
+    monkeypatch.setattr(server_module, "_MAX_UPLOAD_FILE_BYTES", 10)
+    client = _make_client(tmp_path)
+
+    buf = io.BytesIO()
+    Image.new("RGB", (200, 150), (10, 20, 30)).save(buf, "PNG")
+    files = [("files", ("first.png", buf.getvalue(), "image/png"))]
+
+    resp = client.post("/ui/build", data={"title": "Oversized"}, files=files)
+    assert resp.status_code == 413
+
+    sessions_root = tmp_path / "sessions"
+    assert list(sessions_root.iterdir()) == []
+
+
+def test_narration_wav_is_streamed_to_disk_not_buffered_in_memory(tmp_path, monkeypatch):
+    """Caught by automated PR review: narration audio used to be fully
+    read into a Python bytes object (_read_capped, chunk list + join) and
+    only written to disk afterward, so an accepted ~500MB WAV transiently
+    doubled that in process memory. It must now stream straight to
+    session_dir/narration.wav the same way a screenshot does (_copy_capped),
+    with upload.file.read never called directly by this code path."""
+    client = _make_client(tmp_path)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files = files + [
+        ("narration_wav_file", ("narration.wav", b"RIFF" + b"\x00" * 100, "audio/wav"))
+    ]
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    assert resp.status_code == 200
+    session_id = resp.json()["session_id"]
+    wav_path = tmp_path / "sessions" / session_id / "narration.wav"
+    assert wav_path.read_bytes() == b"RIFF" + b"\x00" * 100
+
+
 def test_testserver_host_is_not_trusted_outside_pytest(tmp_path, monkeypatch):
     """Caught by automated PR review: a prior version hard-coded
     "testserver" (Starlette TestClient's fixed Host/Origin default) into
@@ -2338,14 +2377,7 @@ def test_host_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
     assert resp.status_code == 200
 
 
-def test_csrf_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
-    """Caught by automated PR review: the host-guard relaxation above
-    covered GET/Host, but the sibling _csrf_guard (Origin-based, state-
-    changing methods only) still hard-coded loopback-only -- so a browser
-    loading the UI from a LAN address, whose same-origin form POSTs
-    legitimately carry an Origin with that same LAN hostname, got every
-    button/form on the web UI rejected with 403 even though the whole
-    point of bind_host="0.0.0.0" is to serve exactly that browser."""
+def _remote_client(tmp_path):
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)
     app = create_app(
@@ -2355,7 +2387,18 @@ def test_csrf_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
         config_path=cfg,
         bind_host="0.0.0.0",
     )
-    client = TestClient(app)
+    return TestClient(app)
+
+
+def test_csrf_guard_allows_same_origin_lan_requests_when_bound_beyond_loopback(tmp_path):
+    """Caught by automated PR review: the host-guard relaxation above
+    covered GET/Host, but the sibling _csrf_guard (Origin-based, state-
+    changing methods only) still hard-coded loopback-only -- so a browser
+    loading the UI from a LAN address, whose same-origin form POSTs
+    legitimately carry an Origin with that same LAN hostname, got every
+    button/form on the web UI rejected with 403 even though the whole
+    point of bind_host="0.0.0.0" is to serve exactly that browser."""
+    client = _remote_client(tmp_path)
     resp = client.post(
         "/ui/config",
         data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
@@ -2365,6 +2408,30 @@ def test_csrf_guard_steps_aside_when_bound_beyond_loopback(tmp_path):
         },
     )
     assert resp.status_code != 403
+
+
+def test_csrf_guard_still_rejects_a_genuinely_cross_origin_request_when_bound_beyond_loopback(
+    tmp_path,
+):
+    """Caught by automated PR review as a CRITICAL regression: the first
+    fix for the above simply disabled _csrf_guard entirely whenever
+    bind_host wasn't loopback, turning off CSRF protection for the whole,
+    unauthenticated app -- including /shutdown, /ui/config (rewrites the
+    LLM routing config), and session delete -- the moment anyone ran the
+    documented "server on another machine" setup. A malicious site the
+    operator's browser merely visits could then forge any of those
+    requests. The guard must still reject an Origin that doesn't match
+    the request's own Host, even when bound beyond loopback."""
+    client = _remote_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://evil.example.com",
+        },
+    )
+    assert resp.status_code == 403
 
 
 def _make_client_with_probe(tmp_path, probe_section_fn):

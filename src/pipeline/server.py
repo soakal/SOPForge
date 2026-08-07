@@ -425,18 +425,28 @@ def create_app(
     preflight wiring itself against a stub probe.
 
     bind_host: the --host value the server is (or will be) bound to
-    (__main__.py). Only affects _host_guard's/_csrf_guard's strictness:
-    bound to a real loopback address (the default), Host/Origin-header
-    checking stays strict (DNS-rebinding/CSRF protection). Bound to
-    anything else -- 0.0.0.0, a LAN IP -- the operator has deliberately
-    exposed this server beyond loopback (USER_MANUAL.md's "server on
-    another machine" setup, driven by --host + the capture agent's
-    SOPFORGE_SERVER_URL), so there's no fixed set of legitimate
-    Host/Origin values to allowlist in advance and both guards step aside
-    entirely rather than 403ing every request. Caught by automated PR
-    review, twice: the guard's first version hard-coded loopback-only and
-    broke that setup, then the fix only touched _host_guard and missed
-    that _csrf_guard needed the identical relaxation.
+    (__main__.py). Bound to a real loopback address (the default),
+    Host/Origin-header checking stays strict against the fixed local
+    allowlist (DNS-rebinding/CSRF protection). Bound to anything else --
+    0.0.0.0, a LAN IP -- the operator has deliberately exposed this
+    server beyond loopback (USER_MANUAL.md's "server on another machine"
+    setup, driven by --host + the capture agent's SOPFORGE_SERVER_URL),
+    so there's no fixed set of legitimate Host/Origin values to allowlist
+    in advance: _host_guard steps aside entirely (its DNS-rebinding
+    threat model has no meaningful fixed allowlist once arbitrary
+    addresses are expected to reach the server by design), while
+    _csrf_guard switches to a self-referential check -- an Origin must
+    match the SAME request's own Host header, not a fixed set -- so CSRF
+    protection stays in force (still rejects a request forged from a
+    different site's Origin) without needing to know the LAN address in
+    advance. Caught by automated PR review, three times over two rounds:
+    the guard's first version hard-coded loopback-only and broke that
+    setup; the fix only touched _host_guard and missed that _csrf_guard
+    needed relaxing too; and that relaxation initially disabled
+    _csrf_guard entirely rather than switching to the self-referential
+    check, which would have turned off CSRF protection for the whole,
+    unauthenticated app (including /shutdown, /ui/config, and session
+    delete) the moment anyone ran this documented setup.
 
     extra_allowed_hosts: additional hostnames _host_guard/_csrf_guard
     trust alongside the real loopback names, ONLY when bind_host is
@@ -502,23 +512,37 @@ def create_app(
         host is matched exactly (not a prefix), so
         'http://127.0.0.1.evil.com' is rejected.
 
-        Skipped entirely under the same bind_host condition as
-        _host_guard: bound beyond loopback (the documented "server on
-        another machine" setup), a browser loading the UI from that LAN
-        address legitimately sends an Origin with that same LAN hostname
-        on every form POST -- comparing it against the loopback-only
-        _LOCAL_HOSTS would 403 the entire web UI (upload, rerender,
-        delete, config, per-step edit/regenerate). There's no fixed
-        allowlist that makes sense once the operator has deliberately
-        exposed the server, same reasoning as _host_guard. Caught by
-        automated PR review (the first version of this relaxation only
-        touched _host_guard, missing this sibling guard)."""
-        if not _host_guard_strict:
-            return await call_next(request)
+        Bound beyond loopback (the documented "server on another machine"
+        setup), there's no fixed allowlist of legitimate Origin values --
+        a browser loading the UI from that LAN address legitimately sends
+        an Origin with that same LAN hostname on every form POST. This
+        guard must still reject an actually cross-origin request, though
+        -- silently disabling it entirely in that mode (a prior version
+        of this fix, caught by automated PR review as a real security
+        regression: it turned off CSRF protection for the whole,
+        unauthenticated app, including /shutdown, /ui/config, and session
+        delete, the moment anyone ran the documented remote setup) would
+        let ANY website the operator's browser visits forge requests to
+        this server. Instead, when not in the strict/loopback case, the
+        check is self-referential: Origin's hostname must match THIS
+        request's own Host header (also urlsplit-parsed) rather than a
+        fixed set -- exactly the same test a same-origin request from the
+        real UI naturally passes, whatever LAN address it's served from,
+        while a request forged from a different site's Origin still
+        fails it."""
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
-            if origin and urlsplit(origin).hostname not in _LOCAL_HOSTS:
-                return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
+            if origin:
+                origin_host = urlsplit(origin).hostname
+                if _host_guard_strict:
+                    allowed = origin_host in _LOCAL_HOSTS
+                else:
+                    own_host = (
+                        urlsplit(f"//{request.headers.get('host') or ''}").hostname or ""
+                    ).lower()
+                    allowed = bool(origin_host) and origin_host == own_host
+                if not allowed:
+                    return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
         return await call_next(request)
 
     @app.middleware("http")
@@ -1405,16 +1429,24 @@ def create_app(
                 result["narration"] = narration
         return note, placement_meta
 
-    def _ingest_session(manifest_json, files, transcript=None, stage=False, narration_wav=None):
+    def _ingest_session(
+        manifest_json, files, transcript=None, stage=False, narration_wav_upload=None
+    ):
         """Shared by the JSON API (POST /sessions) and the browser upload
         form (POST /ui/upload). `transcript`, if given, is a (filename,
-        text) tuple. `narration_wav`, if given, is raw WAV bytes -- saved
-        unconditionally as session_dir/narration.wav; its validity (real
-        audio, transcribable) is only checked later at generation time
-        (_maybe_transcribe_narration), never a 400 at ingest. When `stage`
-        is True, the session is registered but not submitted for generation
-        -- it's left in `staged` so the user can drop mis-captured steps via
-        the steps-review page before generation runs (see POST
+        text) tuple. `narration_wav_upload`, if given, is the raw
+        UploadFile (not pre-read bytes -- streamed straight to
+        session_dir/narration.wav via _copy_capped, same as a screenshot,
+        instead of buffering the whole file in a Python bytes object
+        first; caught by automated PR review, a prior version read it
+        fully into memory via _read_capped before this function ever saw
+        it). Its validity (real audio, transcribable) is only checked
+        later at generation time (_maybe_transcribe_narration), never a
+        400 at ingest -- an unreadable/malformed WAV is still written and
+        only size, not content, is validated here. When `stage` is True,
+        the session is registered but not submitted for generation -- it's
+        left in `staged` so the user can drop mis-captured steps via the
+        steps-review page before generation runs (see POST
         .../confirm-steps). Returns the new session_id, or raises
         HTTPException on bad input."""
         try:
@@ -1472,6 +1504,13 @@ def create_app(
                     if screenshots_dir.resolve() not in dest.parents:
                         raise HTTPException(status_code=400, detail=f"invalid filename: {name!r}")
                     _copy_capped(upload.file, dest, _MAX_UPLOAD_FILE_BYTES, f"screenshot {name!r}")
+                if narration_wav_upload is not None and narration_wav_upload.filename:
+                    _copy_capped(
+                        narration_wav_upload.file,
+                        session_dir / "narration.wav",
+                        _MAX_NARRATION_WAV_BYTES,
+                        "narration audio",
+                    )
             except HTTPException:
                 raise
             except Exception as exc:
@@ -1498,8 +1537,6 @@ def create_app(
             (session_dir / f"transcript.{transcript_ext}").write_text(
                 transcript[1], encoding="utf-8"
             )
-        if narration_wav is not None:
-            (session_dir / "narration.wav").write_bytes(narration_wav)
 
         sessions[session_id] = (manifest, screenshots_dir, annotated_dir, session_dir)
         if stage:
@@ -1522,18 +1559,6 @@ def create_app(
             ) from exc
         return (upload.filename, content)
 
-    def _read_narration_wav(upload):
-        """Turn an optional narration-audio UploadFile into raw bytes, or
-        None if none was provided. Unlike _read_transcript, an unexpected
-        WAV *content* never raises here -- a WAV's validity is only
-        meaningful at transcription time (_maybe_transcribe_narration), not
-        at ingest, so a malformed/empty file here must never become an
-        ingest-time 400. Size is still capped (413, not silently accepted)
-        -- see _MAX_NARRATION_WAV_BYTES."""
-        if upload is None or not upload.filename:
-            return None
-        return _read_capped(upload.file, _MAX_NARRATION_WAV_BYTES, "narration audio")
-
     @app.post("/sessions")
     def create_session(
         manifest_json: str = Form(...),
@@ -1547,7 +1572,7 @@ def create_app(
             files,
             _read_transcript(transcript_file),
             stage=stage,
-            narration_wav=_read_narration_wav(narration_wav_file),
+            narration_wav_upload=narration_wav_file,
         )
         return {"session_id": session_id, "status": _status_of(session_id)}
 
@@ -1569,7 +1594,7 @@ def create_app(
             files,
             _read_transcript(transcript_file),
             stage=True,
-            narration_wav=_read_narration_wav(narration_wav_file),
+            narration_wav_upload=narration_wav_file,
         )
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
@@ -1607,7 +1632,17 @@ def create_app(
                     )
                 name = f"{i:03d}.png"
                 try:
-                    with Image.open(upload.file) as im:
+                    # Capped the same way _ingest_session's screenshots are
+                    # -- this path had no size limit at all before, on the
+                    # same unauthenticated server. Caught by automated PR
+                    # review. PIL needs a seekable buffer, so this reads
+                    # the (capped) image into memory rather than streaming
+                    # straight to disk like _copy_capped; acceptable at the
+                    # same 200MB ceiling as a single screenshot.
+                    image_bytes = _read_capped(
+                        upload.file, _MAX_UPLOAD_FILE_BYTES, f"image {upload.filename!r}"
+                    )
+                    with Image.open(io.BytesIO(image_bytes)) as im:
                         im.convert("RGB").save(screenshots_dir / name)
                 except HTTPException:
                     raise
@@ -1818,19 +1853,41 @@ def create_app(
             if callable(close):
                 close()
 
-        if used_fallback and step_id in _load_edits(session_dir):
+        if used_fallback:
             # The AI attempt produced nothing real (render_step_template's
-            # deterministic manifest interpolation, not a generated reply)
-            # and there's a manual edit on this step -- decline to
-            # overwrite/clear it. Re-export with no override so the
-            # existing edit stays fully applied; report the decline instead
-            # of silently discarding the reviewer's own wording.
-            _reexport_session(
-                session_id,
-                preflight_result=preflight_result,
-                regenerate_declined_step=step_id,
-            )
-            return
+            # deterministic manifest interpolation, not a generated reply).
+            # Only let it overwrite text that was ALREADY a fallback --
+            # never a manual edit or a previously-successful generation,
+            # both persisted with used_fallback=False (_apply_manual_edits
+            # always sets it False; a step that round-trip-passed on its
+            # last real generation/regenerate does too). Checking the
+            # step's own persisted flag (not just "is there a manual
+            # edit") makes this symmetric: a transient LLM outage must
+            # never silently downgrade EITHER kind of good text to
+            # boilerplate with no way back short of a full /rerender.
+            # Caught by automated PR review -- the first version of this
+            # guard only protected a manual edit, missing the identical
+            # risk to a prior successful generation.
+            #
+            # _apply_manual_edits folds in any PENDING edits.json override
+            # (saved via the edit route but not yet re-exported into
+            # steps.json) the same way _reexport_session itself would --
+            # without it, a manual edit saved but never re-exported would
+            # still show steps.json's stale used_fallback=True and this
+            # guard would wrongly let the fallback through.
+            step_results, _annotated_paths, _state = _load_reexportable_state(session_id)
+            _apply_manual_edits(session_dir, step_results)
+            persisted = next((r for r in step_results if r["step_id"] == step_id), None)
+            if persisted is not None and not persisted.get("used_fallback"):
+                # Re-export with no override so the existing (good) text
+                # stays fully applied; report the decline instead of
+                # silently discarding it.
+                _reexport_session(
+                    session_id,
+                    preflight_result=preflight_result,
+                    regenerate_declined_step=step_id,
+                )
+                return
 
         # _reexport_session BEFORE clearing the edit -- text_overrides always
         # wins over a stale edits.json entry for this same step_id (applied
