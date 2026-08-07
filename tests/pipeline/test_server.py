@@ -2434,6 +2434,26 @@ def test_csrf_guard_still_rejects_a_genuinely_cross_origin_request_when_bound_be
     assert resp.status_code == 403
 
 
+def test_csrf_guard_rejects_a_same_host_different_port_origin_when_bound_beyond_loopback(
+    tmp_path,
+):
+    """Caught by automated PR review: the self-referential check compared
+    only hostnames, ignoring port (and scheme) -- so any other locally-
+    hosted service on the same machine/IP but a different port (a dev
+    server, another app) was wrongly treated as same-origin and could
+    forge requests here. Port must be part of the comparison."""
+    client = _remote_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://192.168.1.50:3000",
+        },
+    )
+    assert resp.status_code == 403
+
+
 def _make_client_with_probe(tmp_path, probe_section_fn):
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)

@@ -529,18 +529,26 @@ def create_app(
         fixed set -- exactly the same test a same-origin request from the
         real UI naturally passes, whatever LAN address it's served from,
         while a request forged from a different site's Origin still
-        fails it."""
+        fails it. The self-referential comparison matches scheme AND port
+        too, not just hostname -- comparing hostname alone would treat
+        any other locally-hosted service on the same machine/IP (e.g. a
+        dev server on a different port) as same-origin, letting IT forge
+        requests here. Caught by automated PR review."""
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin:
-                origin_host = urlsplit(origin).hostname
+                origin_split = urlsplit(origin)
+                origin_host = origin_split.hostname
                 if _host_guard_strict:
                     allowed = origin_host in _LOCAL_HOSTS
                 else:
-                    own_host = (
-                        urlsplit(f"//{request.headers.get('host') or ''}").hostname or ""
-                    ).lower()
-                    allowed = bool(origin_host) and origin_host == own_host
+                    own_split = urlsplit(f"//{request.headers.get('host') or ''}")
+                    allowed = (
+                        bool(origin_host)
+                        and origin_split.scheme == request.url.scheme
+                        and origin_host == (own_split.hostname or "").lower()
+                        and origin_split.port == own_split.port
+                    )
                 if not allowed:
                     return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
         return await call_next(request)
