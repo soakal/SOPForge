@@ -2742,6 +2742,18 @@ def test_config_page_has_a_test_button_per_section(tmp_path):
     assert "/ui/config/test" in page
 
 
+def test_config_page_test_js_handles_non_ok_responses(tmp_path):
+    """Caught by automated PR review: the "Test connection" button's fetch
+    handler read d.status/d.detail unconditionally, so an error response
+    (400 from an invalid section/provider, or a CSRF 403), which serializes
+    as {"detail": "..."} with no "status" key, rendered as a confusing
+    "undefined: ..." instead of a readable message."""
+    client = _make_client(tmp_path)
+    page = client.get("/ui/config").text
+    assert "res.ok" in page
+    assert "request rejected" in page
+
+
 def test_config_test_route_probes_the_saved_section(tmp_path):
     calls = []
     client = _make_client_with_probe(

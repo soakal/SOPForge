@@ -573,8 +573,13 @@ document.addEventListener('click', function(e) {
     model: field('_model')
   });
   fetch('/ui/config/test', {method: 'POST', body: body})
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+    .then(function(res) {
+      var d = res.d;
+      if (!res.ok) {
+        result.textContent = 'error: ' + (d.detail || 'request rejected');
+        return;
+      }
       var latency = (d.latency_ms !== null && d.latency_ms !== undefined) ?
         ' (' + d.latency_ms + 'ms)' : '';
       result.textContent = d.status + ': ' + d.detail + latency;
