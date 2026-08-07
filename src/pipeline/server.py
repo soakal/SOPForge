@@ -260,6 +260,31 @@ def _edits_path(session_dir):
     return Path(session_dir) / "edits.json"
 
 
+# Guards every edits.json read-modify-write sequence (_save_edit,
+# _clear_edit, _clear_all_edits) against a lost update between the HTTP
+# request thread (ui_edit_step, rerender/ui_rerender) and the JobRunner
+# background worker thread (_regenerate_step's _clear_edit,
+# _apply_manual_edits' read inside _reexport_session) -- both do an
+# unsynchronized load-modify-save of the same file, so a save landing
+# between another thread's load and save silently discards it. One lock
+# per session_dir (not a single global one) so unrelated sessions never
+# block each other; keyed by the resolved path so the same on-disk
+# session always maps to the same lock object regardless of how its
+# Path was constructed. Caught by automated PR review.
+_edits_locks = {}
+_edits_locks_guard = threading.Lock()
+
+
+def _edits_lock(session_dir):
+    key = str(Path(session_dir).resolve())
+    with _edits_locks_guard:
+        lock = _edits_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _edits_locks[key] = lock
+        return lock
+
+
 def _load_edits(session_dir):
     """{step_id: {"text", "edited_utc"}} of every manual override on this
     session, or {} if none exist / the file is missing or corrupt --
@@ -282,24 +307,39 @@ def _load_edits(session_dir):
     return edits if isinstance(edits, dict) else {}
 
 
+def _write_edits_atomic(session_dir, edits):
+    """Writes edits.json via a same-directory temp file + os.replace, which
+    is atomic on both POSIX and Windows -- a concurrent _load_edits (e.g.
+    _apply_manual_edits reading on the job thread while a save/clear lands
+    on the request thread) can therefore only ever see the fully-old or
+    fully-new content, never a truncated/partial write mid-flight."""
+    path = _edits_path(session_dir)
+    tmp = path.with_suffix(f"{path.suffix}.tmp-{uuid.uuid4().hex}")
+    tmp.write_text(json.dumps({"steps": edits}), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def _save_edit(session_dir, step_id, text):
-    edits = _load_edits(session_dir)
-    edits[step_id] = {"text": text, "edited_utc": datetime.now(timezone.utc).isoformat()}
-    _edits_path(session_dir).write_text(json.dumps({"steps": edits}), encoding="utf-8")
+    with _edits_lock(session_dir):
+        edits = _load_edits(session_dir)
+        edits[step_id] = {"text": text, "edited_utc": datetime.now(timezone.utc).isoformat()}
+        _write_edits_atomic(session_dir, edits)
 
 
 def _clear_edit(session_dir, step_id):
     """Removes one step's override, if any. Returns whether one existed."""
-    edits = _load_edits(session_dir)
-    if step_id not in edits:
-        return False
-    del edits[step_id]
-    _edits_path(session_dir).write_text(json.dumps({"steps": edits}), encoding="utf-8")
-    return True
+    with _edits_lock(session_dir):
+        edits = _load_edits(session_dir)
+        if step_id not in edits:
+            return False
+        del edits[step_id]
+        _write_edits_atomic(session_dir, edits)
+        return True
 
 
 def _clear_all_edits(session_dir):
-    _edits_path(session_dir).unlink(missing_ok=True)
+    with _edits_lock(session_dir):
+        _edits_path(session_dir).unlink(missing_ok=True)
 
 
 def _apply_manual_edits(session_dir, step_results):

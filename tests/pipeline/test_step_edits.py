@@ -46,6 +46,33 @@ def test_save_load_clear_edit_round_trip(tmp_path):
     assert server_module._clear_edit(tmp_path, "step-001") is False  # already gone
 
 
+def test_concurrent_saves_never_lose_an_edit(tmp_path):
+    """Caught by automated PR review: _save_edit/_clear_edit used to do an
+    unsynchronized load-modify-save of edits.json, so two threads saving
+    edits for different steps at nearly the same time could race -- the
+    second save's read (taken before the first save's write landed) would
+    overwrite the first save away entirely. Hammer it with real threads
+    saving distinct steps concurrently and confirm every one survives."""
+    import threading
+
+    barrier = threading.Barrier(20)
+
+    def save(i):
+        barrier.wait()
+        server_module._save_edit(tmp_path, f"step-{i:03d}", f"edit {i}")
+
+    threads = [threading.Thread(target=save, args=(i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    edits = server_module._load_edits(tmp_path)
+    assert len(edits) == 20
+    for i in range(20):
+        assert edits[f"step-{i:03d}"]["text"] == f"edit {i}"
+
+
 def test_clear_all_edits_removes_the_file(tmp_path):
     server_module._save_edit(tmp_path, "step-001", "x")
     server_module._save_edit(tmp_path, "step-002", "y")
