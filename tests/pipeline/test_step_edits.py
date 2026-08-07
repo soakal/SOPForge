@@ -73,6 +73,22 @@ def test_concurrent_saves_never_lose_an_edit(tmp_path):
         assert edits[f"step-{i:03d}"]["text"] == f"edit {i}"
 
 
+def test_forget_edits_lock_drops_the_entry(tmp_path):
+    """Caught by automated PR review: _edits_locks is a module-global dict
+    that grows one entry per session ever edited and was never pruned --
+    a long-running server's memory would creep up forever, including for
+    sessions deleted long ago. ui_delete must forget the lock."""
+    server_module._edits_lock(tmp_path)  # creates the entry
+    key = str(tmp_path.resolve())
+    assert key in server_module._edits_locks
+
+    server_module._forget_edits_lock(tmp_path)
+    assert key not in server_module._edits_locks
+
+    # Safe to call again / on a never-locked dir -- no KeyError.
+    server_module._forget_edits_lock(tmp_path)
+
+
 def test_clear_all_edits_removes_the_file(tmp_path):
     server_module._save_edit(tmp_path, "step-001", "x")
     server_module._save_edit(tmp_path, "step-002", "y")

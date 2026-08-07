@@ -285,6 +285,18 @@ def _edits_lock(session_dir):
         return lock
 
 
+def _forget_edits_lock(session_dir):
+    """Drops session_dir's entry from _edits_locks, if any -- called by
+    ui_delete so a long-running server doesn't grow this module-global
+    dict forever, one entry per session ever edited, including sessions
+    deleted long ago. Path.resolve() doesn't require the directory to
+    still exist, so this is safe to call after the directory is already
+    gone. Caught by automated PR review."""
+    key = str(Path(session_dir).resolve())
+    with _edits_locks_guard:
+        _edits_locks.pop(key, None)
+
+
 def _load_edits(session_dir):
     """{step_id: {"text", "edited_utc"}} of every manual override on this
     session, or {} if none exist / the file is missing or corrupt --
@@ -2001,6 +2013,7 @@ def create_app(
         except OSError:
             pass
         shutil.rmtree(session_dir, ignore_errors=True)
+        _forget_edits_lock(session_dir)
         remove_entry(sessions_root, session_id)
         return RedirectResponse("/ui", status_code=303)
 
