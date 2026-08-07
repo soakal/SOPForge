@@ -13,7 +13,11 @@
     Stop it any time by creating a STOP file in the repo root:  ni STOP
 
 .PARAMETER Phase
-    Phase to run: 1, 2, 3, or "all" (default).
+    Phase to run: 1, 2, 3, or "all" (default). Capped at 3 -- phases 4+
+    (phases/04-*.md, 05-*.md) are follow-on feature work done directly in
+    interactive sessions, not through this watchdog's plan/execute/review
+    loop (no matching NN-results.md gate file or planner-authored
+    NN-tasks.md exists for them), so there's nothing for -Phase 4 to run.
 
 .PARAMETER MaxRestarts
     Give up after this many relaunches (default 40 — roughly a week of 5-hour

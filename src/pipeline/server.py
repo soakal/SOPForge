@@ -206,6 +206,56 @@ def _load_step_index(session_dir):
     return steps if isinstance(steps, list) else None
 
 
+# Generous but finite per-file caps on ingest -- this is a local,
+# single-user tool with no auth, so any process that can reach it (or a
+# DNS-rebinding page slipping past the host/CSRF guards) could otherwise
+# stream unbounded multipart bodies straight to disk/memory. Screenshots
+# are realistically a few MB each; a narration WAV is a single recording,
+# not hours of audio. Caught by a repo security audit.
+_MAX_UPLOAD_FILE_BYTES = 200 * 1024 * 1024  # 200MB
+_MAX_NARRATION_WAV_BYTES = 500 * 1024 * 1024  # 500MB
+
+
+def _copy_capped(src_fileobj, dest_path, max_bytes, what):
+    """Streams src_fileobj into dest_path in chunks, aborting with a 413
+    (and removing the partial file) if it exceeds max_bytes -- never
+    buffers the whole upload in memory just to check its size."""
+    written = 0
+    with dest_path.open("wb") as out:
+        while True:
+            chunk = src_fileobj.read(1024 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                out.close()
+                dest_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{what} exceeds the {max_bytes // (1024 * 1024)}MB limit",
+                )
+            out.write(chunk)
+
+
+def _read_capped(fileobj, max_bytes, what):
+    """Reads fileobj into memory in chunks, raising a 413 (never buffering
+    past the cap) if it exceeds max_bytes."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = fileobj.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{what} exceeds the {max_bytes // (1024 * 1024)}MB limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _edits_path(session_dir):
     return Path(session_dir) / "edits.json"
 
@@ -378,6 +428,26 @@ def create_app(
     )
 
     _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+    # "testserver" is Starlette TestClient's fixed default Host header (every
+    # test in this suite uses it) -- not a name an internet attacker's DNS
+    # can rebind to, since it has no TLD and can't be a real, publicly
+    # resolvable hostname. Safe to trust alongside the real local hostnames.
+    _ALLOWED_HOSTS = _LOCAL_HOSTS | {"testserver"}
+
+    @app.middleware("http")
+    async def _host_guard(request, call_next):
+        """Blocks DNS-rebinding: the CSRF guard below only checks the Origin
+        header, which browsers only send on cross-origin requests -- but a
+        page that DNS-rebinds its own hostname to 127.0.0.1 can still issue
+        same-origin-looking GETs (no Origin header required for e.g. a
+        top-level navigation or certain request modes) whose Host header is
+        the attacker's rebound domain, not this server's. Checking Host
+        directly closes that gap regardless of method or Origin presence.
+        Caught by a repo security audit."""
+        host = (request.headers.get("host") or "").split(":")[0]
+        if host not in _ALLOWED_HOSTS:
+            return JSONResponse({"detail": "invalid host header"}, status_code=403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def _csrf_guard(request, call_next):
@@ -1343,8 +1413,7 @@ def create_app(
                 dest = (screenshots_dir / name).resolve()
                 if screenshots_dir.resolve() not in dest.parents:
                     raise HTTPException(status_code=400, detail=f"invalid filename: {name!r}")
-                with dest.open("wb") as out:
-                    shutil.copyfileobj(upload.file, out)
+                _copy_capped(upload.file, dest, _MAX_UPLOAD_FILE_BYTES, f"screenshot {name!r}")
         except HTTPException:
             raise
         except Exception as exc:
@@ -1384,13 +1453,15 @@ def create_app(
 
     def _read_narration_wav(upload):
         """Turn an optional narration-audio UploadFile into raw bytes, or
-        None if none was provided. Unlike _read_transcript, this never
-        raises -- a WAV's validity is only meaningful at transcription time
-        (_maybe_transcribe_narration), not at ingest, so a malformed/empty
-        file here must never become an ingest-time 400."""
+        None if none was provided. Unlike _read_transcript, an unexpected
+        WAV *content* never raises here -- a WAV's validity is only
+        meaningful at transcription time (_maybe_transcribe_narration), not
+        at ingest, so a malformed/empty file here must never become an
+        ingest-time 400. Size is still capped (413, not silently accepted)
+        -- see _MAX_NARRATION_WAV_BYTES."""
         if upload is None or not upload.filename:
             return None
-        return upload.file.read()
+        return _read_capped(upload.file, _MAX_NARRATION_WAV_BYTES, "narration audio")
 
     @app.post("/sessions")
     def create_session(

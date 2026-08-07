@@ -65,7 +65,7 @@ fixtures, or web content.
 - Runtime LLM: per-section provider routing in `config/models.toml` —
   `provider` = ollama (local, default) | openrouter | openai | anthropic, plus a
   model (and endpoint for ollama). Defaults: steps → `qwen3:32b`, narrative →
-  `qwen3:32b` multi-pass, vision → `qwen2.5vl:7b`. API keys come ONLY from env
+  `qwen3.6:27b` multi-pass, vision → `qwen2.5vl:7b`. API keys come ONLY from env
   vars (`OPENROUTER_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`), never the
   config file. Edited via the tray → Configuration page (`/ui/config`), which
   writes a per-user `~/SOPForge/models.toml` (the bundled copy is read-only in

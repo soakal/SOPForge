@@ -14,3 +14,4 @@ STOP
 ESCALATION.md
 .pytest_cache/
 .ruff_cache/
+.hypothesis/

@@ -17,6 +17,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfReader
@@ -25,6 +26,8 @@ from pipeline.config import default_config_path, load_models_config, save_models
 from pipeline.manifest import load_manifest
 from pipeline.server import create_app
 from pipeline.template import render_step_template
+
+import pipeline.server as server_module
 
 from _stub_llm import stub_llm_client_factory
 
@@ -2224,6 +2227,52 @@ def test_csrf_rejects_lookalike_host(tmp_path):
         headers={"Origin": "http://127.0.0.1.evil.com"},
     )
     assert resp.status_code == 403
+
+
+def test_copy_capped_writes_a_file_under_the_limit(tmp_path):
+    dest = tmp_path / "out.bin"
+    server_module._copy_capped(io.BytesIO(b"x" * 100), dest, max_bytes=1000, what="thing")
+    assert dest.read_bytes() == b"x" * 100
+
+
+def test_copy_capped_rejects_and_removes_a_file_over_the_limit(tmp_path):
+    """Caught by a repo security audit: ingest previously streamed uploads
+    to disk with no size cap at all."""
+    dest = tmp_path / "out.bin"
+    with pytest.raises(HTTPException) as exc_info:
+        server_module._copy_capped(io.BytesIO(b"x" * 2000), dest, max_bytes=1000, what="thing")
+    assert exc_info.value.status_code == 413
+    assert not dest.exists()
+
+
+def test_read_capped_returns_bytes_under_the_limit():
+    assert server_module._read_capped(io.BytesIO(b"y" * 100), max_bytes=1000, what="thing") == (
+        b"y" * 100
+    )
+
+
+def test_read_capped_rejects_bytes_over_the_limit():
+    with pytest.raises(HTTPException) as exc_info:
+        server_module._read_capped(io.BytesIO(b"y" * 2000), max_bytes=1000, what="thing")
+    assert exc_info.value.status_code == 413
+
+
+def test_host_guard_rejects_a_dns_rebound_hostname(tmp_path):
+    """Caught by a repo security audit: the CSRF guard only checks Origin,
+    which a DNS-rebinding page's same-origin-looking GET may not send. A
+    request whose Host header doesn't match a real local hostname (or
+    TestClient's own "testserver") must be rejected outright, for any
+    method -- not just the state-changing ones the CSRF guard covers."""
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "rebound.attacker.example"})
+    assert resp.status_code == 403
+
+
+def test_host_guard_allows_the_real_local_hostnames(tmp_path):
+    client = _make_client(tmp_path)
+    for host in ("127.0.0.1", "localhost", "testserver"):
+        resp = client.get("/library", headers={"Host": host})
+        assert resp.status_code == 200, host
 
 
 def _make_client_with_probe(tmp_path, probe_section_fn):
