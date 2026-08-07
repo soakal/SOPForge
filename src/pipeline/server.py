@@ -23,6 +23,7 @@ JSON is persisted to session_dir/manifest.json specifically so this
 restore is possible."""
 
 import io
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -529,15 +530,50 @@ def create_app(
     # can never widen a shipped server's trust. Caught by automated PR
     # review: a prior version hard-coded "testserver" unconditionally.
     _test_hosts = {"testserver"} if os.environ.get("PYTEST_CURRENT_TEST") else set()
+
+    def _norm_host(host):
+        """Normalize a hostname for allowlist/equality comparison:
+        lowercase, strip surrounding IPv6 brackets (so a bind_host given
+        as "[::1]" matches urlsplit's unbracketed .hostname), and strip
+        ONE trailing dot -- "localhost." and "localhost" are the same
+        host per RFC 1034 (the trailing dot just marks the name as fully
+        qualified), and a browser at http://localhost./ sends the dotted
+        form in both Host and Origin, which a literal string compare
+        would 403. Only a single dot is stripped: "localhost.." is not a
+        valid DNS name and stays rejected. Returns "" for None/empty."""
+        host = (host or "").strip().lower()
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if host.endswith("."):
+            host = host[:-1]
+        return host
+
     # A bind-ALL address means "reachable via any of this machine's
     # interfaces/addresses", not one fixed address -- there's no single
     # value to allowlist in advance. Any other bind_host (including a
     # specific LAN IP/hostname) IS a fixed, known value, so it's just
     # added to the trusted set below instead of relaxing the guards.
-    _bind_all = bind_host in {"0.0.0.0", "::", "*", "", None}
+    # Detected via ipaddress.is_unspecified, not a literal string set --
+    # "0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0" are all
+    # spellings of "bind everything", and treating a non-canonical
+    # spelling as a fixed address would put that unreachable-as-a-Host
+    # literal in the allowlist and 403 every real client (the same
+    # remote-lockout failure mode caught by automated PR review for the
+    # original loopback-only guard).
+    _bind_host_norm = _norm_host(bind_host)
+
+    def _is_bind_all(value):
+        if value in {"*", ""}:
+            return True
+        try:
+            return ipaddress.ip_address(value).is_unspecified
+        except ValueError:
+            return False
+
+    _bind_all = _is_bind_all(_bind_host_norm)
     _bind_host_entry = set()
-    if not _bind_all and bind_host not in {"127.0.0.1", "localhost", "::1"}:
-        _bind_host_entry.add(bind_host)
+    if not _bind_all and _bind_host_norm not in {"127.0.0.1", "localhost", "::1"}:
+        _bind_host_entry.add(_bind_host_norm)
         # A remote browser reaching a specific bind address commonly types
         # the machine's hostname/FQDN, not the raw IP the server was
         # started with -- the two resolve to the same address but are
@@ -548,20 +584,44 @@ def create_app(
         # round-trip for gethostname; getfqdn only touches DNS if the
         # hostname isn't already qualified) but must never crash app
         # startup if they fail for any reason. Caught by automated PR
-        # review.
+        # review. UnicodeError is caught alongside OSError: getfqdn's
+        # internal gethostbyaddr IDNA-encodes the name and raises
+        # UnicodeError (not OSError) for e.g. an overlong or non-ASCII
+        # hostname label, which would otherwise crash startup on a
+        # machine with such a computer name.
         try:
             _bind_host_entry.add(socket.gethostname())
             _bind_host_entry.add(socket.getfqdn())
-        except OSError:
+        except (OSError, UnicodeError):
             pass
-    _LOCAL_HOSTS = (
-        frozenset({"127.0.0.1", "localhost", "::1"})
-        | frozenset(extra_allowed_hosts)
-        | frozenset(_test_hosts)
-        | frozenset(h.lower() for h in _bind_host_entry if h)
+    _LOCAL_HOSTS = frozenset(
+        h
+        for h in (
+            _norm_host(entry)
+            for entry in (
+                {"127.0.0.1", "localhost", "::1"}
+                | set(extra_allowed_hosts)
+                | set(_test_hosts)
+                | _bind_host_entry
+            )
+        )
+        if h
     )
     _ALLOWED_HOSTS = _LOCAL_HOSTS
     _host_guard_strict = not _bind_all
+
+    def _parse_host_header(raw):
+        """Parse a Host-header-shaped value ("host", "host:port",
+        "[v6]:port") into a normalized hostname, or None if it can't be
+        parsed at all. urlsplit itself raises ValueError on an unmatched
+        IPv6 bracket ("[::1" -> "Invalid IPv6 URL") -- and Host is fully
+        attacker-controlled, so that must become a 403 from the caller,
+        never escape as an unhandled 500. Caught by the same audit that
+        found the identical .port ValueError gap."""
+        try:
+            return _norm_host(urlsplit(f"//{raw or ''}").hostname)
+        except ValueError:
+            return None
 
     @app.middleware("http")
     async def _host_guard(request, call_next):
@@ -578,11 +638,13 @@ def create_app(
 
         Host is parsed with urlsplit, not a raw ":"-split, so a bracketed
         IPv6 literal (`Host: [::1]:8420`) resolves to `::1` rather than the
-        mangled `[` a naive split produces. Caught by automated PR review."""
+        mangled `[` a naive split produces (caught by automated PR review)
+        -- via _parse_host_header, so a malformed value urlsplit refuses to
+        parse at all is a 403, not a 500."""
         if not _host_guard_strict:
             return await call_next(request)
-        host = (urlsplit(f"//{request.headers.get('host') or ''}").hostname or "").lower()
-        if host not in _ALLOWED_HOSTS:
+        host = _parse_host_header(request.headers.get("host"))
+        if not host or host not in _ALLOWED_HOSTS:
             return JSONResponse({"detail": "invalid host header"}, status_code=403)
         return await call_next(request)
 
@@ -628,28 +690,44 @@ def create_app(
         first for the self-referential branch only, then again because
         the strict/loopback branch had the identical port/scheme gap
         from the very start (a pre-existing hostname-only check, not
-        something this round of fixes introduced)."""
+        something this round of fixes introduced).
+
+        Ports are compared after RFC 6454 default-port normalization: an
+        absent port means the scheme's default (80 for http, 443 for
+        https), so `Origin: http://localhost` and `Host: localhost:80`
+        are the same origin, not a spurious None != 80 rejection of a
+        legitimate same-origin request from a client that spells the
+        default port explicitly on one side only. urlsplit itself can
+        also raise ValueError (unmatched IPv6 bracket in Origin or Host,
+        e.g. `Origin: http://[::1`) -- the whole parse is inside the
+        try, so any malformed value is a 403, never an unhandled 500."""
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin:
-                origin_split = urlsplit(origin)
-                origin_host = origin_split.hostname
-                own_split = urlsplit(f"//{request.headers.get('host') or ''}")
+                default_ports = {"http": 80, "https": 443, "ws": 80, "wss": 443}
                 try:
-                    same_port = origin_split.port == own_split.port
+                    origin_split = urlsplit(origin)
+                    origin_host = _norm_host(origin_split.hostname)
+                    own_split = urlsplit(f"//{request.headers.get('host') or ''}")
+                    own_host = _norm_host(own_split.hostname)
+                    origin_port = origin_split.port
+                    own_port = own_split.port
                 except ValueError:
-                    same_port = False
+                    return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
+                if origin_port is None:
+                    origin_port = default_ports.get(origin_split.scheme)
+                if own_port is None:
+                    own_port = default_ports.get(request.url.scheme)
                 if _host_guard_strict:
                     host_ok = origin_host in _LOCAL_HOSTS
                 else:
-                    host_ok = (
-                        bool(origin_host) and origin_host == (own_split.hostname or "").lower()
-                    )
+                    host_ok = bool(origin_host) and origin_host == own_host
                 allowed = (
                     bool(origin_host)
                     and host_ok
                     and origin_split.scheme == request.url.scheme
-                    and same_port
+                    and origin_port is not None
+                    and origin_port == own_port
                 )
                 if not allowed:
                     return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)

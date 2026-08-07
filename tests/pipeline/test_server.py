@@ -2540,6 +2540,186 @@ def test_host_guard_trusts_this_machines_own_hostname_for_a_specific_bind_addres
     assert resp.status_code == 200
 
 
+def test_host_guard_rejects_a_malformed_ipv6_host_instead_of_500ing(tmp_path):
+    """Caught by a follow-up exhaustive audit: urlsplit itself raises
+    ValueError for an unmatched IPv6 bracket ("Invalid IPv6 URL"), before
+    .port is ever touched -- and Host is fully attacker-controlled, so
+    `Host: [::1` reached the guard's bare urlsplit call and escaped as an
+    unhandled 500 instead of a 403."""
+    client = _make_client(tmp_path)
+    for bad_host in ("[::1", "]::1[", "["):
+        resp = client.get("/library", headers={"Host": bad_host})
+        assert resp.status_code == 403, bad_host
+
+
+def test_csrf_guard_rejects_a_malformed_ipv6_origin_instead_of_500ing(tmp_path):
+    """Same urlsplit ValueError as the Host-guard case above, on the CSRF
+    side: the guard caught ValueError from .port but called urlsplit on
+    the attacker-controlled Origin (and Host) OUTSIDE that try -- so
+    `Origin: http://[::1` was an unhandled 500, not a 403."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Origin": "http://[::1"},
+    )
+    assert resp.status_code == 403
+
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "[::1", "Origin": "http://127.0.0.1"},
+    )
+    assert resp.status_code == 403
+
+
+def test_csrf_guard_rejects_a_null_origin(tmp_path):
+    """`Origin: null` (sandboxed iframes, some redirects, data: URIs) has
+    no hostname at all -- it must be rejected like any other non-local
+    origin, never treated as a same-origin or origin-less request."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Origin": "null"},
+    )
+    assert resp.status_code == 403
+
+
+def test_csrf_guard_normalizes_default_ports_per_rfc_6454(tmp_path):
+    """Caught by a follow-up exhaustive audit: the port comparison was a
+    raw `origin.port == host.port`, so `Origin: http://127.0.0.1` (no
+    explicit port -- the RFC 6454 serialization omits the scheme default)
+    against `Host: 127.0.0.1:80` was None != 80 and a legitimate
+    same-origin request got a spurious 403. An absent port must mean the
+    scheme's default (http 80 / https 443) on both sides."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "127.0.0.1:80", "Origin": "http://127.0.0.1"},
+    )
+    assert resp.status_code != 403
+
+    # The normalization must not blur DIFFERENT ports into a match:
+    # an explicit non-default origin port still mismatches a default host.
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "127.0.0.1", "Origin": "http://127.0.0.1:8420"},
+    )
+    assert resp.status_code == 403
+
+
+def test_host_guard_treats_a_trailing_dot_hostname_as_the_same_host(tmp_path):
+    """Caught by a follow-up exhaustive audit: "localhost." (trailing dot
+    = fully-qualified form, RFC 1034) is the same host as "localhost" and
+    browsers will happily load http://localhost./ -- but a literal string
+    compare 403'd it. One trailing dot is stripped on both the allowlist
+    and the parsed header; "localhost.." is not a valid DNS name and
+    stays rejected."""
+    client = _make_client(tmp_path)
+    resp = client.get("/library", headers={"Host": "localhost."})
+    assert resp.status_code == 200
+    resp = client.get("/library", headers={"Host": "localhost.."})
+    assert resp.status_code == 403
+    # And on the CSRF side: a dotted-form Origin is still same-origin.
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "localhost.:8420", "Origin": "http://localhost.:8420"},
+    )
+    assert resp.status_code != 403
+
+
+def test_host_guard_treats_every_unspecified_address_spelling_as_bind_all(tmp_path):
+    """Caught by a follow-up exhaustive audit: bind-all detection was a
+    literal string set {"0.0.0.0", "::", ...} -- binding to an equivalent
+    spelling ("::0", "0:0:0:0:0:0:0:0") fell into the "specific fixed
+    address" branch, allowlisted that unreachable-as-a-Host literal, and
+    403'd every real client: the same remote-lockout failure mode the
+    original loopback-only guard had. Detection now uses
+    ipaddress.is_unspecified."""
+    for spelling in ("::0", "0:0:0:0:0:0:0:0"):
+        cfg = tmp_path / f"models-{spelling.replace(':', '_')}.toml"
+        shutil.copyfile(default_config_path(), cfg)
+        app = create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=stub_llm_client_factory,
+            narrative_llm_client_factory=stub_llm_client_factory,
+            config_path=cfg,
+            bind_host=spelling,
+        )
+        client = TestClient(app)
+        resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+        assert resp.status_code == 200, spelling
+
+
+def test_host_guard_accepts_a_bracketed_ipv6_bind_host(tmp_path):
+    """Caught by a follow-up exhaustive audit: a bind_host given in
+    bracketed form ("[2001:db8::1]") was allowlisted with the brackets
+    intact, while urlsplit's .hostname strips them from the incoming Host
+    header -- so the two could never match and every request got 403.
+    Bind-host normalization strips the brackets."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="[2001:db8::1]",
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "[2001:db8::1]:8420"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_normalizes_extra_allowed_hosts_case(tmp_path):
+    """Caught by a follow-up exhaustive audit: extra_allowed_hosts entries
+    went into the allowlist verbatim while the incoming Host header is
+    lowercased by urlsplit's .hostname -- a mixed-case entry could never
+    match anything and was silently useless."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        extra_allowed_hosts=("MixedCase.Example",),
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "mixedcase.example"})
+    assert resp.status_code == 200
+
+
+def test_host_guard_survives_a_getfqdn_unicode_error(tmp_path, monkeypatch):
+    """Caught by a follow-up exhaustive audit: socket.getfqdn's internal
+    gethostbyaddr IDNA-encodes the hostname and raises UnicodeError (NOT
+    OSError) for an overlong/non-ASCII computer name -- the best-effort
+    hostname lookup only caught OSError, so app startup crashed on such a
+    machine. The bind address itself must still be trusted."""
+    import socket
+
+    def _boom():
+        raise UnicodeError("label too long")
+
+    monkeypatch.setattr(socket, "getfqdn", _boom)
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="192.168.1.50",
+    )
+    client = TestClient(app)
+    resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+    assert resp.status_code == 200
+
+
 def _make_client_with_probe(tmp_path, probe_section_fn):
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)
