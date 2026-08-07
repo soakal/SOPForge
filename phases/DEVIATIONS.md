@@ -516,3 +516,53 @@ route under a new label (SSRF / internal scan / metadata access / DNS
 probing) does not change the analysis above: the route grants its only
 possible caller no capability they do not already possess, and returns no
 data an attacker could use even if one could reach it.
+
+## Vision-in-step-text: dropped, not adopted (closes phase-05)
+
+`phases/05-vision-step-text-measurement.md` was a measurement report, not a
+recommendation — it deliberately made no adopt/reject call, leaving the
+decision to a human. That decision is now made: **dropped.** The
+`use_vision` config toggle (per-step screenshot attached to the `[steps]`
+generation call) has been removed from the codebase entirely, not merely
+left off by default.
+
+**Why drop rather than keep it as an off-by-default option:** the
+phase-05 data showed no net benefit to justify carrying the complexity.
+Across 20 real steps from 2 real captured sessions, attaching the
+screenshot changed the round-trip pass/fail outcome for 8 of 20 steps — 4
+Fixed, 4 Broke — an exact wash on correctness. On latency it was
+one-directional and severe: every vision-on call took ~10.7–11.1s versus
+~0.2–0.9s without vision, roughly 25–50x slower per step, every time,
+regardless of whether that step's outcome improved, worsened, or stayed
+the same. A knob that is a coin-flip on quality and a guaranteed order-of-
+magnitude latency tax on a per-step, per-generation-job hot path is not
+worth the config surface, the extra code path through
+`generate_all_steps`/`generate_step_text`, or the maintenance burden of a
+second (memoization-disabled) generation mode.
+
+**What was removed** (not just defaulted off):
+- `SectionConfig.use_vision` (`config.py`) and its TOML dump/doc-comment
+  lines — an existing `models.toml` with this key would now fail to load
+  (`extra="forbid"`), but no released build ever shipped with it: this
+  feature landed and was reverted within the same PR-review cycle, so no
+  real user config was ever written with the key set.
+- `use_vision`/`screenshot_dir` params from `generation._request_reply`,
+  `generation.generate_step_text`, `generation.generate_all_steps`, and
+  `render.render_steps_llm_mode` — step generation is unconditionally
+  plain-text now, and `generate_all_steps`' prompt memoization (a real,
+  proven win — see its own docstring) is no longer conditionally disabled
+  for a mode that no longer exists.
+- The "Attach each step's screenshot to the LLM call (experimental)"
+  checkbox on `/ui/config` (`webui/pages.py`) and its wiring in
+  `ui_config_save` (`server.py`).
+
+**Not touched:** the separate `[vision]` section (screenshot *captioning*
+as an independent pipeline stage, `vision.py`) is a different feature and
+is unaffected — this closes out step-text vision specifically, the subject
+of phase-05's measurement.
+
+If vision-for-step-text is ever revisited, phase-05's report and its raw
+data (`scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json`)
+remain in the repo as the baseline to beat; re-adding the toggle without a
+new measurement showing a real improvement would just reintroduce the same
+wash-on-correctness/severe-latency-cost tradeoff documented here.

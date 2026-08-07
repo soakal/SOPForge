@@ -272,7 +272,6 @@ def test_step_mismatch_after_generation_fails_the_job_loudly(tmp_path, monkeypat
         llm_client,
         on_progress=None,
         max_concurrency=1,
-        use_vision=False,
     ):
         kept = manifest.steps[1:]  # deliberately drop the first step
         results = [{"step_id": s.id, "text": "x", "used_fallback": False} for s in kept]
@@ -1912,7 +1911,6 @@ def test_config_page_renders_and_saves(tmp_path):
     assert "Configuration" in page.text
     assert "qwen3:32b" in page.text  # current steps model shown
     assert 'name="steps_max_concurrency"' in page.text
-    assert 'name="steps_use_vision"' in page.text
     assert 'name="vision_max_concurrency"' in page.text
     assert 'name="polish_enabled"' in page.text
     assert 'name="polish_provider"' in page.text
@@ -1931,7 +1929,6 @@ def test_config_page_renders_and_saves(tmp_path):
             "steps_endpoint": "http://x/v1",
             "steps_model": "anthropic/claude-3.5-haiku",
             "steps_max_concurrency": "5",
-            "steps_use_vision": "on",
             "narrative_provider": "ollama",
             "narrative_endpoint": "http://192.168.200.60:11434/v1",
             "narrative_model": "qwen3:32b",
@@ -1960,7 +1957,6 @@ def test_config_page_renders_and_saves(tmp_path):
     assert cfg["steps"]["provider"] == "openrouter"
     assert cfg["steps"]["model"] == "anthropic/claude-3.5-haiku"
     assert cfg["steps"]["max_concurrency"] == 5
-    assert cfg["steps"]["use_vision"] is True
     assert cfg["vision"]["enabled"] is True
     assert cfg["vision"]["max_concurrency"] == 2
     assert cfg["polish"]["enabled"] is True

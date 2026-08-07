@@ -623,7 +623,6 @@ def render_config_page(config, keystatus, saved=False):
         "on it. Covers all six export formats identically. Can also be overridden "
         "per-job via <code>?polish=off|local|haiku</code> on the rerender endpoint.</p></div>"
     )
-    steps_vision_checked = " checked" if steps.get("use_vision") else ""
     document_card = (
         '<div class="card"><h2>Document</h2>'
         '<div class="field"><label>Author <small>(shown on the title page / revision '
@@ -669,14 +668,6 @@ def render_config_page(config, keystatus, saved=False):
         "config/models.toml's comment; raising this only helps against an Ollama server "
         "tuned for parallel requests)</small></label>"
         f'<input type="text" name="steps_max_concurrency" value="{steps.get("max_concurrency", 1)}"></div>'
-        '<div class="field"><label><input type="checkbox" name="steps_use_vision"'
-        f"{steps_vision_checked}> Attach each step's screenshot to the LLM call "
-        "<small>(experimental)</small></label>"
-        '<p class="muted">Off by default: a live comparison found no net accuracy '
-        "improvement over text-only (it traded some failures for others) while running "
-        "25–50x slower per step, and it needs a vision-capable model above — the default "
-        "qwen3:32b can't see images. See "
-        "<code>phases/05-vision-step-text-measurement.md</code> for the data.</p></div>"
     )
 
     key_rows = "".join(
