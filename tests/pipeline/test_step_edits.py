@@ -469,8 +469,31 @@ def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path, mon
 
 
 def test_regenerate_discards_a_prior_manual_edit_for_that_step_only(tmp_path, monkeypatch):
+    """Uses a realistic (round-trip-passing) stub, not the always-fallback
+    StubLLMClient -- a genuine AI result is what's supposed to supersede a
+    manual edit; a fallback result must NOT (see the regenerate-never-
+    overwrites test above, added by automated PR review)."""
     _stub_assemble_docx(monkeypatch)
-    client, _cfg = _make_client(tmp_path)
+
+    class _RealisticStub:
+        def chat(self, messages, **kwargs):
+            import re
+
+            content = messages[0]["content"]
+            m = re.search(r"'([^']+)' in the '([^']+)' window", content)
+            if m:
+                return f"Click {m.group(1)} in the {m.group(2)} window."
+            return "Click somewhere."
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=lambda: _RealisticStub(),
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+    )
+    client = TestClient(app)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
     assert status["status"] == "done", status
     session_dir = tmp_path / "sessions" / session_id
@@ -624,6 +647,41 @@ def test_regenerate_preserves_the_manual_edit_when_reexport_fails(tmp_path, monk
 
     edits = server_module._load_edits(session_dir)
     assert edits[step_id]["text"] == "my careful fix"
+
+
+def test_regenerate_never_overwrites_a_manual_edit_with_a_template_fallback(tmp_path, monkeypatch):
+    """Caught by automated PR review: regenerate used to apply
+    generate_step_text's result unconditionally, including when it fell
+    back to render_step_template because the LLM was unreachable/its reply
+    failed the round-trip gate (used_fallback=True) -- silently and
+    irreversibly destroying a manual edit with generic template wording.
+    The stub LLM client always triggers fallback, so this session's
+    regenerate attempt is exactly that scenario without any extra mocking."""
+    _stub_assemble_docx(monkeypatch)
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done", status
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+    server_module._save_edit(session_dir, step_id, "my careful fix")
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}/regenerate", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    status = _wait_done(client, session_id)
+    assert status["status"] == "done", status
+
+    edits = server_module._load_edits(session_dir)
+    assert edits[step_id]["text"] == "my careful fix"
+
+    report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+    assert report.get("regenerate_declined_steps") == [step_id]
+
+    state = server_module._load_step_state(session_dir)
+    entry = next(e for e in state["steps"] if e["step_id"] == step_id)
+    assert entry["text"] == "my careful fix"
+    assert entry["manually_edited"] is True
 
 
 def test_a_refused_edit_never_hides_the_sessions_finished_downloads(tmp_path, monkeypatch):

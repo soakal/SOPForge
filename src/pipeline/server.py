@@ -1110,7 +1110,9 @@ def create_app(
             annotated_paths.append(path)
         return step_results, annotated_paths, state
 
-    def _reexport_session(session_id, text_overrides=None, preflight_result=None):
+    def _reexport_session(
+        session_id, text_overrides=None, preflight_result=None, regenerate_declined_step=None
+    ):
         """Re-renders all six export formats + report.json + steps.json +
         the library entry from the session's persisted steps.json state --
         no LLM call of any kind. Used by the per-step edit route (a pure
@@ -1130,6 +1132,13 @@ def create_app(
         attach to report["llm_preflight"], so the regenerate route's own
         diagnostic probe is visible on the session page exactly like a full
         generation's.
+
+        regenerate_declined_step: optional step_id to record in
+        report["regenerate_declined_steps"] -- set by _regenerate_step when
+        it deliberately skipped applying a fallback result over an existing
+        manual edit (see that function's docstring), so the session page
+        can still tell the reviewer their regenerate click didn't produce
+        anything, even though nothing else about the step changed.
 
         The polish stage is force-skipped (polish_override="off") --
         steps.json already holds the text that shipped (polished, if
@@ -1160,6 +1169,9 @@ def create_app(
         manually_edited = [r["step_id"] for r in step_results if r.get("manually_edited")]
         if manually_edited:
             existing_report["manually_edited_steps"] = manually_edited
+        existing_report.pop("regenerate_declined_steps", None)
+        if regenerate_declined_step:
+            existing_report["regenerate_declined_steps"] = [regenerate_declined_step]
         if _is_photo_mode(session_dir):
             # Photo-mode sessions have a SYNTHETIC manifest (every step's
             # window/element is deliberately empty, photo_build.py) and
@@ -1615,7 +1627,13 @@ def create_app(
         the identical round-trip-gated/template-fallback path the original
         generation used, invariants L2/L3), then a no-LLM re-export of all
         six formats. Supersedes (and deletes) any manual edit on this step
-        -- the freshly-generated text wins. Not available for screenshots+
+        with a genuine AI result -- the freshly-generated text wins. If the
+        attempt instead fell back to render_step_template (used_fallback,
+        e.g. the LLM was unreachable or its reply failed the round-trip
+        gate) and this step already has a manual edit, the edit is left
+        untouched instead: the generic template text would silently and
+        irreversibly overwrite hand-written wording with nothing better in
+        its place. Caught by automated PR review. Not available for screenshots+
         transcript ("photo mode") builds: there's no manifest ground truth
         (real element/window names) to phrase a step from there, only a
         synthetic placeholder manifest -- regenerating would just produce
@@ -1657,6 +1675,21 @@ def create_app(
             close = getattr(llm, "close", None)
             if callable(close):
                 close()
+
+        if used_fallback and step_id in _load_edits(session_dir):
+            # The AI attempt produced nothing real (render_step_template's
+            # deterministic manifest interpolation, not a generated reply)
+            # and there's a manual edit on this step -- decline to
+            # overwrite/clear it. Re-export with no override so the
+            # existing edit stays fully applied; report the decline instead
+            # of silently discarding the reviewer's own wording.
+            _reexport_session(
+                session_id,
+                preflight_result=preflight_result,
+                regenerate_declined_step=step_id,
+            )
+            return
+
         # _reexport_session BEFORE clearing the edit -- text_overrides always
         # wins over a stale edits.json entry for this same step_id (applied
         # after _apply_manual_edits inside _reexport_session), so ordering

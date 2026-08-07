@@ -835,6 +835,18 @@ def render_session_page(session_id, title, date, report, config, steps=None, can
         )
     else:
         manually_edited_note = ""
+    regenerate_declined_ids = report.get("regenerate_declined_steps") or []
+    if regenerate_declined_ids:
+        # Same "div, not a data-status section" reasoning as preflight_note/
+        # manually_edited_note above.
+        regenerate_declined_note = (
+            '<div class="card" style="border-left:4px solid var(--warn)">'
+            "<strong>Regenerate didn&rsquo;t produce a result</strong> &mdash; "
+            "the AI attempt fell back to the template wording, so your manual "
+            f"edit was kept instead: {html.escape(', '.join(regenerate_declined_ids))}</div>"
+        )
+    else:
+        regenerate_declined_note = ""
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (
@@ -856,6 +868,7 @@ def render_session_page(session_id, title, date, report, config, steps=None, can
         "language model.</p>"
         f"{preflight_note}"
         f"{manually_edited_note}"
+        f"{regenerate_declined_note}"
         f"{transcript_note}"
         f"{narration_transcription_note}"
         f"{sections}"
