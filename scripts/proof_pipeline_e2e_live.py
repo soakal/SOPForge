@@ -269,6 +269,12 @@ def main():
         llm_client_factory=steps_factory,
         narrative_llm_client_factory=narrative_factory,
         polish_llm_client_factory=polish_factory,
+        # This script drives the app via TestClient outside pytest, so the
+        # PYTEST_CURRENT_TEST-gated trust for TestClient's fixed "testserver"
+        # Host/Origin doesn't apply -- explicitly trust it here instead, the
+        # same way any other non-pytest TestClient-based tool would need to.
+        # Caught by automated PR review.
+        extra_allowed_hosts=("testserver",),
     )
     client = TestClient(app)
 
