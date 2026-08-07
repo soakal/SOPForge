@@ -1644,6 +1644,62 @@ def test_photo_build_canonicalizes_inconsistent_transcript_spelling(tmp_path, mo
     ]
 
 
+def test_photo_build_persists_the_post_canonicalization_title_not_the_raw_generated_one(
+    tmp_path, monkeypatch
+):
+    """Caught by automated PR review: the auto-generated title used to be
+    written to manifest.json BEFORE canonicalize_terms could still rewrite
+    its spelling, so the persisted title (survives a restart, and is all
+    _reexport_session's no-LLM edit path has to work with) could disagree
+    with what the shipped document actually says. Deterministic via
+    monkeypatch (not relying on canonicalize_terms' real fuzzy-matching
+    heuristics) so this test can't flake on wording."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+    monkeypatch.setattr(
+        server_module,
+        "generate_title_and_overview",
+        lambda narration, llm, **kwargs: ("Raw Generated Title", "An overview."),
+    )
+    real_canonicalize_terms = server_module.canonicalize_terms
+
+    def fake_canonicalize_terms(fields, **kwargs):
+        canonicalized, actions = real_canonicalize_terms(fields, **kwargs)
+        canonicalized = list(canonicalized)
+        canonicalized[0] = "Final Canonicalized Title"  # force a real, deterministic rewrite
+        return canonicalized, actions
+
+    monkeypatch.setattr(server_module, "canonicalize_terms", fake_canonicalize_terms)
+
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("transcript_file", ("t.txt", b"Step one narration.", "text/plain")),
+    ]
+    resp = client.post("/ui/build", data={"title": ""}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    on_disk = json.loads(
+        (tmp_path / "sessions" / session_id / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert on_disk["session"]["title"] == "Final Canonicalized Title"
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Final Canonicalized Title" in md
+    assert "Raw Generated Title" not in md
+
+
 def test_photo_build_vision_caption_spelling_beats_more_frequent_transcript_spelling(
     tmp_path, monkeypatch
 ):
@@ -2225,6 +2281,38 @@ def test_config_test_route_uses_submitted_overrides_not_saved_values(tmp_path):
     assert resp.status_code == 200
     assert calls[0].endpoint == "http://other-host/v1"
     assert calls[0].model == "zzz"
+
+
+def test_config_test_route_provider_override_wins_over_legacy_anthropic_flag(tmp_path):
+    """Caught by automated PR review: a config saved back when `anthropic =
+    true` was the only way to route to Anthropic still carries that legacy
+    field. SectionConfig's after-validator unconditionally flips `provider`
+    back to "anthropic" whenever it's set, so an explicit provider="ollama"
+    override from the form must not be silently reverted -- the route must
+    probe what the user actually selected."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.steps.provider = "anthropic"
+    models_cfg.steps.anthropic = True
+    save_models_config(models_cfg, cfg)
+
+    calls = []
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        probe_section_fn=lambda section: calls.append(section) or {"status": "ok"},
+    )
+    client = TestClient(app)
+    resp = client.post(
+        "/ui/config/test",
+        data={"section": "steps", "provider": "ollama", "endpoint": "http://my-ollama/v1"},
+    )
+    assert resp.status_code == 200
+    assert calls[0].provider == "ollama"
+    assert calls[0].endpoint == "http://my-ollama/v1"
 
 
 def test_config_test_route_rejects_unknown_section(tmp_path):

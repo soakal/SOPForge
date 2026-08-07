@@ -777,12 +777,11 @@ def create_app(
                     close()
             if gen_title and not manifest.session.title:
                 manifest.session.title = gen_title
-                # See _generate's identical comment: without persisting this,
-                # a restart or a later no-LLM edit re-export would revert the
-                # document/library entry to the raw session id.
-                (session_dir / "manifest.json").write_text(
-                    json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
-                )
+                # NOT persisted here -- canonicalize_terms below can still
+                # rewrite manifest.session.title's spelling, and persisting
+                # before that would save a title the document itself never
+                # actually uses. Persisted once, after canonicalization,
+                # right below.
 
         # Photo-mode has no manifest ground truth (element/window names) to
         # round-trip-gate step text against -- a raw narration transcript is
@@ -805,6 +804,20 @@ def create_app(
             narrative_text = canonicalized[1]
         for step_result, canonical_text in zip(step_results, canonicalized[2:]):
             step_result["text"] = canonical_text
+        if manifest.session.title != user_title:
+            # Compared against user_title (the ORIGINAL on-disk value,
+            # captured before this function touched it at all) -- not
+            # against gen_title, so this fires whenever the title actually
+            # changed end to end, whether or not canonicalize_terms itself
+            # altered it further. Persist the FINAL (post-canonicalization)
+            # title -- see _generate's identical comment: without this, a
+            # restart or a later no-LLM edit re-export would revert the
+            # document/library entry to the raw session id, or (before this
+            # fix) to a title whose spelling doesn't match what the
+            # document actually shows.
+            (session_dir / "manifest.json").write_text(
+                json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
+            )
 
         # Applied AFTER canonicalize_terms, deliberately -- a human's exact
         # wording (including spelling choices) must never get "corrected"
@@ -1796,10 +1809,20 @@ def create_app(
         existing = load_models_config(resolved_config_path)
         saved_section = getattr(existing, name)
         overrides = {k: form.get(k) for k in ("provider", "endpoint", "model") if form.get(k)}
+        base = saved_section.model_dump()
+        if "provider" in overrides:
+            # Drop the legacy `anthropic = true` flag before validating: a
+            # config saved back when that flag was the only way to route to
+            # Anthropic still carries it, and SectionConfig's after-validator
+            # (config.py's _legacy_anthropic) unconditionally flips
+            # provider back to "anthropic" whenever it's set -- silently
+            # reverting an explicit provider="ollama" override and probing
+            # the wrong service entirely. Caught by automated PR review.
+            base.pop("anthropic", None)
         try:
             # model_validate (not model_copy) so an invalid provider override
             # from the form is caught here as a 400, never handed to probe_section.
-            section = section_cls.model_validate({**saved_section.model_dump(), **overrides})
+            section = section_cls.model_validate({**base, **overrides})
         except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> clear 400
             raise HTTPException(status_code=400, detail=f"invalid section: {exc}") from exc
         result = await run_in_threadpool(probe, section)
