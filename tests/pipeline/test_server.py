@@ -2217,6 +2217,24 @@ def test_config_save_rejects_cross_site_origin(tmp_path):
     assert resp.status_code == 403
 
 
+def test_csrf_rejects_a_same_host_different_port_origin_in_default_strict_mode(tmp_path):
+    """Caught by automated PR review: the strict (default loopback) CSRF
+    branch only ever compared Origin's hostname against the allowlist --
+    port and scheme were never checked, even before this session's other
+    CSRF fixes, and remained unchecked after them since those only
+    touched the self-referential (bind-beyond-loopback) branch. Any other
+    service listening on 127.0.0.1 on a different port could therefore
+    forge state-changing requests in the default configuration. Port must
+    now be checked in both branches."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={"Host": "127.0.0.1:8420", "Origin": "http://127.0.0.1:3000"},
+    )
+    assert resp.status_code == 403
+
+
 def test_csrf_rejects_lookalike_host(tmp_path):
     # "http://127.0.0.1.evil.com" must NOT pass a prefix check -- the guard
     # compares the exact host.

@@ -131,7 +131,8 @@ def _finding_row(session_id, step_id, entry):
     sid_step = html.escape(step_id)
     screenshot = (entry or {}).get("screenshot") or ""
     thumb = (
-        f'<img class="shot" src="/sessions/{sid}/{html.escape(screenshot)}" alt="{sid_step}">'
+        f'<img class="shot" loading="lazy" '
+        f'src="/sessions/{sid}/{html.escape(screenshot)}" alt="{sid_step}">'
         if screenshot
         else ""
     )
@@ -180,7 +181,8 @@ def _step_editor(session_id, step_id, entry, can_regenerate):
     sid_step = html.escape(step_id)
     screenshot = (entry or {}).get("screenshot") or ""
     thumb = (
-        f'<img class="shot" src="/sessions/{sid}/{html.escape(screenshot)}" alt="{sid_step}">'
+        f'<img class="shot" loading="lazy" '
+        f'src="/sessions/{sid}/{html.escape(screenshot)}" alt="{sid_step}">'
         if screenshot
         else ""
     )

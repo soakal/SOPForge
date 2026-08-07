@@ -609,40 +609,48 @@ def create_app(
         unauthenticated app, including /shutdown, /ui/config, and session
         delete, the moment anyone ran the documented remote setup) would
         let ANY website the operator's browser visits forge requests to
-        this server. Instead, when not in the strict/loopback case, the
-        check is self-referential: Origin's hostname must match THIS
-        request's own Host header (also urlsplit-parsed) rather than a
-        fixed set -- exactly the same test a same-origin request from the
-        real UI naturally passes, whatever LAN address it's served from,
-        while a request forged from a different site's Origin still
-        fails it. The self-referential comparison matches scheme AND port
-        too, not just hostname -- comparing hostname alone would treat
-        any other locally-hosted service on the same machine/IP (e.g. a
-        dev server on a different port) as same-origin, letting IT forge
-        requests here. `.port` on a malformed value (non-numeric, out of
-        range) raises ValueError from urlsplit -- caught and treated as
-        "not same-origin" (403), not left to escape as an unhandled 500;
-        both Origin and Host are fully attacker-controlled in this
-        branch. Caught by automated PR review."""
+        this server. Instead, when not in the strict/loopback case,
+        Origin's hostname must match THIS request's own Host header
+        (also urlsplit-parsed) rather than a fixed set -- exactly the
+        same test a same-origin request from the real UI naturally
+        passes, whatever LAN address it's served from, while a request
+        forged from a different site's Origin still fails it.
+
+        Scheme and port are ALWAYS checked too (both branches), not just
+        hostname -- comparing hostname alone, even in the default strict
+        loopback mode, would treat any other locally-hosted service on
+        the same machine/IP (e.g. a dev server on a different port) as
+        same-origin, letting IT forge requests here. `.port` on a
+        malformed value (non-numeric, out of range) raises ValueError
+        from urlsplit -- caught and treated as "not same-origin" (403),
+        not left to escape as an unhandled 500; both Origin and Host are
+        fully attacker-controlled. Caught by automated PR review, twice:
+        first for the self-referential branch only, then again because
+        the strict/loopback branch had the identical port/scheme gap
+        from the very start (a pre-existing hostname-only check, not
+        something this round of fixes introduced)."""
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin:
                 origin_split = urlsplit(origin)
                 origin_host = origin_split.hostname
+                own_split = urlsplit(f"//{request.headers.get('host') or ''}")
+                try:
+                    same_port = origin_split.port == own_split.port
+                except ValueError:
+                    same_port = False
                 if _host_guard_strict:
-                    allowed = origin_host in _LOCAL_HOSTS
+                    host_ok = origin_host in _LOCAL_HOSTS
                 else:
-                    own_split = urlsplit(f"//{request.headers.get('host') or ''}")
-                    try:
-                        same_port = origin_split.port == own_split.port
-                    except ValueError:
-                        same_port = False
-                    allowed = (
-                        bool(origin_host)
-                        and origin_split.scheme == request.url.scheme
-                        and origin_host == (own_split.hostname or "").lower()
-                        and same_port
+                    host_ok = (
+                        bool(origin_host) and origin_host == (own_split.hostname or "").lower()
                     )
+                allowed = (
+                    bool(origin_host)
+                    and host_ok
+                    and origin_split.scheme == request.url.scheme
+                    and same_port
+                )
                 if not allowed:
                     return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
         return await call_next(request)
