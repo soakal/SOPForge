@@ -268,7 +268,10 @@ def test_toggle_narration_flips_and_persists(tmp_path):
 def test_toggle_narration_never_raises_when_persisting_fails(tmp_path, monkeypatch):
     import capture.tray as tray_module
 
-    app = TrayApp(captures_root=tmp_path, hotkey="<ctrl>+<alt>+<shift>+3")
+    settings_path = tmp_path / "capture_settings.toml"
+    app = TrayApp(
+        captures_root=tmp_path, hotkey="<ctrl>+<alt>+<shift>+3", settings_path=settings_path
+    )
 
     def boom(settings, path):
         raise OSError("simulated: disk full")

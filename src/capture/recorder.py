@@ -81,6 +81,7 @@ class Recorder:
         # instantiated at all when the caller has opted in, so a disabled
         # session never even touches the winmm/MCI machinery.
         self._narration = NarrationRecorder() if record_narration else None
+        self._narration_started = False
 
     def start(self):
         self._worker = threading.Thread(target=self._drain_queue, daemon=True)
@@ -89,6 +90,7 @@ class Recorder:
         if self._narration is not None:
             try:
                 self._narration.start()
+                self._narration_started = True
             except Exception:  # noqa: BLE001 - optional feature, must not fail the session
                 logger.exception("failed to start narration recording; continuing without it")
 
@@ -100,7 +102,7 @@ class Recorder:
         self._queue.put(_STOP_SENTINEL)
         self._worker.join()
         narration_wav = None
-        if self._narration is not None:
+        if self._narration is not None and self._narration_started:
             try:
                 result = self._narration.stop(self.output_dir / "narration.wav")
             except Exception:  # noqa: BLE001 - optional feature, must not fail the session
