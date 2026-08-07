@@ -1050,33 +1050,20 @@ def create_app(
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
 
-    def _reexport_session(session_id, text_overrides=None, preflight_result=None):
-        """Re-renders all six export formats + report.json + steps.json +
-        the library entry from the session's persisted steps.json state --
-        no LLM call of any kind. Used by the per-step edit route (a pure
-        text swap) and the regenerate route (text_overrides carries the one
-        freshly-generated step). Raises HTTPException(409) if the session's
-        persisted state is too old/incomplete to re-export faithfully --
-        refusing is the honest choice; silently re-exporting from a v1 (or
-        missing) steps.json would drop narration/narrative from every
-        format.
-
-        text_overrides: optional {step_id: (text, used_fallback)} applied
-        AFTER edits.json's manual-edit overrides -- lets the regenerate
-        route's fresh LLM result win over a (now-superseded, and by then
-        already-deleted) manual edit for that one step.
-
-        preflight_result: optional preflight.probe_section()-shaped dict to
-        attach to report["llm_preflight"], so the regenerate route's own
-        diagnostic probe is visible on the session page exactly like a full
-        generation's.
-
-        The polish stage is force-skipped (polish_override="off") --
-        steps.json already holds the text that shipped (polished, if
-        [polish] was on for the original generation), and re-polishing
-        polished text would compound rewrites the reviewer never asked
-        for. A full /rerender is the correct way to get a fresh polish
-        pass."""
+    def _load_reexportable_state(session_id):
+        """Read-only precondition check + load for _reexport_session:
+        raises HTTPException(409) if the session's persisted steps.json (or
+        an annotated screenshot it references) is too old/missing/damaged
+        to re-export faithfully, otherwise returns (step_results,
+        annotated_paths, state). Never mutates anything, so it's safe to
+        call synchronously from a route BEFORE jobs.submit -- a refused
+        edit/regenerate then 409s immediately instead of poisoning an
+        already-"done" session's status to "error" (via JobRunner's generic
+        any-exception-fails-the-job handling) and hiding its still-intact
+        finished documents behind _require_done. _reexport_session calls
+        this again itself when the job actually runs, in case the on-disk
+        state changed between the route's check and the worker picking up
+        the job."""
         manifest, _screenshots_dir, annotated_dir, session_dir = sessions[session_id]
         state = _load_step_state(session_dir)
         steps_list = state.get("steps") if state else None
@@ -1121,6 +1108,37 @@ def create_app(
                     detail=f"annotated screenshot missing for {step.id} -- rerender first",
                 )
             annotated_paths.append(path)
+        return step_results, annotated_paths, state
+
+    def _reexport_session(session_id, text_overrides=None, preflight_result=None):
+        """Re-renders all six export formats + report.json + steps.json +
+        the library entry from the session's persisted steps.json state --
+        no LLM call of any kind. Used by the per-step edit route (a pure
+        text swap) and the regenerate route (text_overrides carries the one
+        freshly-generated step). Raises HTTPException(409) if the session's
+        persisted state is too old/incomplete to re-export faithfully --
+        refusing is the honest choice; silently re-exporting from a v1 (or
+        missing) steps.json would drop narration/narrative from every
+        format.
+
+        text_overrides: optional {step_id: (text, used_fallback)} applied
+        AFTER edits.json's manual-edit overrides -- lets the regenerate
+        route's fresh LLM result win over a (now-superseded, and by then
+        already-deleted) manual edit for that one step.
+
+        preflight_result: optional preflight.probe_section()-shaped dict to
+        attach to report["llm_preflight"], so the regenerate route's own
+        diagnostic probe is visible on the session page exactly like a full
+        generation's.
+
+        The polish stage is force-skipped (polish_override="off") --
+        steps.json already holds the text that shipped (polished, if
+        [polish] was on for the original generation), and re-polishing
+        polished text would compound rewrites the reviewer never asked
+        for. A full /rerender is the correct way to get a fresh polish
+        pass."""
+        manifest, _screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+        step_results, annotated_paths, state = _load_reexportable_state(session_id)
 
         _apply_manual_edits(session_dir, step_results)
         for step_id, (text, used_fallback) in (text_overrides or {}).items():
@@ -1582,6 +1600,11 @@ def create_app(
             raise HTTPException(status_code=400, detail="step text must not be empty")
         if len(text) > 20000:
             raise HTTPException(status_code=400, detail="step text is too long (max 20000 chars)")
+        # Validate synchronously, before the edit is even saved, so a
+        # session too old/damaged to re-export 409s immediately instead of
+        # reaching jobs.submit and flipping an already-"done" session to
+        # "error" (server.py's _load_reexportable_state docstring).
+        _load_reexportable_state(session_id)
         _save_edit(session_dir, step_id, text)
         jobs.submit(session_id, lambda: _reexport_session(session_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
@@ -1609,6 +1632,9 @@ def create_app(
         manifest = sessions[session_id][0]
         if step_id not in manifest.step_ids():
             raise HTTPException(status_code=404, detail=f"unknown step: {step_id!r}")
+        # Same synchronous check as ui_edit_step, before the LLM call and
+        # before jobs.submit -- see _load_reexportable_state's docstring.
+        _load_reexportable_state(session_id)
         jobs.submit(session_id, lambda: _regenerate_step(session_id, step_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 

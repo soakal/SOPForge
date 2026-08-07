@@ -388,13 +388,15 @@ def test_edit_on_a_pre_v2_session_returns_409(tmp_path, monkeypatch):
         data={"text": "should not apply"},
         follow_redirects=False,
     )
-    # The route itself only validates cheap preconditions before submitting
-    # the job -- the version check happens inside _reexport_session, on the
-    # background job, so the 409 surfaces via status, not the POST response.
-    assert resp.status_code == 303
-    status = _wait_done(client, session_id)
-    assert status["status"] == "error"
-    assert "predates" in status["error"]
+    # The route validates the same preconditions _reexport_session would,
+    # synchronously, before ever calling jobs.submit -- so a session too
+    # old to edit 409s immediately, and the already-"done" session's status
+    # (and its finished downloads) is left untouched rather than getting
+    # flipped to "error" by the background job.
+    assert resp.status_code == 409
+    assert "predates" in resp.json()["detail"]
+    status = client.get(f"/sessions/{session_id}/status").json()
+    assert status["status"] == "done"
 
 
 def test_edit_on_a_damaged_steps_json_returns_409_not_a_crash(tmp_path, monkeypatch):
@@ -414,10 +416,11 @@ def test_edit_on_a_damaged_steps_json_returns_409_not_a_crash(tmp_path, monkeypa
         data={"text": "should not apply"},
         follow_redirects=False,
     )
-    assert resp.status_code == 303
-    status = _wait_done(client, session_id)
-    assert status["status"] == "error"
-    assert "damaged" in status["error"] or "predates" in status["error"]
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert "damaged" in detail or "predates" in detail
+    status = client.get(f"/sessions/{session_id}/status").json()
+    assert status["status"] == "done"
 
 
 def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path, monkeypatch):
@@ -594,7 +597,10 @@ def test_regenerate_preserves_the_manual_edit_when_reexport_fails(tmp_path, monk
     """Caught by automated PR review: _regenerate_step used to clear the
     manual edit BEFORE _reexport_session, which can 409 (e.g. a damaged/
     stale steps.json) -- losing the human's text with nothing to replace
-    it. The edit must survive a failed regenerate attempt."""
+    it. The edit must survive a failed regenerate attempt. The route now
+    validates the same preconditions synchronously before jobs.submit, so
+    this 409s immediately rather than via a background job -- either way,
+    the manual edit and the session's "done" status must both survive."""
     _stub_assemble_docx(monkeypatch)
     client, _cfg = _make_client(tmp_path)
     session_id, status, manifest = _create_and_wait(client, tmp_path)
@@ -612,12 +618,40 @@ def test_regenerate_preserves_the_manual_edit_when_reexport_fails(tmp_path, monk
     resp = client.post(
         f"/ui/sessions/{session_id}/steps/{step_id}/regenerate", follow_redirects=False
     )
-    assert resp.status_code == 303
-    status = _wait_done(client, session_id)
-    assert status["status"] == "error"
+    assert resp.status_code == 409
+    status = client.get(f"/sessions/{session_id}/status").json()
+    assert status["status"] == "done"
 
     edits = server_module._load_edits(session_dir)
     assert edits[step_id]["text"] == "my careful fix"
+
+
+def test_a_refused_edit_never_hides_the_sessions_finished_downloads(tmp_path, monkeypatch):
+    """Caught by automated PR review: jobs.submit turns any exception into
+    a terminal "error" status (JobRunner._worker), which used to make
+    _require_done reject every download route for a session whose
+    documents are still intact on disk. The route-level precondition check
+    must keep the session downloadable when the edit itself is refused."""
+    _stub_assemble_docx(monkeypatch)
+    client, _cfg = _make_client(tmp_path)
+    session_id, status, manifest = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done", status
+    session_dir = tmp_path / "sessions" / session_id
+    step_id = manifest.steps[0].id
+    (session_dir / "steps.json").write_text(
+        json.dumps({"steps": [{"step_id": step_id, "text": "x", "used_fallback": False}]}),
+        encoding="utf-8",
+    )
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/{step_id}",
+        data={"text": "should not apply"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 409
+
+    assert client.get(f"/sessions/{session_id}/doc.md").status_code == 200
+    assert client.get(f"/ui/sessions/{session_id}").status_code == 200
 
 
 def _wait_done(client, session_id, timeout=10.0):
