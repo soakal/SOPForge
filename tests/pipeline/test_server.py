@@ -2454,6 +2454,50 @@ def test_csrf_guard_rejects_a_same_host_different_port_origin_when_bound_beyond_
     assert resp.status_code == 403
 
 
+def test_csrf_guard_rejects_a_malformed_origin_port_instead_of_500ing(tmp_path):
+    """Caught by automated PR review: urlsplit(...).port raises ValueError
+    for a non-numeric or out-of-range port, and both Origin and Host are
+    fully attacker-controlled in the bind-beyond-loopback self-referential
+    branch -- a malformed port must be rejected (403), never left to
+    escape as an unhandled 500."""
+    client = _remote_client(tmp_path)
+    resp = client.post(
+        "/ui/config",
+        data={"steps_provider": "ollama", "steps_endpoint": "http://x", "steps_model": "m"},
+        headers={
+            "Host": "192.168.1.50:8420",
+            "Origin": "http://192.168.1.50:99999",
+        },
+    )
+    assert resp.status_code == 403
+
+
+def test_host_guard_stays_strict_for_a_specific_fixed_bind_address(tmp_path):
+    """Caught by automated PR review: relaxing the host guard for EVERY
+    non-loopback bind_host also weakened it for the common "bind to one
+    specific known LAN address" case, not just the genuinely-unfixable
+    "0.0.0.0" bind-all case -- even though a specific address IS a fixed,
+    known value that can just be trusted directly. Binding to a specific
+    address must keep _host_guard strict (reject an unrelated Host) while
+    trusting that address itself."""
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host="192.168.1.50",
+    )
+    client = TestClient(app)
+
+    resp = client.get("/library", headers={"Host": "192.168.1.50:8420"})
+    assert resp.status_code == 200
+
+    resp = client.get("/library", headers={"Host": "rebound.attacker.example"})
+    assert resp.status_code == 403
+
+
 def _make_client_with_probe(tmp_path, probe_section_fn):
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)

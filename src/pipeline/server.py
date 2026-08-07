@@ -465,28 +465,35 @@ def create_app(
     preflight wiring itself against a stub probe.
 
     bind_host: the --host value the server is (or will be) bound to
-    (__main__.py). Bound to a real loopback address (the default),
-    Host/Origin-header checking stays strict against the fixed local
-    allowlist (DNS-rebinding/CSRF protection). Bound to anything else --
-    0.0.0.0, a LAN IP -- the operator has deliberately exposed this
-    server beyond loopback (USER_MANUAL.md's "server on another machine"
-    setup, driven by --host + the capture agent's SOPFORGE_SERVER_URL),
-    so there's no fixed set of legitimate Host/Origin values to allowlist
-    in advance: _host_guard steps aside entirely (its DNS-rebinding
-    threat model has no meaningful fixed allowlist once arbitrary
-    addresses are expected to reach the server by design), while
-    _csrf_guard switches to a self-referential check -- an Origin must
-    match the SAME request's own Host header, not a fixed set -- so CSRF
-    protection stays in force (still rejects a request forged from a
-    different site's Origin) without needing to know the LAN address in
-    advance. Caught by automated PR review, three times over two rounds:
-    the guard's first version hard-coded loopback-only and broke that
-    setup; the fix only touched _host_guard and missed that _csrf_guard
-    needed relaxing too; and that relaxation initially disabled
-    _csrf_guard entirely rather than switching to the self-referential
-    check, which would have turned off CSRF protection for the whole,
-    unauthenticated app (including /shutdown, /ui/config, and session
-    delete) the moment anyone ran this documented setup.
+    (__main__.py). Bound to a real loopback address (the default) OR to
+    one specific, fixed LAN address/hostname (e.g. "192.168.1.50") --
+    that address is itself a known, fixed value, so it's simply added to
+    the trusted allowlist and BOTH guards stay in their strict, fixed-
+    allowlist mode (DNS-rebinding/CSRF protection intact, no self-
+    referential fallback needed). Only bound to a bind-ALL address --
+    "0.0.0.0"/"::"/"*", meaning "reachable via any of this machine's
+    addresses, not just one" -- is there genuinely no single fixed value
+    to allowlist in advance (USER_MANUAL.md's "server on another
+    machine" setup, driven by --host + the capture agent's
+    SOPFORGE_SERVER_URL): _host_guard steps aside entirely there (its
+    DNS-rebinding threat model has no meaningful fixed allowlist once
+    arbitrary addresses are expected to reach the server by design),
+    while _csrf_guard switches to a self-referential check -- an Origin
+    must match the SAME request's own Host header, not a fixed set -- so
+    CSRF protection stays in force (still rejects a request forged from
+    a different site's Origin) without needing to know the LAN address
+    in advance. Caught by automated PR review, three times over two
+    rounds: the guard's first version hard-coded loopback-only and broke
+    the remote setup; the fix only touched _host_guard and missed that
+    _csrf_guard needed relaxing too; and that relaxation initially
+    disabled _csrf_guard entirely rather than switching to the self-
+    referential check, which would have turned off CSRF protection for
+    the whole, unauthenticated app (including /shutdown, /ui/config, and
+    session delete) the moment anyone ran the bind-all setup. The fixed-
+    address-vs-bind-all distinction (this paragraph) was added afterward
+    to close most of that gap for the more common "bind to one specific
+    known address" case, leaving only the genuinely-unfixable bind-all
+    case on the reduced self-referential protection.
 
     extra_allowed_hosts: additional hostnames _host_guard/_csrf_guard
     trust alongside the real loopback names, ONLY when bind_host is
@@ -509,13 +516,23 @@ def create_app(
     # can never widen a shipped server's trust. Caught by automated PR
     # review: a prior version hard-coded "testserver" unconditionally.
     _test_hosts = {"testserver"} if os.environ.get("PYTEST_CURRENT_TEST") else set()
+    # A bind-ALL address means "reachable via any of this machine's
+    # interfaces/addresses", not one fixed address -- there's no single
+    # value to allowlist in advance. Any other bind_host (including a
+    # specific LAN IP/hostname) IS a fixed, known value, so it's just
+    # added to the trusted set below instead of relaxing the guards.
+    _bind_all = bind_host in {"0.0.0.0", "::", "*", "", None}
+    _bind_host_entry = (
+        set() if _bind_all or bind_host in {"127.0.0.1", "localhost", "::1"} else {bind_host}
+    )
     _LOCAL_HOSTS = (
         frozenset({"127.0.0.1", "localhost", "::1"})
         | frozenset(extra_allowed_hosts)
         | frozenset(_test_hosts)
+        | frozenset(h.lower() for h in _bind_host_entry)
     )
     _ALLOWED_HOSTS = _LOCAL_HOSTS
-    _host_guard_strict = bind_host in {"127.0.0.1", "localhost", "::1"}
+    _host_guard_strict = not _bind_all
 
     @app.middleware("http")
     async def _host_guard(request, call_next):
@@ -573,7 +590,11 @@ def create_app(
         too, not just hostname -- comparing hostname alone would treat
         any other locally-hosted service on the same machine/IP (e.g. a
         dev server on a different port) as same-origin, letting IT forge
-        requests here. Caught by automated PR review."""
+        requests here. `.port` on a malformed value (non-numeric, out of
+        range) raises ValueError from urlsplit -- caught and treated as
+        "not same-origin" (403), not left to escape as an unhandled 500;
+        both Origin and Host are fully attacker-controlled in this
+        branch. Caught by automated PR review."""
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
             if origin:
@@ -583,11 +604,15 @@ def create_app(
                     allowed = origin_host in _LOCAL_HOSTS
                 else:
                     own_split = urlsplit(f"//{request.headers.get('host') or ''}")
+                    try:
+                        same_port = origin_split.port == own_split.port
+                    except ValueError:
+                        same_port = False
                     allowed = (
                         bool(origin_host)
                         and origin_split.scheme == request.url.scheme
                         and origin_host == (own_split.hostname or "").lower()
-                        and origin_split.port == own_split.port
+                        and same_port
                     )
                 if not allowed:
                     return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
