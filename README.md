@@ -73,37 +73,16 @@ fallback it didn't need — so it defaults to `1` (strictly sequential).
 ## SOP Factory 2 dependency
 
 The docx assembler (Phase 2, task-15) extends the existing `SOPBuilder` engine
-from the private repo `soakal/SOP-Factory`, expected at
-`C:\Users\Brian\Documents\SOP_Factory_2` (`gh repo clone soakal/SOP-Factory
-SOP_Factory_2`). It is **imported at runtime via `sys.path`
-(`src/pipeline/docx_assembler.py`), never copied into this repo** — that
-directory is a full working project (active jobs, per-client archives with real
-photos/documents, its own git history, install scripts), not a clean library, so
-vendoring it wholesale would leak proprietary business content into SOPForge's
-history. Override the path with the `SOPFORGE_SOP_FACTORY_2_DIR` env var if it's
-cloned somewhere else.
+originally from the private repo `soakal/SOP-Factory`. The clean, reusable
+engine files — `sop_lib.py` and `SOP_TEMPLATE_WITH_PHOTOS.docx`, the only two
+files `src/pipeline/docx_assembler.py` reads — are **vendored directly into
+this repo** at `vendor/sop_factory_2/` (see that directory's README for
+provenance), so a clean clone builds and tests end-to-end with zero external
+dependency. This is only the engine, not `SOP-Factory`'s full working project
+(active jobs, per-client archives with real photos/documents, its own git
+history) — vendoring that wholesale would leak proprietary business content
+into SOPForge's history, so only the two engine files are here.
 
-**Test-suite constraint:** a clean clone (e.g. a fresh dev container or CI
-runner with no `SOP_Factory_2` checkout and no `SOPFORGE_SOP_FACTORY_2_DIR`
-set) cannot import `sop_lib`, so any test that needs a session to actually
-reach `doc.docx` (via `assemble_docx`) fails with `ModuleNotFoundError: No
-module named 'sop_lib'` — not a bug, just this dependency being unavailable.
-Most such tests already tolerate this gracefully (`if status["status"] ==
-"done": ...`), so `pytest -x -q` in that kind of environment is expected to
-report a fixed baseline of failures, all with that same root cause.
-
-To get a real green run in a fresh sandbox/CI runner (confirmed working —
-turns the ~70-test baseline down to 0):
-
-```sh
-git clone --depth 1 https://github.com/soakal/SOP-Factory /tmp/sop-factory
-export SOPFORGE_SOP_FACTORY_2_DIR=/tmp/sop-factory/template
-pytest -x -q
-```
-
-`sop_lib.py` and `SOP_TEMPLATE_WITH_PHOTOS.docx` both live in that repo's
-`template/` subdirectory (not the repo root) — point the env var there, not
-at the clone's top level. Remember to `unset SOPFORGE_SOP_FACTORY_2_DIR`
-(or just open a fresh shell) before running `tests/pipeline/test_frozen_paths.py`
-on its own — its dev-mode-default assertions expect the env var to be unset,
-same as any real dev/CI environment that hasn't opted into an override.
+Set the `SOPFORGE_SOP_FACTORY_2_DIR` env var to point at a different copy of
+the engine (e.g. while iterating on `sop_lib.py` itself upstream) if needed;
+otherwise nothing extra is required to run `pytest -x -q` in a fresh clone.

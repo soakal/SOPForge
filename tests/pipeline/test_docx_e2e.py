@@ -1,7 +1,7 @@
 """SOP Factory 2 docx assembler, wired in end-to-end (AC3): template-mode
 fixture manifest -> complete docx, with zero LLM requests anywhere in the
-path. The engine (sop_lib.SOPBuilder) is imported from SOP_Factory_2, not
-vendored or rewritten."""
+path. The engine (sop_lib.SOPBuilder) is imported from the in-repo vendored
+copy at vendor/sop_factory_2/ (extended, not rewritten)."""
 
 import inspect
 import json

@@ -84,7 +84,6 @@ Exit code 0 = proof succeeded. Exit code 1 = proof failed (reported loudly).
 """
 
 import logging
-import os
 import sys
 import tempfile
 import time
@@ -92,21 +91,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
-
-# The docx export stage (_write_all_exports -> docx_assembler.py) drives the
-# external, unversioned SOP Factory 2 engine ("sop_lib") -- not vendored into
-# this repo (CLAUDE.md: "SOP_Factory_2 engine (sop_lib) is external, not in
-# the repo... For dev/tests, set SOPFORGE_SOP_FACTORY_2_DIR to the bundled
-# copy at dist/sopforge-server/_internal/sop_factory_2"). Without this, a
-# real (non-mocked) end-to-end generation run fails at the docx-export step
-# with "No module named 'sop_lib'" -- unrelated to the LLM stages this script
-# actually proves, but generation.raise on any exception still marks the
-# whole session status "error" before report.json/doc.md are ever written.
-# setdefault, not unconditional, so an operator's own override still wins.
-os.environ.setdefault(
-    "SOPFORGE_SOP_FACTORY_2_DIR",
-    str(REPO_ROOT / "dist" / "sopforge-server" / "_internal" / "sop_factory_2"),
-)
 
 import httpx  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -300,7 +284,9 @@ def main():
 
     status = wait_for_terminal_status(client, session_id, "initial generation")
     if status["status"] != "done":
-        print(f"FAIL: initial generation ended in status={status['status']!r}: {status.get('error')}")
+        print(
+            f"FAIL: initial generation ended in status={status['status']!r}: {status.get('error')}"
+        )
         sys.exit(1)
     print("OK: initial generation reached status=done.")
 
@@ -314,20 +300,28 @@ def main():
             f"the LLM for: {fallback_steps}"
         )
         sys.exit(1)
-    print(f"OK: zero template-fallback steps out of {len(manifest.steps)} -- steps stage genuinely live.")
+    print(
+        f"OK: zero template-fallback steps out of {len(manifest.steps)} -- steps stage genuinely live."
+    )
 
     if not steps_clients or not any(c.calls for c in steps_clients):
         print("FAIL: no live chat() calls were ever made on the steps LLM client.")
         sys.exit(1)
     total_step_calls = sum(len(c.calls) for c in steps_clients)
-    print(f"OK: {total_step_calls} live steps/title chat() call(s) recorded across {len(steps_clients)} client(s).")
+    print(
+        f"OK: {total_step_calls} live steps/title chat() call(s) recorded across {len(steps_clients)} client(s)."
+    )
 
     if not narrative_clients:
-        print("FAIL: narrative_llm_client_factory was never called -- generate_narrative did not run.")
+        print(
+            "FAIL: narrative_llm_client_factory was never called -- generate_narrative did not run."
+        )
         sys.exit(1)
     narrative_client = narrative_clients[-1]
     expected_min_calls = 2 * cfg.narrative.passes - 1
-    ok_calls = [c for c in narrative_client.calls if c["error"] is None and (c["reply"] or "").strip()]
+    ok_calls = [
+        c for c in narrative_client.calls if c["error"] is None and (c["reply"] or "").strip()
+    ]
     print(
         f"narrative: {len(narrative_client.calls)} chat() call(s) recorded "
         f"(expected >= {expected_min_calls} for passes={cfg.narrative.passes}), "
@@ -339,7 +333,9 @@ def main():
             "non-empty live chat() calls -- see calls above for errors/empty replies."
         )
         for i, c in enumerate(narrative_client.calls):
-            print(f"  call {i}: error={c['error']!r} reply_len={len(c['reply'] or '') if c['reply'] else 0}")
+            print(
+                f"  call {i}: error={c['error']!r} reply_len={len(c['reply'] or '') if c['reply'] else 0}"
+            )
         sys.exit(1)
 
     doc_md = client.get(f"/sessions/{session_id}/doc.md").text
@@ -353,7 +349,9 @@ def main():
             "None) despite live chat() calls having been recorded above."
         )
         sys.exit(1)
-    print("OK: narrative stage genuinely executed against the LLM and its output shipped in doc.md.")
+    print(
+        "OK: narrative stage genuinely executed against the LLM and its output shipped in doc.md."
+    )
     print("---- narrative section (first 400 chars) ----")
     print(narrative_section[:400])
     # Captured now (polish is still off at this point -- config/models.toml's
@@ -383,7 +381,9 @@ def main():
             f"captions={captions}"
         )
         sys.exit(1)
-    print(f"OK: {len(captions)}/{len(captions)} screenshots captioned live with non-degenerate output.")
+    print(
+        f"OK: {len(captions)}/{len(captions)} screenshots captioned live with non-degenerate output."
+    )
     for i, cap in enumerate(captions, start=1):
         print(f"  [{i}] {cap}")
 
@@ -409,7 +409,9 @@ def main():
     print("OK: steps stage still zero-fallback on rerender.")
 
     if not polish_clients:
-        print("FAIL: polish_llm_client_factory was never called -- polish stage did not run at all.")
+        print(
+            "FAIL: polish_llm_client_factory was never called -- polish stage did not run at all."
+        )
         sys.exit(1)
     polish_client = polish_clients[-1]
     if not polish_client.calls:
@@ -424,12 +426,16 @@ def main():
             "is not evidence of anything running live)."
         )
         sys.exit(1)
-    print(f"OK: polish stage made a live chat() call to {cfg.polish.model!r} that returned a reply.")
+    print(
+        f"OK: polish stage made a live chat() call to {cfg.polish.model!r} that returned a reply."
+    )
 
     reply = polish_call["reply"]
     ok, reason = _gate(pre_polish_md, reply) if reply else (False, "empty reply")
     is_echo = reply is not None and _normalize(reply) == _normalize(pre_polish_md)
-    print(f"polish diagnostic (informational, NOT part of pass/fail): gate_ok={ok} reason={reason} echo={is_echo}")
+    print(
+        f"polish diagnostic (informational, NOT part of pass/fail): gate_ok={ok} reason={reason} echo={is_echo}"
+    )
     print(
         "NOTE: per the plan's risk note, polish's own tolerated ~25-50% echo/fallback "
         "contract means a gate rejection or echoed reply here is NOT a proof failure -- "

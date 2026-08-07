@@ -5,8 +5,8 @@ after any intentional change to docx_assembler.py/docx_fields.py's output
 and review the diff — it should only ever move by exactly what the change
 was meant to do.
 
-Requires SOPFORGE_SOP_FACTORY_2_DIR pointed at a real SOP Factory 2 engine
-copy (see CLAUDE.md's "SOP_Factory_2 engine (sop_lib) is external" note).
+Uses the in-repo vendored SOP Factory 2 engine (vendor/sop_factory_2/) by
+default; set SOPFORGE_SOP_FACTORY_2_DIR to point at a different copy.
 
 Usage: python scripts/regen_golden.py
 """
