@@ -430,33 +430,36 @@ once. Off (`1`) by default: against an untuned single-slot Ollama
 server, raising it just queues requests and risks a queued step's own
 timeout expiring into a template fallback it didn't need.
 
-### Vision-augmented step generation (`use_vision`, off by default)
+### Repeated steps share one LLM call (prompt memoization)
 
-Every step also carries its own screenshot, but by default it's never sent
-to the LLM — step text is written from the manifest's text fields alone
-(action, element name, window title). Setting `use_vision = true` under
-`[steps]` in `config/models.toml` attaches that step's screenshot to the
-same LLM call, so the model can describe what's actually on screen instead
-of working from text alone.
+If several steps produce byte-identical prompts — a common pattern in
+real captures, e.g. ticking a run of checkboxes in the same dialog — the
+server dispatches **at most one** LLM call for that shared prompt and
+reuses the reply for every step in the group, instead of one call per
+step. Each step is still checked against the manifest's own facts
+independently (a shared reply can still pass for one step and fall back
+to the template for another, if their manifest details differ enough to
+matter), so this is purely a speed/cost win — it never changes which
+steps end up fluent versus template-fallback. Nothing to configure; it's
+always on.
 
-This is **config-file only** — there's no toggle for it on the
-Configuration page (§7), and it's a different feature from the **Vision**
-row you *do* see there, which is for screenshots-only builds with no
-manifest (§5, "Building without a capture"). `use_vision` augments the
-normal, manifest-driven step generation described above; it doesn't
-replace it, and it needs a model that can actually see images (the default
-`[steps]` model, `qwen3:32b`, is text-only — you'd need to point `[steps]`
-at a vision-capable model like `qwen2.5vl:7b` for this to do anything).
+### LLM preflight (reachability check)
 
-It's off by default because a live measurement (20 real steps from 2 real
-capture sessions, comparing the same model with and without the
-screenshot attached) found it doesn't reliably help: it fixed some steps
-that had been falling back to the template, but broke roughly the same
-number of steps that had been working fine without it — a net wash on
-accuracy, not a clear improvement — while running 25–50x slower per step
-(the vision call itself, not network latency). See
-`phases/05-vision-step-text-measurement.md` for the full data, including
-concrete before/after examples, if you're considering turning it on.
+Before you commit to a real generation run, you can check whether a
+section's configured provider/endpoint/model is actually reachable: the
+**Test connection** button next to each row (Steps/Narration/Vision/Polish)
+on the Configuration page (§7) probes it — is the endpoint reachable, and
+if so, is the configured model actually present — without generating any
+text or spending a real LLM call. The result shows next to the button
+(e.g. "ok: model present (340ms)" or "error: connection refused").
+
+The server also runs this same probe **automatically, once per generation
+job**, best-effort — its result appears as an **LLM preflight** card at
+the top of the session page once the doc is done, so you can tell at a
+glance whether a run full of template-fallback steps was caused by a dead
+endpoint versus something else. This never blocks or delays generation —
+if the probe itself fails for any reason, the job proceeds normally and
+just runs without that diagnostic card.
 
 ---
 
@@ -501,8 +504,27 @@ system fonts, no external assets — works fully offline).
   session's files, library entry, and everything — irreversible, no undo),
   a **Downloads** list (docx/pdf/single-file-html/markdown-zip — each
   downloads named from the session's title, e.g. `configure-smartdeploy-
-  console.docx`, not a generic `doc.docx`), and a read-only panel showing
-  the current `config/models.toml`.
+  console.docx`, not a generic `doc.docx`), a read-only panel showing
+  the current `config/models.toml`, and (once done) an **LLM preflight**
+  diagnostic card if the automatic reachability probe ran (see §4).
+- **Per-step editing**: every step on the finished session page has a
+  collapsed editor, not just the flagged ones. Two independent actions:
+  - **Save** — replaces that step's text with whatever you typed and
+    re-exports all six formats immediately, with **zero LLM calls**. Fast
+    even on a long session, since nothing is regenerated but the one step.
+  - **Regenerate with AI** — makes exactly one fresh LLM call for that
+    step, through the same round-trip check and template-fallback safety
+    net as normal generation. If the fresh attempt would just replace
+    already-good text (a prior manual edit, or a step that already
+    generated successfully) with a template fallback, it's declined
+    automatically and the good text is kept — regenerating never
+    downgrades a step.
+  Edits persist across a plain **Re-render**; a separate **Re-render from
+  scratch** button (`?discard_edits=1`) wipes every manual edit for that
+  session and starts clean. Every step you've hand-edited is listed under
+  a **Manually edited** category alongside the sidecar report's three
+  categories (§6), so it's clear which steps are no longer the AI's own
+  words.
 
 No JavaScript is required for the core workflow — the search box, upload
 form, transcript form, re-render button, and delete button are all plain
@@ -608,9 +630,18 @@ listing three things a reviewer should check:
 - **Empty-metadata steps** (yellow if non-empty) — steps where no UI
   Automation element info was captured at all. These render using screen
   coordinates instead of an element name — still factual, just less specific.
+- **Manually edited steps** — steps you've hand-edited via the per-step
+  editor (§5), listed so it's clear which steps are no longer the AI's
+  (or template's) own words.
 
-An all-green report means every step made it into the doc with full
-information and no fallback.
+On the session page, each flagged step in the first three categories shows
+as a row with a **thumbnail of that step's screenshot** next to its
+generated text, deep-linked into the doc preview (`doc.html#step-id`) so
+clicking it jumps straight to that step in context instead of leaving you
+to scroll and find it.
+
+An all-green report (first three categories empty) means every step made
+it into the doc with full information and no fallback.
 
 ---
 
@@ -634,6 +665,11 @@ names, or any model not yet in the list.
 **Steps** and **Vision** also have a **Max concurrency** field — how many
 LLM/vision calls that section dispatches at once (see §4 for what this
 actually does and why it defaults to `1`/off).
+
+Every row also has a **Test connection** button — a cheap reachability
+probe (see §4, "LLM preflight") that checks the endpoint currently in the
+form (not necessarily what's saved) and reports back inline, so you can
+confirm a change works before saving it.
 
 A separate **Document** card sets the metadata stamped on every generated
 SOP's title page and revision table: **Author** (defaults to "SOPForge")
@@ -794,12 +830,6 @@ form posts.
   backend has never been exercised against a live API call in this
   deployment, so its actual reliability is unverified. This is why
   polish defaults to off.
-- Vision-augmented step generation (`use_vision`, §4) measured no net
-  accuracy improvement over text-only in a real-data comparison — it
-  traded some failures for others rather than reducing them — while
-  running 25–50x slower per step. See
-  `phases/05-vision-step-text-measurement.md` for the data. Off by
-  default for this reason.
 - Narration transcription (§3, §7) bundles faster-whisper's dependencies
   (ctranslate2, onnxruntime) into `sopforge-server.exe`, meaningfully
   growing its install size — an accepted tradeoff for local, no-cloud
