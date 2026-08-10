@@ -66,7 +66,6 @@ def render_steps_llm_mode(
     llm_client,
     on_progress=None,
     max_concurrency=1,
-    use_vision=False,
 ):
     """Renders every manifest step via the LLM with a round-trip gate and
     per-step template fallback (task-06's generate_all_steps — one
@@ -76,17 +75,12 @@ def render_steps_llm_mode(
     render_steps_template_mode's plain {"step_id", "text"} shape.
     `on_progress`, if given, is passed straight through to generate_all_steps.
     `max_concurrency` is passed straight through too — see generate_all_steps'
-    own docstring for what it does and why it defaults to 1. `use_vision`
-    (off by default) is forwarded to generate_all_steps along with this
-    function's own `screenshot_dir` param, so a step's own screenshot is what
-    gets attached when vision is on."""
+    own docstring for what it does and why it defaults to 1."""
     step_results = generate_all_steps(
         manifest,
         llm_client,
         on_progress=on_progress,
         max_concurrency=max_concurrency,
-        use_vision=use_vision,
-        screenshot_dir=screenshot_dir,
     )
     annotated_paths = _annotate_all(manifest, screenshot_dir, annotated_dir)
     return step_results, annotated_paths
@@ -165,7 +159,10 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
         heading = step_heading(n, step)
-        parts.append(f"<h2>{html.escape(heading)}</h2>")
+        # id=step.id anchors each step so a link like doc.html#step-003 (the
+        # session page's report rows, webui/pages.py's _finding_row) jumps
+        # straight to it.
+        parts.append(f'<h2 id="{html.escape(step.id)}">{html.escape(heading)}</h2>')
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         if result.get("narration"):
             parts.append(

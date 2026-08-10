@@ -32,8 +32,9 @@ h2{font-size:1.15rem;margin:1.5em 0 .5em}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
 padding:18px 20px;margin:16px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
 .muted,small{color:var(--muted)}
-input[type=text],input[type=file],select{font:inherit;padding:9px 11px;border:1px solid var(--border);
+input[type=text],input[type=file],select,textarea{font:inherit;padding:9px 11px;border:1px solid var(--border);
 border-radius:9px;background:var(--card);color:var(--fg);max-width:440px;width:100%}
+textarea{min-height:6em;max-width:100%;resize:vertical;font-family:inherit}
 table{border-collapse:collapse;width:100%;font-size:.88em}
 th,td{border:1px solid var(--border);padding:6px 10px;text-align:left;white-space:nowrap}
 th{background:rgba(0,0,0,.04)}
@@ -73,6 +74,14 @@ align-items:center;justify-content:center;z-index:100}
 #lightbox img{max-width:95vw;max-height:90vh;object-fit:contain;border-radius:var(--radius)}
 #lightbox .close{position:absolute;top:18px;right:24px;color:#fff;font-size:2rem;
 line-height:1;cursor:pointer;user-select:none}
+.finding{display:flex;gap:14px;align-items:flex-start;padding:10px 0;
+border-bottom:1px solid var(--border)}
+.finding:last-child{border-bottom:0}
+.finding img.shot{max-width:180px;border-radius:8px;border:1px solid var(--border);flex-shrink:0}
+details.stepedit{border-bottom:1px solid var(--border);padding:6px 0}
+details.stepedit:last-child{border-bottom:0}
+details.stepedit summary{cursor:pointer}
+.pill.edited{background:rgba(217,119,6,.15);color:var(--warn)}
 """
 
 
@@ -107,6 +116,124 @@ def _section(title, category, items):
     # between the attribute and the <h2>.
     return (
         f'<section class="card" data-status="{color}"><h2>{html.escape(title)}</h2>{body}</section>'
+    )
+
+
+def _finding_row(session_id, step_id, entry):
+    """One report finding (a flagged step_id) rendered as a thumbnail +
+    generated text + a link into the doc preview iframe at that step's
+    anchor (render_html's id="{step_id}", task-06), plus a link to that
+    step's editor (#edit-{step_id}, task-06's _step_editor) and an "edited"
+    badge when the step already carries a manual edit. `entry` is the
+    matching steps.json record (or None if there wasn't one for this
+    step_id -- degrades to a text-only row rather than a broken <img>)."""
+    sid = html.escape(session_id)
+    sid_step = html.escape(step_id)
+    screenshot = (entry or {}).get("screenshot") or ""
+    thumb = (
+        f'<img class="shot" loading="lazy" '
+        f'src="/sessions/{sid}/{html.escape(screenshot)}" alt="{sid_step}">'
+        if screenshot
+        else ""
+    )
+    text = html.escape((entry or {}).get("text") or "")
+    text_html = f'<div class="muted">{text}</div>' if text else ""
+    edited_badge = (
+        '<span class="pill edited">edited</span>' if (entry or {}).get("manually_edited") else ""
+    )
+    return (
+        f'<div class="finding">{thumb}'
+        f'<div><a href="/sessions/{sid}/doc.html#{sid_step}" target="docpreview">'
+        f"<strong>{sid_step}</strong></a> "
+        f'<a class="muted" href="#edit-{sid_step}">Edit</a> {edited_badge}'
+        f"{text_html}</div></div>"
+    )
+
+
+def _step_section(title, category, step_ids, session_id, steps_by_id):
+    """_section's counterpart for step-id findings: same card/color/heading
+    contract (data-status + <h2> first, no nested tag between them -- see
+    _section's own comment), but thumbnail rows instead of bare <li>s when
+    a per-step index (steps.json, task-05) is available. Falls back to
+    _section's plain list for a session generated before steps.json
+    existed, or when steps_by_id is None."""
+    if steps_by_id is None:
+        return _section(title, category, step_ids)
+    color = _color_for(category, len(step_ids))
+    if step_ids:
+        body = "".join(
+            _finding_row(session_id, step_id, steps_by_id.get(step_id)) for step_id in step_ids
+        )
+    else:
+        body = '<p class="muted">None.</p>'
+    return (
+        f'<section class="card" data-status="{color}"><h2>{html.escape(title)}</h2>{body}</section>'
+    )
+
+
+def _step_editor(session_id, step_id, entry, can_regenerate):
+    """One collapsed <details> per step: a thumbnail, a textarea holding
+    its current text (editable via POST .../steps/{step_id}), and an
+    optional "Regenerate with AI" button (POST .../steps/{step_id}/
+    regenerate) -- omitted entirely when can_regenerate is False (photo-
+    mode sessions have no manifest ground truth to regenerate from)."""
+    sid = html.escape(session_id)
+    sid_step = html.escape(step_id)
+    screenshot = (entry or {}).get("screenshot") or ""
+    thumb = (
+        f'<img class="shot" loading="lazy" '
+        f'src="/sessions/{sid}/{html.escape(screenshot)}" alt="{sid_step}">'
+        if screenshot
+        else ""
+    )
+    text = html.escape((entry or {}).get("text") or "")
+    summary_text = (entry or {}).get("text") or ""
+    summary_preview = html.escape(
+        summary_text if len(summary_text) <= 80 else summary_text[:77] + "..."
+    )
+    regenerate_form = (
+        f'<form method="post" action="/ui/sessions/{sid}/steps/{sid_step}/regenerate">'
+        '<button type="submit" class="secondary">Regenerate with AI</button></form>'
+        if can_regenerate
+        else ""
+    )
+    edited_badge = (
+        ' <span class="pill edited">edited</span>' if (entry or {}).get("manually_edited") else ""
+    )
+    return (
+        f'<details class="stepedit" id="edit-{sid_step}">'
+        f"<summary><strong>{sid_step}</strong>{edited_badge} "
+        f'<span class="muted">{summary_preview}</span></summary>'
+        f'<div class="finding">{thumb}'
+        '<div style="flex:1">'
+        f'<form method="post" action="/ui/sessions/{sid}/steps/{sid_step}">'
+        '<div class="field"><label>Step text</label>'
+        f'<textarea name="text" rows="4" required>{text}</textarea></div>'
+        '<div class="actions"><button type="submit">Save &amp; re-export</button></div>'
+        "</form>"
+        f'<div class="actions">{regenerate_form}</div>'
+        "</div></div></details>"
+    )
+
+
+def _edit_steps_card(session_id, steps, can_regenerate):
+    """A card listing every step as a collapsed editor -- not only flagged
+    ones, since "the phrasing is just fine except this one step" is not
+    necessarily a flagged condition. Returns "" when steps is None (a
+    session generated before steps.json existed)."""
+    if steps is None:
+        return ""
+    rows = "".join(
+        _step_editor(session_id, e["step_id"], e, can_regenerate)
+        for e in steps
+        if isinstance(e, dict) and "step_id" in e
+    )
+    return (
+        '<h2>Edit steps</h2><div class="card" id="edit-steps">'
+        '<p class="muted">Edits are saved immediately and survive a later re-render. '
+        "Regenerating a step discards its manual edit and asks the AI again."
+        + ("" if can_regenerate else " Regenerate isn't available for this build mode.")
+        + f"</p>{rows}</div>"
     )
 
 
@@ -201,6 +328,44 @@ def render_session_processing_page(session_id, status):
     return _shell("SOPForge Review", body)
 
 
+# One shared lightbox overlay + its click/Escape handlers -- used by both
+# the steps-review page (a click on any .shot thumbnail there) and the
+# session/report page (task-07's thumbnail report rows). Hoisted to module
+# level so both pages emit the exact same markup/script instead of two
+# copies drifting apart. preventDefault() on the .shot click is what stops
+# a surrounding <label> (steps-review's cards) from also toggling its
+# checkbox -- a plain click handler alone wouldn't, since <img> inside a
+# <label> activates the label by default; harmless no-op on pages (like the
+# session page) where .shot isn't inside a <label>. Inline attribute
+# handlers on the overlay itself, one small <script> for the rest -- same
+# "considered exception" pattern as /ui/config's datalist JS, not a
+# framework or build step.
+_LIGHTBOX_HTML = (
+    '<div id="lightbox" hidden '
+    "onclick=\"if(event.target===this)this.hidden=true,this.querySelector('img').src=''\">"
+    "<span class=\"close\" onclick=\"lightbox.hidden=true;lightbox.querySelector('img').src=''\">"
+    "&times;</span>"
+    '<img alt=""></div>'
+)
+_LIGHTBOX_SCRIPT = (
+    "<script>"
+    "document.addEventListener('click',function(e){"
+    "if(!e.target.classList.contains('shot'))return;"
+    "e.preventDefault();"
+    "var lb=document.getElementById('lightbox');"
+    "lb.querySelector('img').src=e.target.src;"
+    "lb.querySelector('img').alt=e.target.alt;"
+    "lb.hidden=false;"
+    "});"
+    "document.addEventListener('keydown',function(e){"
+    "if(e.key==='Escape'){"
+    "var lb=document.getElementById('lightbox');"
+    "lb.hidden=true;lb.querySelector('img').src='';"
+    "}});"
+    "</script>"
+)
+
+
 def render_steps_review_page(session_id, manifest):
     # Shown once, right after upload/build and before generation: a checklist
     # of every captured step so the user can drop mis-clicks (wrong element,
@@ -236,38 +401,9 @@ def render_steps_review_page(session_id, manifest):
             "</label>"
         )
     # One shared lightbox for every card (not one overlay per card) -- a click
-    # on any .shot thumbnail sets its src and shows it. preventDefault() on
-    # that click is what stops the surrounding <label> from also toggling its
-    # checkbox (a plain click handler alone wouldn't: <img> inside a <label>
-    # activates the label by default). Closes via the X, clicking the dimmed
-    # backdrop, or Escape; clearing the src on close avoids holding a large
-    # decoded image in memory between views. Inline attribute handlers, no
-    # <script> block -- same "considered exception" pattern as /ui/config's
-    # datalist JS (see .claude memory), not a framework or build step.
-    lightbox = (
-        '<div id="lightbox" hidden '
-        "onclick=\"if(event.target===this)this.hidden=true,this.querySelector('img').src=''\">"
-        "<span class=\"close\" onclick=\"lightbox.hidden=true;lightbox.querySelector('img').src=''\">"
-        "&times;</span>"
-        '<img alt=""></div>'
-    )
-    lightbox_script = (
-        "<script>"
-        "document.addEventListener('click',function(e){"
-        "if(!e.target.classList.contains('shot'))return;"
-        "e.preventDefault();"
-        "var lb=document.getElementById('lightbox');"
-        "lb.querySelector('img').src=e.target.src;"
-        "lb.querySelector('img').alt=e.target.alt;"
-        "lb.hidden=false;"
-        "});"
-        "document.addEventListener('keydown',function(e){"
-        "if(e.key==='Escape'){"
-        "var lb=document.getElementById('lightbox');"
-        "lb.hidden=true;lb.querySelector('img').src='';"
-        "}});"
-        "</script>"
-    )
+    # on any .shot thumbnail sets its src and shows it. Closes via the X,
+    # clicking the dimmed backdrop, or Escape; clearing the src on close
+    # avoids holding a large decoded image in memory between views.
     body = (
         f"<h1>Review captured steps</h1>"
         '<p class="muted">Uncheck any wrong or accidental clicks before generating the '
@@ -278,8 +414,8 @@ def render_steps_review_page(session_id, manifest):
         + "".join(cards)
         + '<div class="actions"><button type="submit">'
         "Keep selected steps &amp; generate document</button></div></form>"
-        + lightbox
-        + lightbox_script
+        + _LIGHTBOX_HTML
+        + _LIGHTBOX_SCRIPT
     )
     return _shell("SOPForge Review", body)
 
@@ -406,8 +542,51 @@ def _config_row(key, heading, values, extra="", providers=None):
         f"onblur=\"if(!this.value)this.value=this.dataset.prev||''\">{datalist}</div>"
         f'<div class="field"><label>Endpoint <small>(Ollama / custom only)</small></label>'
         f'<input type="text" name="{key}_endpoint" value="{html.escape(values["endpoint"])}"></div>'
+        f'<div class="field"><button type="button" class="secondary" '
+        f'data-test-section="{key}">Test connection</button> '
+        f'<span class="muted" id="{key}_test_result"></span></div>'
         f"{extra}</div>"
     )
+
+
+# One delegated click listener for every "Test connection" button, appended
+# once to render_config_page's body. Reads the section's own provider/
+# endpoint/model inputs at click time -- the model field clears on focus and
+# restores on blur (see _config_row's onfocus/onblur above), and blur always
+# fires before this click handler, so .value is the field's real content by
+# the time this reads it.
+_CONFIG_TEST_SCRIPT = """<script>
+document.addEventListener('click', function(e) {
+  var btn = e.target.closest('[data-test-section]');
+  if (!btn) return;
+  var key = btn.getAttribute('data-test-section');
+  var result = document.getElementById(key + '_test_result');
+  var field = function(suffix) {
+    var el = document.querySelector('[name="' + key + suffix + '"]');
+    return el ? el.value : '';
+  };
+  result.textContent = 'Testing...';
+  var body = new URLSearchParams({
+    section: key,
+    provider: field('_provider'),
+    endpoint: field('_endpoint'),
+    model: field('_model')
+  });
+  fetch('/ui/config/test', {method: 'POST', body: body})
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, d: d}; }); })
+    .then(function(res) {
+      var d = res.d;
+      if (!res.ok) {
+        result.textContent = 'error: ' + (d.detail || 'request rejected');
+        return;
+      }
+      var latency = (d.latency_ms !== null && d.latency_ms !== undefined) ?
+        ' (' + d.latency_ms + 'ms)' : '';
+      result.textContent = d.status + ': ' + d.detail + latency;
+    })
+    .catch(function() { result.textContent = 'Test failed'; });
+});
+</script>"""
 
 
 def render_config_page(config, keystatus, saved=False):
@@ -418,6 +597,7 @@ def render_config_page(config, keystatus, saved=False):
         config["polish"],
     )
     doc = config.get("document", {})
+    transcription = config.get("transcription", {})
     saved_note = (
         '<div class="card" data-status="green" style="border-left:4px solid var(--ok)">'
         "<p><strong>Saved.</strong> Changes take effect on the next generation.</p></div>"
@@ -443,7 +623,6 @@ def render_config_page(config, keystatus, saved=False):
         "on it. Covers all six export formats identically. Can also be overridden "
         "per-job via <code>?polish=off|local|haiku</code> on the rerender endpoint.</p></div>"
     )
-    steps_vision_checked = " checked" if steps.get("use_vision") else ""
     document_card = (
         '<div class="card"><h2>Document</h2>'
         '<div class="field"><label>Author <small>(shown on the title page / revision '
@@ -452,6 +631,32 @@ def render_config_page(config, keystatus, saved=False):
         '<div class="field"><label>Document number prefix <small>(e.g. "SOP" — blank omits '
         "the document number entirely)</small></label>"
         f'<input type="text" name="document_doc_no_prefix" value="{html.escape(doc.get("doc_no_prefix", ""))}"></div>'
+        "</div>"
+    )
+    transcription_checked = " checked" if transcription.get("enabled") else ""
+    transcription_device = transcription.get("device", "cpu")
+    device_opts = "".join(
+        f'<option value="{d}"{" selected" if d == transcription_device else ""}>{d}</option>'
+        for d in ("cpu", "cuda", "auto")
+    )
+    transcription_card = (
+        '<div class="card"><h2>Narration transcription</h2>'
+        '<div class="field"><label><input type="checkbox" name="transcription_enabled"'
+        f"{transcription_checked}> Transcribe recorded narration audio</label>"
+        '<p class="muted">Off by default. When a capture session\'s optional tray '
+        '"Record narration (mic)" toggle produced a narration.wav, and no transcript '
+        "was uploaded by hand, enabling this runs it through a local speech-to-text "
+        "model (faster-whisper) before generation — nothing leaves your network. A "
+        "missing model or unavailable hardware just skips transcription for that "
+        "session; the document still generates from the steps alone.</p></div>"
+        '<div class="field"><label>Model size</label>'
+        f'<input type="text" name="transcription_model_size" '
+        f'value="{html.escape(transcription.get("model_size", "base"))}"></div>'
+        '<div class="field"><label>Device</label>'
+        f'<select name="transcription_device">{device_opts}</select></div>'
+        '<div class="field"><label>Compute type</label>'
+        f'<input type="text" name="transcription_compute_type" '
+        f'value="{html.escape(transcription.get("compute_type", "int8"))}"></div>'
         "</div>"
     )
     passes_extra = (
@@ -463,14 +668,6 @@ def render_config_page(config, keystatus, saved=False):
         "config/models.toml's comment; raising this only helps against an Ollama server "
         "tuned for parallel requests)</small></label>"
         f'<input type="text" name="steps_max_concurrency" value="{steps.get("max_concurrency", 1)}"></div>'
-        '<div class="field"><label><input type="checkbox" name="steps_use_vision"'
-        f"{steps_vision_checked}> Attach each step's screenshot to the LLM call "
-        "<small>(experimental)</small></label>"
-        '<p class="muted">Off by default: a live comparison found no net accuracy '
-        "improvement over text-only (it traded some failures for others) while running "
-        "25–50x slower per step, and it needs a vision-capable model above — the default "
-        "qwen3:32b can't see images. See "
-        "<code>phases/05-vision-step-text-measurement.md</code> for the data.</p></div>"
     )
 
     key_rows = "".join(
@@ -515,29 +712,56 @@ def render_config_page(config, keystatus, saved=False):
         f"{_config_row('vision', 'Vision (screenshot captions)', vis, extra=vision_extra, providers=_VISION_PROVIDERS)}"
         f"{_config_row('polish', 'Polish (optional 4th stage)', polish, extra=polish_extra)}"
         f"{document_card}"
+        f"{transcription_card}"
         '<button type="submit">Save configuration</button></form>'
         f"{key_panel}{rec_table}"
+        f"{_CONFIG_TEST_SCRIPT}"
     )
     return _shell("SOPForge Configuration", body)
 
 
-def render_session_page(session_id, title, date, report, config):
+def render_session_page(session_id, title, date, report, config, steps=None, can_regenerate=True):
+    """steps: the steps.json sidecar's list (task-05), or None for a
+    session generated before it existed -- report rows for
+    template-fallback/empty-metadata steps show a thumbnail + the step's
+    actual text, deep-linked into the doc preview, when available; None
+    degrades to the original plain step-id list (_step_section). Also
+    drives the "Edit steps" card (task-06) -- every step gets a collapsed
+    editor there, not only flagged ones.
+
+    can_regenerate: whether the per-step "Regenerate with AI" button
+    appears -- False for screenshots+transcript ("photo mode") sessions,
+    which have no manifest ground truth to regenerate a step from."""
+    # Guard against a malformed entry (not a dict, or missing "step_id") in
+    # a damaged steps.json -- "corrupt degrades like missing" is the
+    # contract everywhere else this file is read (server.py's
+    # _load_step_state/_load_step_index), so a bad individual entry is
+    # dropped here rather than raising and 500ing the whole review page.
+    steps_by_id = (
+        {e["step_id"]: e for e in steps if isinstance(e, dict) and "step_id" in e}
+        if steps is not None
+        else None
+    )
     verify_items = [
         f"{c['claim_id']}: {c['text']}" if c.get("text") else c["claim_id"]
         for c in report.get("verify_claims", [])
     ]
     sections = "".join(
         [
-            _section(
+            _step_section(
                 "Template-fallback steps",
                 "template_fallback_steps",
                 report.get("template_fallback_steps", []),
+                session_id,
+                steps_by_id,
             ),
             _section("Verify claims", "verify_claims", verify_items),
-            _section(
+            _step_section(
                 "Empty-metadata steps",
                 "empty_metadata_steps",
                 report.get("empty_metadata_steps", []),
+                session_id,
+                steps_by_id,
             ),
         ]
     )
@@ -564,6 +788,63 @@ def render_session_page(session_id, title, date, report, config):
         transcript_note = f'<p class="muted">Transcript: {html.escape(transcript_text)}</p>'
     else:
         transcript_note = ""
+    narration_transcription_text = report.get("narration_transcription") or ""
+    if "could not be transcribed" in narration_transcription_text:
+        narration_transcription_note = (
+            '<section class="card" data-status="yellow"><h2>Narration transcription</h2>'
+            f"<p>{html.escape(narration_transcription_text)}</p></section>"
+        )
+    elif narration_transcription_text:
+        narration_transcription_note = (
+            f'<p class="muted">{html.escape(narration_transcription_text)}</p>'
+        )
+    else:
+        narration_transcription_note = ""
+    preflight = report.get("llm_preflight")
+    if preflight:
+        # A div, deliberately NOT a <section data-status=...> -- the review
+        # page's UI-smoke test asserts an exact count of those for the three
+        # fixed sidecar-report categories, and this isn't one of them.
+        _preflight_color = {"ok": "--ok", "warn": "--warn", "error": "--bad"}.get(
+            preflight.get("status"), "--warn"
+        )
+        latency = preflight.get("latency_ms")
+        latency_text = f" ({latency}ms)" if latency is not None else ""
+        preflight_note = (
+            f'<div class="card" style="border-left:4px solid var({_preflight_color})">'
+            "<strong>LLM preflight</strong> &mdash; "
+            f"{html.escape(str(preflight.get('provider', '')))}/"
+            f"{html.escape(str(preflight.get('model', '')))}: "
+            f"{html.escape(str(preflight.get('status', '')))}{latency_text} "
+            f"&mdash; {html.escape(str(preflight.get('detail', '')))}</div>"
+        )
+    else:
+        preflight_note = ""
+    manually_edited_ids = report.get("manually_edited_steps") or []
+    if manually_edited_ids:
+        # A div, deliberately NOT a <section data-status=...> -- same reason
+        # as preflight_note above: the fixed three sidecar-report categories
+        # keep their exact section count, new info is added alongside them.
+        manually_edited_note = (
+            '<div class="card" style="border-left:4px solid var(--warn)">'
+            "<strong>Manually edited steps</strong> &mdash; "
+            "these steps carry human-written text, not gated by the round-trip "
+            f"check: {html.escape(', '.join(manually_edited_ids))}</div>"
+        )
+    else:
+        manually_edited_note = ""
+    regenerate_declined_ids = report.get("regenerate_declined_steps") or []
+    if regenerate_declined_ids:
+        # Same "div, not a data-status section" reasoning as preflight_note/
+        # manually_edited_note above.
+        regenerate_declined_note = (
+            '<div class="card" style="border-left:4px solid var(--warn)">'
+            "<strong>Regenerate didn&rsquo;t produce a result</strong> &mdash; "
+            "the AI attempt fell back to the template wording, so your manual "
+            f"edit was kept instead: {html.escape(', '.join(regenerate_declined_ids))}</div>"
+        )
+    else:
+        regenerate_declined_note = ""
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">{label}</a></li>'
         for path, label in (
@@ -577,14 +858,19 @@ def render_session_page(session_id, title, date, report, config):
         '<p><a href="/ui">&larr; Back to library</a></p>'
         f"<h1>{html.escape(title)}</h1>"
         f'<p class="muted">{html.escape(date)} &mdash; {sid}</p>'
-        f'<iframe src="/sessions/{sid}/doc.html"></iframe>'
+        f'<iframe name="docpreview" src="/sessions/{sid}/doc.html"></iframe>'
         "<p>Every recorded step is included &mdash; the document has one step per "
         "captured action, nothing skipped. The report below only flags steps worth "
         "a second look: <em>template-fallback</em> steps are still complete and "
         "factually correct, just written from the captured data rather than the "
         "language model.</p>"
+        f"{preflight_note}"
+        f"{manually_edited_note}"
+        f"{regenerate_declined_note}"
         f"{transcript_note}"
+        f"{narration_transcription_note}"
         f"{sections}"
+        f"{_edit_steps_card(session_id, steps, can_regenerate)}"
         "<h2>Narration transcript</h2>"
         '<div class="card">'
         f'<form method="post" action="/ui/sessions/{sid}/transcript" enctype="multipart/form-data">'
@@ -596,10 +882,19 @@ def render_session_page(session_id, title, date, report, config):
         '<div class="actions">'
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit">Re-render</button></form>'
-        f'<form method="post" action="/ui/sessions/{sid}/delete">'
+        + (
+            f'<form method="post" action="/ui/sessions/{sid}/rerender?discard_edits=1">'
+            '<button type="submit" class="secondary">Re-render from scratch '
+            "(discard my edits)</button></form>"
+            if manually_edited_ids
+            else ""
+        )
+        + f'<form method="post" action="/ui/sessions/{sid}/delete">'
         '<button type="submit" class="secondary">Delete</button></form>'
         "</div>"
         f'<h2>Downloads</h2><ul class="dl">{downloads}</ul>'
         f'<h2>Config (read-only)</h2><div class="card"><ul class="sessions">{config_rows}</ul></div>'
+        + _LIGHTBOX_HTML
+        + _LIGHTBOX_SCRIPT
     )
     return _shell("SOPForge Review", body)

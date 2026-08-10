@@ -24,6 +24,7 @@ def render_review_page(report):
             _list_section("Template-fallback steps", report.get("template_fallback_steps", [])),
             _list_section("Verify claims", verify_items),
             _list_section("Empty-metadata steps", report.get("empty_metadata_steps", [])),
+            _list_section("Manually edited steps", report.get("manually_edited_steps", [])),
         ]
     )
 

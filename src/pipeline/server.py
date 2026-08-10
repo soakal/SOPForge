@@ -23,10 +23,13 @@ JSON is persisted to session_dir/manifest.json specifically so this
 restore is possible."""
 
 import io
+import ipaddress
 import json
+import logging
 import mimetypes
 import os
 import shutil
+import socket
 import threading
 import time
 import uuid
@@ -37,6 +40,7 @@ from typing import Literal
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
@@ -54,6 +58,9 @@ from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
 from pipeline.config import (
     ModelsConfig,
+    PolishConfig,
+    SectionConfig,
+    VisionConfig,
     key_status,
     load_models_config,
     provider_api_key,
@@ -66,6 +73,7 @@ from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import _slugify, export_markdown_bundle
 from pipeline.export_pdf import render_pdf
+from pipeline.generation import generate_step_text
 from pipeline.jobs import JobRunner
 from pipeline.library import remove_entry
 from pipeline.library import search as library_search
@@ -75,11 +83,13 @@ from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_man
 from pipeline.narration_polish import polish_narration
 from pipeline.narrative import generate_narrative
 from pipeline.polish import generate_polish_fields
+from pipeline.preflight import probe_section
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
+from pipeline.transcription import Transcriber
 from pipeline.vision import caption_images
 from pipeline.webui.pages import (
     render_config_page,
@@ -89,6 +99,8 @@ from pipeline.webui.pages import (
     render_steps_review_page,
 )
 from pipeline.webui.review import render_review_page
+
+logger = logging.getLogger(__name__)
 
 
 def _synthesize_narration_from_steps(manifest, step_results):
@@ -166,6 +178,210 @@ def _download_filename(manifest, ext):
     return f"{slug}.{ext}"
 
 
+def _load_step_state(session_dir):
+    """The parsed steps.json sidecar (written by _write_all_exports) as a
+    dict, or None if it doesn't exist, isn't valid JSON, or -- even though
+    it parses -- isn't a JSON *object* (e.g. a damaged file containing a
+    bare list or string). A session generated before this sidecar existed
+    (or one whose file somehow got clobbered/truncated) degrades gracefully
+    wherever this is consulted, rather than an AttributeError from calling
+    .get() on the wrong type escaping into a generation job and failing it."""
+    path = Path(session_dir) / "steps.json"
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _load_step_index(session_dir):
+    """The steps.json sidecar's per-step list, or None -- see
+    _load_step_state. Kept as its own helper since most callers (the
+    session page's report rows) only need the list, not the wrapping
+    version/narrative_text envelope. Also guards against a "steps" value
+    that isn't actually a list (same damaged-file class as
+    _load_step_state's own guard)."""
+    state = _load_step_state(session_dir)
+    if not state:
+        return None
+    steps = state.get("steps")
+    return steps if isinstance(steps, list) else None
+
+
+# Generous but finite per-file caps on ingest -- this is a local,
+# single-user tool with no auth, so any process that can reach it (or a
+# DNS-rebinding page slipping past the host/CSRF guards) could otherwise
+# stream unbounded multipart bodies straight to disk/memory. Screenshots
+# are realistically a few MB each; a narration WAV is a single recording,
+# not hours of audio. Caught by a repo security audit.
+_MAX_UPLOAD_FILE_BYTES = 200 * 1024 * 1024  # 200MB
+_MAX_NARRATION_WAV_BYTES = 500 * 1024 * 1024  # 500MB
+
+
+def _copy_capped(src_fileobj, dest_path, max_bytes, what):
+    """Streams src_fileobj into dest_path in chunks, aborting with a 413
+    (and removing the partial file) if it exceeds max_bytes -- never
+    buffers the whole upload in memory just to check its size."""
+    written = 0
+    with dest_path.open("wb") as out:
+        while True:
+            chunk = src_fileobj.read(1024 * 1024)
+            if not chunk:
+                break
+            written += len(chunk)
+            if written > max_bytes:
+                out.close()
+                dest_path.unlink(missing_ok=True)
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"{what} exceeds the {max_bytes // (1024 * 1024)}MB limit",
+                )
+            out.write(chunk)
+
+
+def _read_capped(fileobj, max_bytes, what):
+    """Reads fileobj into memory in chunks, raising a 413 (never buffering
+    past the cap) if it exceeds max_bytes."""
+    chunks = []
+    total = 0
+    while True:
+        chunk = fileobj.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{what} exceeds the {max_bytes // (1024 * 1024)}MB limit",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _edits_path(session_dir):
+    return Path(session_dir) / "edits.json"
+
+
+# Guards every edits.json read-modify-write sequence (_save_edit,
+# _clear_edit, _clear_all_edits) against a lost update between the HTTP
+# request thread (ui_edit_step, rerender/ui_rerender) and the JobRunner
+# background worker thread (_regenerate_step's _clear_edit,
+# _apply_manual_edits' read inside _reexport_session) -- both do an
+# unsynchronized load-modify-save of the same file, so a save landing
+# between another thread's load and save silently discards it. One lock
+# per session_dir (not a single global one) so unrelated sessions never
+# block each other; keyed by the resolved path so the same on-disk
+# session always maps to the same lock object regardless of how its
+# Path was constructed. Caught by automated PR review.
+_edits_locks = {}
+_edits_locks_guard = threading.Lock()
+
+
+def _edits_lock(session_dir):
+    key = str(Path(session_dir).resolve())
+    with _edits_locks_guard:
+        lock = _edits_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _edits_locks[key] = lock
+        return lock
+
+
+def _forget_edits_lock(session_dir):
+    """Drops session_dir's entry from _edits_locks, if any -- called by
+    ui_delete so a long-running server doesn't grow this module-global
+    dict forever, one entry per session ever edited, including sessions
+    deleted long ago. Path.resolve() doesn't require the directory to
+    still exist, so this is safe to call after the directory is already
+    gone. Caught by automated PR review."""
+    key = str(Path(session_dir).resolve())
+    with _edits_locks_guard:
+        _edits_locks.pop(key, None)
+
+
+def _load_edits(session_dir):
+    """{step_id: {"text", "edited_utc"}} of every manual override on this
+    session, or {} if none exist / the file is missing or corrupt --
+    including "corrupt" in the sense of parsing as valid JSON that isn't
+    the expected shape (e.g. a bare list/string, or a "steps" value that
+    isn't itself an object), which must degrade the same way a missing
+    file does rather than raise mid-generation. A per-step edit route
+    writes here; steps.json (the derived, LLM-pipeline output) is never
+    the source of truth for an edit -- it gets rewritten wholesale by
+    every _write_all_exports call, so an override that must survive a
+    from-scratch rerender has to live in a file the pipeline only ever
+    reads, never overwrites."""
+    try:
+        parsed = json.loads(_edits_path(session_dir).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    edits = parsed.get("steps")
+    return edits if isinstance(edits, dict) else {}
+
+
+def _write_edits_atomic(session_dir, edits):
+    """Writes edits.json via a same-directory temp file + os.replace, which
+    is atomic on both POSIX and Windows -- a concurrent _load_edits (e.g.
+    _apply_manual_edits reading on the job thread while a save/clear lands
+    on the request thread) can therefore only ever see the fully-old or
+    fully-new content, never a truncated/partial write mid-flight."""
+    path = _edits_path(session_dir)
+    tmp = path.with_suffix(f"{path.suffix}.tmp-{uuid.uuid4().hex}")
+    tmp.write_text(json.dumps({"steps": edits}), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _save_edit(session_dir, step_id, text):
+    with _edits_lock(session_dir):
+        edits = _load_edits(session_dir)
+        edits[step_id] = {"text": text, "edited_utc": datetime.now(timezone.utc).isoformat()}
+        _write_edits_atomic(session_dir, edits)
+
+
+def _clear_edit(session_dir, step_id):
+    """Removes one step's override, if any. Returns whether one existed."""
+    with _edits_lock(session_dir):
+        edits = _load_edits(session_dir)
+        if step_id not in edits:
+            return False
+        del edits[step_id]
+        _write_edits_atomic(session_dir, edits)
+        return True
+
+
+def _clear_all_edits(session_dir):
+    with _edits_lock(session_dir):
+        _edits_path(session_dir).unlink(missing_ok=True)
+
+
+def _apply_manual_edits(session_dir, step_results):
+    """Overwrites step_results[i]["text"] in place for any step_id present
+    in edits.json, and marks it used_fallback=False, manually_edited=True.
+    Never adds, removes, or reorders entries -- an override for a step_id
+    not present in step_results (e.g. a step later dropped via the
+    steps-review page) is silently ignored, so invariant L1's 1:1 mapping
+    can never be perturbed by this. Returns the list of step_ids actually
+    applied, in step_results order."""
+    edits = _load_edits(session_dir)
+    if not edits:
+        return []
+    applied = []
+    for result in step_results:
+        override = edits.get(result["step_id"])
+        # A malformed per-step entry (not a dict, or missing "text") is
+        # treated the same as "no edit for this step" rather than raising --
+        # matches _load_edits' own "corrupt degrades like missing" contract.
+        if not isinstance(override, dict) or not isinstance(override.get("text"), str):
+            continue
+        result["text"] = override["text"]
+        result["used_fallback"] = False
+        result["manually_edited"] = True
+        applied.append(result["step_id"])
+    return applied
+
+
 def _zip_directory(directory):
     directory = Path(directory)
     buf = io.BytesIO()
@@ -213,6 +429,11 @@ def create_app(
     config_path=None,
     narrative_llm_client_factory=None,
     polish_llm_client_factory=None,
+    transcriber_factory=None,
+    probe_section_fn=None,
+    preflight_enabled=None,
+    bind_host="127.0.0.1",
+    extra_allowed_hosts=(),
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -233,24 +454,283 @@ def create_app(
     `[polish]` section -- used only for the optional stage-4 polish pass
     (_write_all_exports), gated on `[polish].enabled`. Only doc.md's,
     doc.html's, and the md-bundle's exports reflect this pass so far
-    (per-field, via generate_polish_fields)."""
-    app = FastAPI()
+    (per-field, via generate_polish_fields).
 
-    _LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
+    transcriber_factory: cfg -> object with a .transcribe(audio_path) method
+    (matching transcription.Transcriber's interface), called once per
+    generation job that has a narration.wav and no explicit transcript
+    (see _maybe_transcribe_narration). Defaults to a real Transcriber built
+    from config/models.toml's `[transcription]` section. Tests override
+    this to a stub so a run never downloads/loads real Whisper weights.
+
+    probe_section_fn: section-config -> dict (matching preflight.probe_section's
+    interface), used by POST /ui/config/test and, best-effort, once per
+    generation job. Defaults to the real probe_section. Tests override this
+    to a stub/recorder so the suite never makes a real network call.
+
+    preflight_enabled: whether _generate probes the [steps] endpoint once
+    before generation and records the result on the sidecar report.
+    Defaults to `llm_client_factory is None` -- i.e. only when this app
+    actually talks to the real configured endpoint. An injected
+    llm_client_factory (every test, and any live-proof script) means
+    generation never touches that endpoint at all, so probing it would
+    both report on something the job doesn't use AND add a real network
+    round-trip to every test job; pass True explicitly to test the
+    preflight wiring itself against a stub probe.
+
+    bind_host: the --host value the server is (or will be) bound to
+    (__main__.py). Bound to a real loopback address (the default) OR to
+    one specific, fixed LAN address/hostname (e.g. "192.168.1.50") --
+    that address is itself a known, fixed value, so it's simply added to
+    the trusted allowlist and BOTH guards stay in their strict, fixed-
+    allowlist mode (DNS-rebinding/CSRF protection intact, no self-
+    referential fallback needed). Only bound to a bind-ALL address --
+    "0.0.0.0"/"::"/"*", meaning "reachable via any of this machine's
+    addresses, not just one" -- is there genuinely no single fixed value
+    to allowlist in advance (USER_MANUAL.md's "server on another
+    machine" setup, driven by --host + the capture agent's
+    SOPFORGE_SERVER_URL): _host_guard steps aside entirely there (its
+    DNS-rebinding threat model has no meaningful fixed allowlist once
+    arbitrary addresses are expected to reach the server by design),
+    while _csrf_guard switches to a self-referential check -- an Origin
+    must match the SAME request's own Host header, not a fixed set -- so
+    CSRF protection stays in force (still rejects a request forged from
+    a different site's Origin) without needing to know the LAN address
+    in advance. Caught by automated PR review, three times over two
+    rounds: the guard's first version hard-coded loopback-only and broke
+    the remote setup; the fix only touched _host_guard and missed that
+    _csrf_guard needed relaxing too; and that relaxation initially
+    disabled _csrf_guard entirely rather than switching to the self-
+    referential check, which would have turned off CSRF protection for
+    the whole, unauthenticated app (including /shutdown, /ui/config, and
+    session delete) the moment anyone ran the bind-all setup. The fixed-
+    address-vs-bind-all distinction (this paragraph) was added afterward
+    to close most of that gap for the more common "bind to one specific
+    known address" case, leaving only the genuinely-unfixable bind-all
+    case on the reduced self-referential protection.
+
+    extra_allowed_hosts: additional hostnames _host_guard/_csrf_guard
+    trust alongside the real loopback names, ONLY when bind_host is
+    loopback (the strict case) -- never set by production code
+    (__main__.py). Exists solely so the test suite can trust Starlette
+    TestClient's fixed "testserver" Host/Origin without that string being
+    baked into every real, shipped build. Caught by automated PR review:
+    a prior version hard-coded "testserver" into the production allowlist
+    itself."""
+    app = FastAPI()
+    probe = probe_section_fn or probe_section
+    run_preflight = (
+        preflight_enabled if preflight_enabled is not None else (llm_client_factory is None)
+    )
+
+    # "testserver" (Starlette TestClient's fixed Host/Origin default) is
+    # trusted ONLY when pytest is actually the one running -- gated on the
+    # PYTEST_CURRENT_TEST env var pytest itself sets for the duration of
+    # each test, never present in a real installed/frozen build -- so this
+    # can never widen a shipped server's trust. Caught by automated PR
+    # review: a prior version hard-coded "testserver" unconditionally.
+    _test_hosts = {"testserver"} if os.environ.get("PYTEST_CURRENT_TEST") else set()
+
+    def _norm_host(host):
+        """Normalize a hostname for allowlist/equality comparison:
+        lowercase, strip surrounding IPv6 brackets (so a bind_host given
+        as "[::1]" matches urlsplit's unbracketed .hostname), and strip
+        ONE trailing dot -- "localhost." and "localhost" are the same
+        host per RFC 1034 (the trailing dot just marks the name as fully
+        qualified), and a browser at http://localhost./ sends the dotted
+        form in both Host and Origin, which a literal string compare
+        would 403. Only a single dot is stripped: "localhost.." is not a
+        valid DNS name and stays rejected. Returns "" for None/empty."""
+        host = (host or "").strip().lower()
+        if host.startswith("[") and host.endswith("]"):
+            host = host[1:-1]
+        if host.endswith("."):
+            host = host[:-1]
+        return host
+
+    # A bind-ALL address means "reachable via any of this machine's
+    # interfaces/addresses", not one fixed address -- there's no single
+    # value to allowlist in advance. Any other bind_host (including a
+    # specific LAN IP/hostname) IS a fixed, known value, so it's just
+    # added to the trusted set below instead of relaxing the guards.
+    # Detected via ipaddress.is_unspecified, not a literal string set --
+    # "0.0.0.0", "::", "::0", "0:0:0:0:0:0:0:0", "::ffff:0.0.0.0" are all
+    # spellings of "bind everything", and treating a non-canonical
+    # spelling as a fixed address would put that unreachable-as-a-Host
+    # literal in the allowlist and 403 every real client (the same
+    # remote-lockout failure mode caught by automated PR review for the
+    # original loopback-only guard).
+    _bind_host_norm = _norm_host(bind_host)
+
+    def _is_bind_all(value):
+        if value in {"*", ""}:
+            return True
+        try:
+            return ipaddress.ip_address(value).is_unspecified
+        except ValueError:
+            return False
+
+    _bind_all = _is_bind_all(_bind_host_norm)
+    _bind_host_entry = set()
+    if not _bind_all and _bind_host_norm not in {"127.0.0.1", "localhost", "::1"}:
+        _bind_host_entry.add(_bind_host_norm)
+        # A remote browser reaching a specific bind address commonly types
+        # the machine's hostname/FQDN, not the raw IP the server was
+        # started with -- the two resolve to the same address but are
+        # different Host header values. Trust the machine's own
+        # hostname/FQDN too, so binding to one specific address doesn't
+        # 403 every request from someone who typed the computer name
+        # instead. Best-effort: socket lookups here are local (no network
+        # round-trip for gethostname; getfqdn only touches DNS if the
+        # hostname isn't already qualified) but must never crash app
+        # startup if they fail for any reason. Caught by automated PR
+        # review. UnicodeError is caught alongside OSError: getfqdn's
+        # internal gethostbyaddr IDNA-encodes the name and raises
+        # UnicodeError (not OSError) for e.g. an overlong or non-ASCII
+        # hostname label, which would otherwise crash startup on a
+        # machine with such a computer name.
+        try:
+            _bind_host_entry.add(socket.gethostname())
+            _bind_host_entry.add(socket.getfqdn())
+        except (OSError, UnicodeError):
+            pass
+    _LOCAL_HOSTS = frozenset(
+        h
+        for h in (
+            _norm_host(entry)
+            for entry in (
+                {"127.0.0.1", "localhost", "::1"}
+                | set(extra_allowed_hosts)
+                | set(_test_hosts)
+                | _bind_host_entry
+            )
+        )
+        if h
+    )
+    _ALLOWED_HOSTS = _LOCAL_HOSTS
+    _host_guard_strict = not _bind_all
+
+    def _parse_host_header(raw):
+        """Parse a Host-header-shaped value ("host", "host:port",
+        "[v6]:port") into a normalized hostname, or None if it can't be
+        parsed at all. urlsplit itself raises ValueError on an unmatched
+        IPv6 bracket ("[::1" -> "Invalid IPv6 URL") -- and Host is fully
+        attacker-controlled, so that must become a 403 from the caller,
+        never escape as an unhandled 500. Caught by the same audit that
+        found the identical .port ValueError gap."""
+        try:
+            return _norm_host(urlsplit(f"//{raw or ''}").hostname)
+        except ValueError:
+            return None
+
+    @app.middleware("http")
+    async def _host_guard(request, call_next):
+        """Blocks DNS-rebinding: the CSRF guard below only checks the Origin
+        header, which browsers only send on cross-origin requests -- but a
+        page that DNS-rebinds its own hostname to 127.0.0.1 can still issue
+        same-origin-looking GETs (no Origin header required for e.g. a
+        top-level navigation or certain request modes) whose Host header is
+        the attacker's rebound domain, not this server's. Checking Host
+        directly closes that gap regardless of method or Origin presence.
+        A no-op (see bind_host's docstring) when this server was bound to
+        anything beyond loopback -- there, "any Host but ours" isn't a
+        meaningful allowlist to begin with.
+
+        Host is parsed with urlsplit, not a raw ":"-split, so a bracketed
+        IPv6 literal (`Host: [::1]:8420`) resolves to `::1` rather than the
+        mangled `[` a naive split produces (caught by automated PR review)
+        -- via _parse_host_header, so a malformed value urlsplit refuses to
+        parse at all is a 403, not a 500."""
+        if not _host_guard_strict:
+            return await call_next(request)
+        host = _parse_host_header(request.headers.get("host"))
+        if not host or host not in _ALLOWED_HOSTS:
+            return JSONResponse({"detail": "invalid host header"}, status_code=403)
+        return await call_next(request)
 
     @app.middleware("http")
     async def _csrf_guard(request, call_next):
         """CSRF guard for EVERY state-changing request. The server is
-        localhost-only, but a page on another site could still POST to it in the
-        user's browser (e.g. auto-submit a form to /shutdown or /ui/config).
-        Browsers attach an Origin header on cross-origin requests -- reject any
-        whose host isn't this local server. Programmatic clients (the capture
-        agent's auto-upload) send no Origin and are allowed. The host is matched
-        exactly (not a prefix), so 'http://127.0.0.1.evil.com' is rejected."""
+        localhost-only BY DEFAULT, but a page on another site could still
+        POST to it in the user's browser (e.g. auto-submit a form to
+        /shutdown or /ui/config). Browsers attach an Origin header on
+        every non-GET/HEAD request, including same-origin ones -- reject
+        any whose host isn't this local server. Programmatic clients (the
+        capture agent's auto-upload) send no Origin and are allowed. The
+        host is matched exactly (not a prefix), so
+        'http://127.0.0.1.evil.com' is rejected.
+
+        Bound beyond loopback (the documented "server on another machine"
+        setup), there's no fixed allowlist of legitimate Origin values --
+        a browser loading the UI from that LAN address legitimately sends
+        an Origin with that same LAN hostname on every form POST. This
+        guard must still reject an actually cross-origin request, though
+        -- silently disabling it entirely in that mode (a prior version
+        of this fix, caught by automated PR review as a real security
+        regression: it turned off CSRF protection for the whole,
+        unauthenticated app, including /shutdown, /ui/config, and session
+        delete, the moment anyone ran the documented remote setup) would
+        let ANY website the operator's browser visits forge requests to
+        this server. Instead, when not in the strict/loopback case,
+        Origin's hostname must match THIS request's own Host header
+        (also urlsplit-parsed) rather than a fixed set -- exactly the
+        same test a same-origin request from the real UI naturally
+        passes, whatever LAN address it's served from, while a request
+        forged from a different site's Origin still fails it.
+
+        Scheme and port are ALWAYS checked too (both branches), not just
+        hostname -- comparing hostname alone, even in the default strict
+        loopback mode, would treat any other locally-hosted service on
+        the same machine/IP (e.g. a dev server on a different port) as
+        same-origin, letting IT forge requests here. `.port` on a
+        malformed value (non-numeric, out of range) raises ValueError
+        from urlsplit -- caught and treated as "not same-origin" (403),
+        not left to escape as an unhandled 500; both Origin and Host are
+        fully attacker-controlled. Caught by automated PR review, twice:
+        first for the self-referential branch only, then again because
+        the strict/loopback branch had the identical port/scheme gap
+        from the very start (a pre-existing hostname-only check, not
+        something this round of fixes introduced).
+
+        Ports are compared after RFC 6454 default-port normalization: an
+        absent port means the scheme's default (80 for http, 443 for
+        https), so `Origin: http://localhost` and `Host: localhost:80`
+        are the same origin, not a spurious None != 80 rejection of a
+        legitimate same-origin request from a client that spells the
+        default port explicitly on one side only. urlsplit itself can
+        also raise ValueError (unmatched IPv6 bracket in Origin or Host,
+        e.g. `Origin: http://[::1`) -- the whole parse is inside the
+        try, so any malformed value is a 403, never an unhandled 500."""
         if request.method in ("POST", "PUT", "PATCH", "DELETE"):
             origin = request.headers.get("origin")
-            if origin and urlsplit(origin).hostname not in _LOCAL_HOSTS:
-                return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
+            if origin:
+                default_ports = {"http": 80, "https": 443, "ws": 80, "wss": 443}
+                try:
+                    origin_split = urlsplit(origin)
+                    origin_host = _norm_host(origin_split.hostname)
+                    own_split = urlsplit(f"//{request.headers.get('host') or ''}")
+                    own_host = _norm_host(own_split.hostname)
+                    origin_port = origin_split.port
+                    own_port = own_split.port
+                except ValueError:
+                    return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
+                if origin_port is None:
+                    origin_port = default_ports.get(origin_split.scheme)
+                if own_port is None:
+                    own_port = default_ports.get(request.url.scheme)
+                if _host_guard_strict:
+                    host_ok = origin_host in _LOCAL_HOSTS
+                else:
+                    host_ok = bool(origin_host) and origin_host == own_host
+                allowed = (
+                    bool(origin_host)
+                    and host_ok
+                    and origin_split.scheme == request.url.scheme
+                    and origin_port is not None
+                    and origin_port == own_port
+                )
+                if not allowed:
+                    return JSONResponse({"detail": "cross-site request rejected"}, status_code=403)
         return await call_next(request)
 
     @app.middleware("http")
@@ -306,6 +786,13 @@ def create_app(
             return polish_llm_client_factory(section)
         return LLMClient(section)
 
+    def make_transcriber(cfg):
+        if transcriber_factory is not None:
+            return transcriber_factory(cfg)
+        return Transcriber(
+            model_size=cfg.model_size, device=cfg.device, compute_type=cfg.compute_type
+        )
+
     # session_id -> (manifest, screenshots_dir, annotated_dir, session_dir)
     sessions = {}
     # session_ids awaiting step-review confirmation -- staged by _ingest_session
@@ -326,6 +813,60 @@ def create_app(
         mode = session_dir / "mode.txt"
         return mode.exists() and mode.read_text(encoding="utf-8").strip() == "photo"
 
+    def _render_transcript_md(segments):
+        """Render whisper-shaped segments ([{"text", "start", ...}, ...]) as
+        readable Markdown: one timestamped line per segment. Mirrors
+        transcript.json 1:1 -- pure formatting, no content decisions."""
+        lines = [
+            f"**[{seg.get('start', 0.0):.1f}s]** {seg.get('text', '').strip()}" for seg in segments
+        ]
+        return "# Narration transcript\n\n" + "\n\n".join(lines) + "\n"
+
+    def _maybe_transcribe_narration(session_dir):
+        """Best-effort: if this session has a narration.wav (opt-in mic
+        recording, see capture/narration.py) and no transcript.* has been
+        uploaded already -- an explicit human-supplied transcript always
+        wins over a derived one -- and [transcription].enabled is on,
+        transcribes it locally and writes transcript.json in exactly the
+        segment shape align_transcript_to_steps' .json branch already
+        parses, so _apply_transcript picks it up completely unchanged. Also
+        writes transcript.md alongside it -- a human-readable sidecar (not
+        consumed by any pipeline code) so a user can open the transcript
+        directly instead of parsing JSON.
+        Runs on the background job thread (never the HTTP request path) --
+        CPU transcription can take real seconds and must never risk
+        upload_session's own timeout or make "stop recording" feel slow.
+        Never raises: a disabled toggle, missing model, or unavailable
+        hardware must degrade to "no transcript" for this session, not fail
+        the whole generation job. Returns a short report note, or None if
+        nothing happened."""
+        wav_path = session_dir / "narration.wav"
+        if not wav_path.exists():
+            return None
+        if any(session_dir.glob("transcript.*")):
+            return None
+        try:
+            transcription_cfg = load_models_config(resolved_config_path).transcription
+        except Exception:  # noqa: BLE001 - a bad config must not break generation
+            logger.exception("could not load [transcription] config for %s", session_dir)
+            return None
+        if not transcription_cfg.enabled:
+            return None
+        try:
+            segments = make_transcriber(transcription_cfg).transcribe(wav_path)
+        except Exception:  # noqa: BLE001 - missing model/hardware: skip, don't fail the job
+            logger.exception("narration transcription failed for %s", session_dir)
+            return "narration.wav could not be transcribed (see server log) -- doc generated from steps only"
+        if not segments:
+            return "narration.wav produced no speech segments"
+        (session_dir / "transcript.json").write_text(
+            json.dumps({"segments": segments}), encoding="utf-8"
+        )
+        (session_dir / "transcript.md").write_text(
+            _render_transcript_md(segments), encoding="utf-8"
+        )
+        return "narration.wav transcribed locally and placed onto steps"
+
     def _generate(session_id, polish_override=None):
         manifest, screenshots_dir, annotated_dir, session_dir = sessions[session_id]
 
@@ -335,12 +876,22 @@ def create_app(
             _generate_photo(session_id, polish_override=polish_override)
             return
 
+        narration_transcription_note = _maybe_transcribe_narration(session_dir)
+
         # One generation attempt per step, round-trip-gated with a
         # template fallback (task-06) -- if the configured endpoint is
         # unreachable, or Anthropic routing is on with no API key, or the
         # reply doesn't hold up, that step just falls back; nothing here
         # ever retries.
         models_cfg = load_models_config(resolved_config_path)
+
+        preflight_result = None
+        if run_preflight:
+            try:
+                preflight_result = probe(models_cfg.steps)
+            except Exception:  # noqa: BLE001 - preflight is diagnostics, never a gate
+                logger.exception("preflight probe failed for session %s", session_id)
+
         llm_client = make_llm_client()
         try:
             step_results, annotated_paths = render_steps_llm_mode(
@@ -350,13 +901,13 @@ def create_app(
                 llm_client,
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
                 max_concurrency=models_cfg.steps.max_concurrency,
-                use_vision=models_cfg.steps.use_vision,
             )
         finally:
             close = getattr(llm_client, "close", None)
             if callable(close):
                 close()
         _assert_1to1_mapping(manifest, step_results)
+        _apply_manual_edits(session_dir, step_results)
 
         # Place an uploaded transcript's narration under each step (by step
         # label / order for .txt/.md, by timestamp for .json, or -- when
@@ -386,6 +937,16 @@ def create_app(
                     close()
             if gen_title:
                 manifest.session.title = gen_title
+                # Persisted immediately (not just left on the in-memory
+                # Manifest) -- caught by automated PR review: without this,
+                # a server restart reloads the on-disk manifest, which still
+                # has an empty title, and _reexport_session (the per-step
+                # edit/regenerate path, which makes no LLM call and so can
+                # never re-derive a title) would then silently revert the
+                # document/library entry to the raw session id.
+                (session_dir / "manifest.json").write_text(
+                    json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
+                )
 
         # Stage 2: a multi-pass narrative paragraph (task-09) from whatever
         # narration is available -- the uploaded transcript if there is one
@@ -430,6 +991,10 @@ def create_app(
             report["transcript_placement"] = {
                 k: v for k, v in placement_meta.items() if k != "verify_claims"
             }
+        if narration_transcription_note:
+            report["narration_transcription"] = narration_transcription_note
+        if preflight_result:
+            report["llm_preflight"] = preflight_result
 
         _write_all_exports(
             session_id,
@@ -550,6 +1115,11 @@ def create_app(
                     close()
             if gen_title and not manifest.session.title:
                 manifest.session.title = gen_title
+                # NOT persisted here -- canonicalize_terms below can still
+                # rewrite manifest.session.title's spelling, and persisting
+                # before that would save a title the document itself never
+                # actually uses. Persisted once, after canonicalization,
+                # right below.
 
         # Photo-mode has no manifest ground truth (element/window names) to
         # round-trip-gate step text against -- a raw narration transcript is
@@ -572,6 +1142,26 @@ def create_app(
             narrative_text = canonicalized[1]
         for step_result, canonical_text in zip(step_results, canonicalized[2:]):
             step_result["text"] = canonical_text
+        if manifest.session.title != user_title:
+            # Compared against user_title (the ORIGINAL on-disk value,
+            # captured before this function touched it at all) -- not
+            # against gen_title, so this fires whenever the title actually
+            # changed end to end, whether or not canonicalize_terms itself
+            # altered it further. Persist the FINAL (post-canonicalization)
+            # title -- see _generate's identical comment: without this, a
+            # restart or a later no-LLM edit re-export would revert the
+            # document/library entry to the raw session id, or (before this
+            # fix) to a title whose spelling doesn't match what the
+            # document actually shows.
+            (session_dir / "manifest.json").write_text(
+                json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
+            )
+
+        # Applied AFTER canonicalize_terms, deliberately -- a human's exact
+        # wording (including spelling choices) must never get "corrected"
+        # by the consistency pass, the same reasoning as _write_all_exports'
+        # polish-restore below.
+        manually_edited = _apply_manual_edits(session_dir, step_results)
 
         verify_claims = (placement_meta or {}).get("verify_claims", [])
         report = {
@@ -592,6 +1182,8 @@ def create_app(
             report["vision"] = vision_note
         if consistency_actions:
             report["consistency"] = consistency_actions
+        if manually_edited:
+            report["manually_edited_steps"] = manually_edited
         _write_all_exports(
             session_id,
             manifest,
@@ -663,6 +1255,19 @@ def create_app(
                 close = getattr(polish_llm, "close", None)
                 if callable(close):
                     close()
+            # A human's exact wording must never be silently reworded by the
+            # polish pass -- generate_polish_fields has no concept of "this
+            # text is authoritative," it treats every step's text as equally
+            # eligible for rewriting. Restore the original (edited) text for
+            # any step flagged manually_edited; md_step_results is already a
+            # list of shallow copies (generate_polish_fields' own contract),
+            # so mutating it here doesn't touch step_results.
+            manual_text_by_id = {
+                r["step_id"]: r["text"] for r in step_results if r.get("manually_edited")
+            }
+            for r in md_step_results:
+                if r["step_id"] in manual_text_by_id:
+                    r["text"] = manual_text_by_id[r["step_id"]]
             # Safety net for invariant L4 (CLAUDE.md): generate_polish_fields's
             # own per-field gate (_field_gate) only rejects a rewrite that
             # ADDS unsupported content -- it has no way to know a claim's
@@ -744,8 +1349,200 @@ def create_app(
         )
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
 
+        # Per-step text + screenshot sidecar, for the session page's report
+        # rows (webui/pages.py's _finding_row) to show a thumbnail and the
+        # actual generated text next to a flagged step instead of a bare
+        # step id. This is NOT the sidecar report (report.json, invariant
+        # L5) -- it's presentational data derived from the same md_step_results
+        # that already shipped in the doc, so it always agrees with what the
+        # user is reading.
+        #
+        # version 2 additionally persists narrative_text and each step's
+        # narration/manually_edited -- everything _reexport_session (the
+        # per-step edit/regenerate feature) needs to rebuild all six export
+        # formats from disk without an LLM call. A step-edit route refuses to
+        # run against a version 1 (or missing) file rather than silently
+        # dropping narration/narrative from every format on re-export.
+        screenshot_by_id = {s.id: s.screenshot for s in manifest.steps}
+        (session_dir / "steps.json").write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "narrative_text": md_narrative_text,
+                    "steps": [
+                        {
+                            "step_id": r["step_id"],
+                            "text": r.get("text", ""),
+                            "used_fallback": bool(r.get("used_fallback")),
+                            "manually_edited": bool(r.get("manually_edited")),
+                            "narration": r.get("narration"),
+                            "screenshot": screenshot_by_id.get(r["step_id"], ""),
+                        }
+                        for r in md_step_results
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
+
+    def _load_reexportable_state(session_id):
+        """Read-only precondition check + load for _reexport_session:
+        raises HTTPException(409) if the session's persisted steps.json (or
+        an annotated screenshot it references) is too old/missing/damaged
+        to re-export faithfully, otherwise returns (step_results,
+        annotated_paths, state). Never mutates anything, so it's safe to
+        call synchronously from a route BEFORE jobs.submit -- a refused
+        edit/regenerate then 409s immediately instead of poisoning an
+        already-"done" session's status to "error" (via JobRunner's generic
+        any-exception-fails-the-job handling) and hiding its still-intact
+        finished documents behind _require_done. _reexport_session calls
+        this again itself when the job actually runs, in case the on-disk
+        state changed between the route's check and the worker picking up
+        the job."""
+        manifest, _screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+        state = _load_step_state(session_dir)
+        steps_list = state.get("steps") if state else None
+        if state is None or state.get("version") != 2 or not isinstance(steps_list, list):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "this session predates per-step editing (steps.json is missing, "
+                    "an older version, or damaged) -- rerender it once before editing steps"
+                ),
+            )
+        try:
+            by_id = {e["step_id"]: e for e in steps_list}
+        except (TypeError, KeyError) as exc:
+            raise HTTPException(
+                status_code=409, detail=f"steps.json is damaged ({exc}) -- rerender first"
+            ) from exc
+        step_results = []
+        for step in manifest.steps:
+            entry = by_id.get(step.id)
+            if entry is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"steps.json is missing an entry for {step.id} -- rerender first",
+                )
+            result = {
+                "step_id": step.id,
+                "text": entry.get("text", ""),
+                "used_fallback": bool(entry.get("used_fallback")),
+                "manually_edited": bool(entry.get("manually_edited")),
+            }
+            if entry.get("narration"):
+                result["narration"] = entry["narration"]
+            step_results.append(result)
+
+        annotated_paths = []
+        for step in manifest.steps:
+            path = annotated_dir / step.screenshot
+            if not path.exists():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"annotated screenshot missing for {step.id} -- rerender first",
+                )
+            annotated_paths.append(path)
+        return step_results, annotated_paths, state
+
+    def _reexport_session(
+        session_id, text_overrides=None, preflight_result=None, regenerate_declined_step=None
+    ):
+        """Re-renders all six export formats + report.json + steps.json +
+        the library entry from the session's persisted steps.json state --
+        no LLM call of any kind. Used by the per-step edit route (a pure
+        text swap) and the regenerate route (text_overrides carries the one
+        freshly-generated step). Raises HTTPException(409) if the session's
+        persisted state is too old/incomplete to re-export faithfully --
+        refusing is the honest choice; silently re-exporting from a v1 (or
+        missing) steps.json would drop narration/narrative from every
+        format.
+
+        text_overrides: optional {step_id: (text, used_fallback)} applied
+        AFTER edits.json's manual-edit overrides -- lets the regenerate
+        route's fresh LLM result win over a (now-superseded, and by then
+        already-deleted) manual edit for that one step.
+
+        preflight_result: optional preflight.probe_section()-shaped dict to
+        attach to report["llm_preflight"], so the regenerate route's own
+        diagnostic probe is visible on the session page exactly like a full
+        generation's.
+
+        regenerate_declined_step: optional step_id to record in
+        report["regenerate_declined_steps"] -- set by _regenerate_step when
+        it deliberately skipped applying a fallback result over an existing
+        manual edit (see that function's docstring), so the session page
+        can still tell the reviewer their regenerate click didn't produce
+        anything, even though nothing else about the step changed.
+
+        The polish stage is force-skipped (polish_override="off") --
+        steps.json already holds the text that shipped (polished, if
+        [polish] was on for the original generation), and re-polishing
+        polished text would compound rewrites the reviewer never asked
+        for. A full /rerender is the correct way to get a fresh polish
+        pass."""
+        manifest, _screenshots_dir, annotated_dir, session_dir = sessions[session_id]
+        step_results, annotated_paths, state = _load_reexportable_state(session_id)
+
+        _apply_manual_edits(session_dir, step_results)
+        for step_id, (text, used_fallback) in (text_overrides or {}).items():
+            for result in step_results:
+                if result["step_id"] == step_id:
+                    result["text"] = text
+                    result["used_fallback"] = used_fallback
+                    result["manually_edited"] = False
+                    break
+        _assert_1to1_mapping(manifest, step_results)
+
+        existing_report = {}
+        report_path = session_dir / "report.json"
+        try:
+            existing_report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+        existing_report.pop("manually_edited_steps", None)
+        manually_edited = [r["step_id"] for r in step_results if r.get("manually_edited")]
+        if manually_edited:
+            existing_report["manually_edited_steps"] = manually_edited
+        existing_report.pop("regenerate_declined_steps", None)
+        if regenerate_declined_step:
+            existing_report["regenerate_declined_steps"] = [regenerate_declined_step]
+        if _is_photo_mode(session_dir):
+            # Photo-mode sessions have a SYNTHETIC manifest (every step's
+            # window/element is deliberately empty, photo_build.py) and
+            # used_fallback there means "no vision caption", not "template
+            # fallback" -- build_sidecar_report's manifest-derived
+            # empty_metadata_steps/used_fallback-derived template_fallback_steps
+            # would therefore flag every single step. _generate_photo always
+            # hardcodes both to [] for exactly this reason; match that here
+            # rather than corrupting the report on the first edit.
+            existing_report["template_fallback_steps"] = []
+            existing_report["empty_metadata_steps"] = []
+        else:
+            rebuilt = build_sidecar_report(manifest, step_results, [])
+            rebuilt.pop("verify_claims", None)  # preserve the existing narrative-derived list
+            rebuilt.pop("manually_edited_steps", None)  # already handled above
+            existing_report.pop("template_fallback_steps", None)
+            existing_report.pop("empty_metadata_steps", None)
+            existing_report.update(rebuilt)
+        if preflight_result:
+            existing_report["llm_preflight"] = preflight_result
+
+        _write_all_exports(
+            session_id,
+            manifest,
+            step_results,
+            annotated_paths,
+            annotated_dir,
+            session_dir,
+            existing_report,
+            narrative_text=state.get("narrative_text"),
+            polish_override="off",
+            claims=(),
+        )
 
     def _run_semantic_pipeline(content, manifest, step_contexts, per_step, note):
         """Shared by the real-capture flow (_apply_transcript) and the photo
@@ -819,14 +1616,26 @@ def create_app(
                 result["narration"] = narration
         return note, placement_meta
 
-    def _ingest_session(manifest_json, files, transcript=None, stage=False):
+    def _ingest_session(
+        manifest_json, files, transcript=None, stage=False, narration_wav_upload=None
+    ):
         """Shared by the JSON API (POST /sessions) and the browser upload
         form (POST /ui/upload). `transcript`, if given, is a (filename,
-        text) tuple. When `stage` is True, the session is registered but not
-        submitted for generation -- it's left in `staged` so the user can
-        drop mis-captured steps via the steps-review page before generation
-        runs (see POST .../confirm-steps). Returns the new session_id, or
-        raises HTTPException on bad input."""
+        text) tuple. `narration_wav_upload`, if given, is the raw
+        UploadFile (not pre-read bytes -- streamed straight to
+        session_dir/narration.wav via _copy_capped, same as a screenshot,
+        instead of buffering the whole file in a Python bytes object
+        first; caught by automated PR review, a prior version read it
+        fully into memory via _read_capped before this function ever saw
+        it). Its validity (real audio, transcribable) is only checked
+        later at generation time (_maybe_transcribe_narration), never a
+        400 at ingest -- an unreadable/malformed WAV is still written and
+        only size, not content, is validated here. When `stage` is True,
+        the session is registered but not submitted for generation -- it's
+        left in `staged` so the user can drop mis-captured steps via the
+        steps-review page before generation runs (see POST
+        .../confirm-steps). Returns the new session_id, or raises
+        HTTPException on bad input."""
         try:
             manifest = load_manifest(json.loads(manifest_json))
         except Exception as exc:
@@ -869,23 +1678,43 @@ def create_app(
         screenshots_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            for upload in files:
-                # Wire-supplied filename must never be trusted as a path —
-                # Path(...).name strips any directory components (including
-                # "../" traversal), and resolving under screenshots_dir with
-                # a containment check catches anything that survives that.
-                name = Path(upload.filename or "").name
-                if not name:
-                    raise HTTPException(status_code=400, detail="uploaded file has no filename")
-                dest = (screenshots_dir / name).resolve()
-                if screenshots_dir.resolve() not in dest.parents:
-                    raise HTTPException(status_code=400, detail=f"invalid filename: {name!r}")
-                with dest.open("wb") as out:
-                    shutil.copyfileobj(upload.file, out)
+            try:
+                for upload in files:
+                    # Wire-supplied filename must never be trusted as a path —
+                    # Path(...).name strips any directory components (including
+                    # "../" traversal), and resolving under screenshots_dir with
+                    # a containment check catches anything that survives that.
+                    name = Path(upload.filename or "").name
+                    if not name:
+                        raise HTTPException(status_code=400, detail="uploaded file has no filename")
+                    dest = (screenshots_dir / name).resolve()
+                    if screenshots_dir.resolve() not in dest.parents:
+                        raise HTTPException(status_code=400, detail=f"invalid filename: {name!r}")
+                    _copy_capped(upload.file, dest, _MAX_UPLOAD_FILE_BYTES, f"screenshot {name!r}")
+                if narration_wav_upload is not None and narration_wav_upload.filename:
+                    _copy_capped(
+                        narration_wav_upload.file,
+                        session_dir / "narration.wav",
+                        _MAX_NARRATION_WAV_BYTES,
+                        "narration audio",
+                    )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"invalid upload: {exc}") from exc
         except HTTPException:
+            # A rejected upload (bad filename, oversized file, any other
+            # failure mid-copy) must not leave a session directory behind:
+            # it's never registered in `sessions` (that happens below, only
+            # on success), has no report.json, so _restore_sessions_from_disk
+            # never picks it up and ui_delete can never reach it -- an
+            # unreachable, permanent orphan otherwise. Same pattern
+            # _ingest_photo_session already uses. Caught by automated PR
+            # review (this became much more reachable once _copy_capped's
+            # 413 was added -- previously only the invalid-filename 400 hit
+            # it).
+            shutil.rmtree(session_dir, ignore_errors=True)
             raise
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"invalid upload: {exc}") from exc
 
         # Persisted so a server restart can rebuild `sessions` from disk
         # (_restore_sessions_from_disk) -- the manifest otherwise only ever
@@ -906,11 +1735,15 @@ def create_app(
     def _read_transcript(upload):
         """Turn an optional transcript UploadFile into a (filename, text)
         tuple, or None if none was provided. Raises a clear 400 if it isn't
-        UTF-8 text."""
+        UTF-8 text, or a 413 if it exceeds _MAX_UPLOAD_FILE_BYTES -- this
+        route previously read the whole upload into memory unbounded, the
+        same class of gap _read_capped was added for screenshots/images.
+        Caught by automated PR review."""
         if upload is None or not upload.filename:
             return None
+        raw = _read_capped(upload.file, _MAX_UPLOAD_FILE_BYTES, "transcript")
         try:
-            content = upload.file.read().decode("utf-8")
+            content = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise HTTPException(
                 status_code=400, detail=f"transcript must be UTF-8 text: {exc}"
@@ -922,10 +1755,15 @@ def create_app(
         manifest_json: str = Form(...),
         files: list[UploadFile] = File(default=[]),
         transcript_file: UploadFile | None = File(default=None),
+        narration_wav_file: UploadFile | None = File(default=None),
         stage: bool = Form(False),
     ):
         session_id = _ingest_session(
-            manifest_json, files, _read_transcript(transcript_file), stage=stage
+            manifest_json,
+            files,
+            _read_transcript(transcript_file),
+            stage=stage,
+            narration_wav_upload=narration_wav_file,
         )
         return {"session_id": session_id, "status": _status_of(session_id)}
 
@@ -934,6 +1772,7 @@ def create_app(
         manifest_file: UploadFile = File(...),
         files: list[UploadFile] = File(default=[]),
         transcript_file: UploadFile | None = File(default=None),
+        narration_wav_file: UploadFile | None = File(default=None),
     ):
         try:
             manifest_json = manifest_file.file.read().decode("utf-8")
@@ -942,7 +1781,11 @@ def create_app(
                 status_code=400, detail=f"invalid manifest encoding: {exc}"
             ) from exc
         session_id = _ingest_session(
-            manifest_json, files, _read_transcript(transcript_file), stage=True
+            manifest_json,
+            files,
+            _read_transcript(transcript_file),
+            stage=True,
+            narration_wav_upload=narration_wav_file,
         )
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
@@ -980,7 +1823,17 @@ def create_app(
                     )
                 name = f"{i:03d}.png"
                 try:
-                    with Image.open(upload.file) as im:
+                    # Capped the same way _ingest_session's screenshots are
+                    # -- this path had no size limit at all before, on the
+                    # same unauthenticated server. Caught by automated PR
+                    # review. PIL needs a seekable buffer, so this reads
+                    # the (capped) image into memory rather than streaming
+                    # straight to disk like _copy_capped; acceptable at the
+                    # same 200MB ceiling as a single screenshot.
+                    image_bytes = _read_capped(
+                        upload.file, _MAX_UPLOAD_FILE_BYTES, f"image {upload.filename!r}"
+                    )
+                    with Image.open(io.BytesIO(image_bytes)) as im:
                         im.convert("RGB").save(screenshots_dir / name)
                 except HTTPException:
                     raise
@@ -1035,7 +1888,11 @@ def create_app(
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/rerender")
-    def rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
+    def rerender(
+        session_id: str,
+        polish: Literal["off", "local", "haiku"] | None = None,
+        discard_edits: bool = False,
+    ):
         """Re-runs generation + all exports for an already-uploaded session
         against the current config/models.toml -- genuinely meaningful now
         that step generation is LLM-backed: e.g. after editing the config to
@@ -1047,19 +1904,36 @@ def create_app(
         even if [polish].enabled=true, "local" forces the local ollama
         provider, "haiku" forces Anthropic's Claude Haiku 4.5. Omitted
         (the default) leaves the current [polish].enabled/provider/model
-        behavior untouched."""
+        behavior untouched.
+
+        `discard_edits` (optional query param, default False): any manual
+        per-step edits (POST .../steps/{step_id}) are PRESERVED across an
+        ordinary rerender by default -- a rerender is the documented remedy
+        for "I changed my config/model" or "I added a transcript", and
+        destroying a reviewer's hand-written fix as a side effect of that
+        would be a data-loss bug, not a feature. Pass discard_edits=true to
+        explicitly wipe every edit on this session and regenerate from
+        scratch."""
         _require_known_session(session_id)
+        if discard_edits:
+            _clear_all_edits(sessions[session_id][3])
         jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return {"session_id": session_id, "status": jobs.status(session_id)["status"]}
 
     @app.post("/ui/sessions/{session_id}/rerender")
-    def ui_rerender(session_id: str, polish: Literal["off", "local", "haiku"] | None = None):
+    def ui_rerender(
+        session_id: str,
+        polish: Literal["off", "local", "haiku"] | None = None,
+        discard_edits: bool = False,
+    ):
         """Same effect as POST /sessions/{id}/rerender, but redirects back
         to the session page instead of returning JSON -- the JSON route
         stays as-is for API/script callers, since a plain HTML <form> POST
         would otherwise navigate the browser to a raw JSON blob. See
-        rerender() above for what `polish` does."""
+        rerender() above for what `polish`/`discard_edits` do."""
         _require_known_session(session_id)
+        if discard_edits:
+            _clear_all_edits(sessions[session_id][3])
         jobs.submit(session_id, lambda: _generate(session_id, polish_override=polish))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
@@ -1088,6 +1962,135 @@ def create_app(
         jobs.submit(session_id, lambda: _generate(session_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
+    @app.post("/ui/sessions/{session_id}/steps/{step_id}")
+    async def ui_edit_step(session_id: str, step_id: str, request: Request):
+        """Replaces one step's text with human-written text, and re-exports
+        all six formats from disk -- no LLM call, so this is fast even on a
+        many-step session. The edit is durable: it's written to edits.json
+        BEFORE the fast re-export, so it survives a later full /rerender
+        (see rerender()'s docstring) rather than only lasting until the
+        next from-scratch generation."""
+        session_dir = _require_done(session_id)
+        manifest = sessions[session_id][0]
+        if step_id not in manifest.step_ids():
+            raise HTTPException(status_code=404, detail=f"unknown step: {step_id!r}")
+        form = await request.form()
+        text = (form.get("text") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="step text must not be empty")
+        if len(text) > 20000:
+            raise HTTPException(status_code=400, detail="step text is too long (max 20000 chars)")
+        # Validate synchronously, before the edit is even saved, so a
+        # session too old/damaged to re-export 409s immediately instead of
+        # reaching jobs.submit and flipping an already-"done" session to
+        # "error" (server.py's _load_reexportable_state docstring).
+        _load_reexportable_state(session_id)
+        _save_edit(session_dir, step_id, text)
+        jobs.submit(session_id, lambda: _reexport_session(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    @app.post("/ui/sessions/{session_id}/steps/{step_id}/regenerate")
+    def ui_regenerate_step(session_id: str, step_id: str):
+        """One fresh LLM call for exactly this step (generate_step_text --
+        the identical round-trip-gated/template-fallback path the original
+        generation used, invariants L2/L3), then a no-LLM re-export of all
+        six formats. Supersedes (and deletes) any manual edit on this step
+        with a genuine AI result -- the freshly-generated text wins. If the
+        attempt instead fell back to render_step_template (used_fallback,
+        e.g. the LLM was unreachable or its reply failed the round-trip
+        gate) and this step already has a manual edit, the edit is left
+        untouched instead: the generic template text would silently and
+        irreversibly overwrite hand-written wording with nothing better in
+        its place. Caught by automated PR review. Not available for screenshots+
+        transcript ("photo mode") builds: there's no manifest ground truth
+        (real element/window names) to phrase a step from there, only a
+        synthetic placeholder manifest -- regenerating would just produce
+        garbage like "Click the position (0, 0) in the current window."."""
+        session_dir = _require_done(session_id)
+        if _is_photo_mode(session_dir):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "regenerate isn't available for screenshots+transcript builds "
+                    "(no manifest ground truth to phrase from)"
+                ),
+            )
+        manifest = sessions[session_id][0]
+        if step_id not in manifest.step_ids():
+            raise HTTPException(status_code=404, detail=f"unknown step: {step_id!r}")
+        # Same synchronous check as ui_edit_step, before the LLM call and
+        # before jobs.submit -- see _load_reexportable_state's docstring.
+        _load_reexportable_state(session_id)
+        jobs.submit(session_id, lambda: _regenerate_step(session_id, step_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    def _regenerate_step(session_id, step_id):
+        manifest, _screenshots_dir, _annotated_dir, session_dir = sessions[session_id]
+        step = next(s for s in manifest.steps if s.id == step_id)
+        cfg = load_models_config(resolved_config_path)
+        preflight_result = None
+        if run_preflight:
+            try:
+                preflight_result = probe(cfg.steps)
+            except Exception:  # noqa: BLE001 - preflight is diagnostics, never a gate
+                logger.exception("preflight probe failed regenerating %s/%s", session_id, step_id)
+        llm = make_llm_client()
+        try:
+            text, used_fallback = generate_step_text(step, llm)
+        finally:
+            close = getattr(llm, "close", None)
+            if callable(close):
+                close()
+
+        if used_fallback:
+            # The AI attempt produced nothing real (render_step_template's
+            # deterministic manifest interpolation, not a generated reply).
+            # Only let it overwrite text that was ALREADY a fallback --
+            # never a manual edit or a previously-successful generation,
+            # both persisted with used_fallback=False (_apply_manual_edits
+            # always sets it False; a step that round-trip-passed on its
+            # last real generation/regenerate does too). Checking the
+            # step's own persisted flag (not just "is there a manual
+            # edit") makes this symmetric: a transient LLM outage must
+            # never silently downgrade EITHER kind of good text to
+            # boilerplate with no way back short of a full /rerender.
+            # Caught by automated PR review -- the first version of this
+            # guard only protected a manual edit, missing the identical
+            # risk to a prior successful generation.
+            #
+            # _apply_manual_edits folds in any PENDING edits.json override
+            # (saved via the edit route but not yet re-exported into
+            # steps.json) the same way _reexport_session itself would --
+            # without it, a manual edit saved but never re-exported would
+            # still show steps.json's stale used_fallback=True and this
+            # guard would wrongly let the fallback through.
+            step_results, _annotated_paths, _state = _load_reexportable_state(session_id)
+            _apply_manual_edits(session_dir, step_results)
+            persisted = next((r for r in step_results if r["step_id"] == step_id), None)
+            if persisted is not None and not persisted.get("used_fallback"):
+                # Re-export with no override so the existing (good) text
+                # stays fully applied; report the decline instead of
+                # silently discarding it.
+                _reexport_session(
+                    session_id,
+                    preflight_result=preflight_result,
+                    regenerate_declined_step=step_id,
+                )
+                return
+
+        # _reexport_session BEFORE clearing the edit -- text_overrides always
+        # wins over a stale edits.json entry for this same step_id (applied
+        # after _apply_manual_edits inside _reexport_session), so ordering
+        # this way is safe, and it means a re-export that fails (409: the
+        # session's persisted state is too old/damaged) leaves the manual
+        # edit intact rather than deleting it with nothing to show for it.
+        _reexport_session(
+            session_id,
+            text_overrides={step_id: (text, used_fallback)},
+            preflight_result=preflight_result,
+        )
+        _clear_edit(session_dir, step_id)
+
     @app.post("/ui/sessions/{session_id}/delete")
     def ui_delete(session_id: str):
         """Removes a session entirely: its directory on disk, its library
@@ -1114,6 +2117,7 @@ def create_app(
         except OSError:
             pass
         shutil.rmtree(session_dir, ignore_errors=True)
+        _forget_edits_lock(session_dir)
         remove_entry(sessions_root, session_id)
         return RedirectResponse("/ui", status_code=303)
 
@@ -1222,6 +2226,56 @@ def create_app(
             render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved))
         )
 
+    _CONFIG_TEST_SECTIONS = {
+        "steps": SectionConfig,
+        "narrative": SectionConfig,
+        "vision": VisionConfig,
+        "polish": PolishConfig,
+    }
+
+    @app.post("/ui/config/test")
+    async def ui_config_test(request: Request):
+        """Cheap reachability probe for one config section (the "Test
+        connection" button on /ui/config) -- probes the values currently in
+        the form, not necessarily the saved config, so a user can check a
+        change before saving it. Always 200 with the probe result in the
+        body; a probe failure is data for the page to display, not an HTTP
+        error. 400 only for a malformed request (unknown section, or an
+        invalid provider override).
+
+        The probe itself runs via run_in_threadpool: probe_section is a
+        synchronous httpx call with up to a ~6s combined connect/read
+        timeout, and this route is `async def` (it awaits request.form()),
+        so calling it directly would block the single event loop for that
+        long, stalling every other request to the server for the duration
+        of the probe. Caught by automated PR review."""
+        form = await request.form()
+        name = form.get("section")
+        section_cls = _CONFIG_TEST_SECTIONS.get(name)
+        if section_cls is None:
+            raise HTTPException(status_code=400, detail=f"unknown section: {name!r}")
+        existing = load_models_config(resolved_config_path)
+        saved_section = getattr(existing, name)
+        overrides = {k: form.get(k) for k in ("provider", "endpoint", "model") if form.get(k)}
+        base = saved_section.model_dump()
+        if "provider" in overrides:
+            # Drop the legacy `anthropic = true` flag before validating: a
+            # config saved back when that flag was the only way to route to
+            # Anthropic still carries it, and SectionConfig's after-validator
+            # (config.py's _legacy_anthropic) unconditionally flips
+            # provider back to "anthropic" whenever it's set -- silently
+            # reverting an explicit provider="ollama" override and probing
+            # the wrong service entirely. Caught by automated PR review.
+            base.pop("anthropic", None)
+        try:
+            # model_validate (not model_copy) so an invalid provider override
+            # from the form is caught here as a 400, never handed to probe_section.
+            section = section_cls.model_validate({**base, **overrides})
+        except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> clear 400
+            raise HTTPException(status_code=400, detail=f"invalid section: {exc}") from exc
+        result = await run_in_threadpool(probe, section)
+        return JSONResponse({**result, "section": name})
+
     @app.post("/ui/config")
     async def ui_config_save(request: Request):
         form = await request.form()
@@ -1242,7 +2296,6 @@ def create_app(
                 "model": _model_or_existing(form.get("steps_model", ""), existing.steps.model),
                 "max_concurrency": form.get("steps_max_concurrency")
                 or str(existing.steps.max_concurrency),
-                "use_vision": form.get("steps_use_vision") == "on",
             },
             "narrative": {
                 "provider": form.get("narrative_provider", "ollama"),
@@ -1271,6 +2324,17 @@ def create_app(
                     form.get("document_author", ""), existing.document.author
                 ),
                 "doc_no_prefix": form.get("document_doc_no_prefix", ""),
+            },
+            "transcription": {
+                "enabled": form.get("transcription_enabled") == "on",
+                "model_size": _model_or_existing(
+                    form.get("transcription_model_size", ""), existing.transcription.model_size
+                ),
+                "device": form.get("transcription_device") or existing.transcription.device,
+                "compute_type": _model_or_existing(
+                    form.get("transcription_compute_type", ""),
+                    existing.transcription.compute_type,
+                ),
             },
         }
         try:
@@ -1311,7 +2375,17 @@ def create_app(
         config = load_models_config(resolved_config_path).model_dump()
         title = manifest.session.title or manifest.session.id
         date = manifest.session.started_utc
-        return HTMLResponse(render_session_page(session_id, title, date, report, config))
+        return HTMLResponse(
+            render_session_page(
+                session_id,
+                title,
+                date,
+                report,
+                config,
+                steps=_load_step_index(session_dir),
+                can_regenerate=not _is_photo_mode(session_dir),
+            )
+        )
 
     @app.post("/ui/sessions/{session_id}/confirm-steps")
     async def ui_confirm_steps(session_id: str, request: Request):

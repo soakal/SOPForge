@@ -1,11 +1,12 @@
 """SOP Factory 2 docx assembler (CLAUDE.md: "extend it, do not rewrite it").
 Drives the existing SOPBuilder engine (python-docx-based, VRSI-formatted,
-at C:\\Users\\Brian\\Documents\\SOP_Factory_2\\template\\sop_lib.py) from a
-manifest plus already-rendered step text (task-06/12) and already-annotated
-screenshots (task-10). This module calls the engine's public methods in a
-new order specific to a captured SOP session, plus a thin repo-side layer
-(docx_fields.py) that turns the engine's own plain-text TOC into a real
-Word TOC field without touching the external, unversioned engine file."""
+vendored at vendor/sop_factory_2/sop_lib.py — see that directory's README)
+from a manifest plus already-rendered step text (task-06/12) and
+already-annotated screenshots (task-10). This module calls the engine's
+public methods in a new order specific to a captured SOP session, plus a
+thin repo-side layer (docx_fields.py) that turns the engine's own
+plain-text TOC into a real Word TOC field without touching the vendored
+engine file itself."""
 
 import os
 import sys
@@ -18,23 +19,18 @@ from pipeline.claim_coverage import parse_verify_line
 from pipeline.docx_fields import add_toc_field, enable_update_fields_on_open, set_outline_level
 from pipeline.resource_path import resource_path
 
-DEFAULT_SOP_FACTORY_2_DIR = Path(r"C:\Users\Brian\Documents\SOP_Factory_2\template")
+DEFAULT_SOP_FACTORY_2_DIR = resource_path("vendor", "sop_factory_2")
 
 
 def sop_factory_2_dir():
-    """Dev/test mode: the external SOP_Factory_2 clone (never vendored into
-    this repo — see the module docstring). Frozen mode: task-10's
-    PyInstaller spec bundles just the engine module + template assets
-    (not the whole external working project) under "sop_factory_2" inside
-    the frozen bundle, so resolution there goes through resource_path()
-    like every other in-repo resource. An env var override always wins,
-    in either mode, for pointing at a non-default clone location."""
+    """Vendored in-repo by default (vendor/sop_factory_2/, bundled into the
+    frozen EXE the same way as any other in-repo resource — see
+    resource_path()). SOPFORGE_SOP_FACTORY_2_DIR still overrides this in
+    either mode, for testing against a different copy of the engine."""
     override = os.environ.get("SOPFORGE_SOP_FACTORY_2_DIR")
     if override:
         return Path(override)
-    if getattr(sys, "frozen", False):
-        return resource_path("sop_factory_2")
-    return DEFAULT_SOP_FACTORY_2_DIR
+    return resource_path("vendor", "sop_factory_2")
 
 
 def _import_sop_builder():

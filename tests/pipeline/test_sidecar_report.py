@@ -115,3 +115,28 @@ def test_verify_claims_include_text_only_when_claim_known():
     manifest = load_manifest(FIXTURES / "review-report-manifest.json")
     report = build_sidecar_report(manifest, [], ["claim-999"], {})
     assert report["verify_claims"] == [{"claim_id": "claim-999", "text": None}]
+
+
+def test_manually_edited_steps_reported_when_flagged():
+    manifest = load_manifest(FIXTURES / "review-report-manifest.json")
+    step_results = [
+        {"step_id": "step-001", "text": "Click Save.", "used_fallback": False},
+        {
+            "step_id": "step-002",
+            "text": "A human wrote this.",
+            "used_fallback": False,
+            "manually_edited": True,
+        },
+    ]
+    report = build_sidecar_report(manifest, step_results, [], {})
+    assert report["manually_edited_steps"] == ["step-002"]
+
+
+def test_manually_edited_steps_key_absent_when_none():
+    """Locks in the exact-shape guarantee test_sidecar_report_empty_when_
+    nothing_flagged depends on: the key must not appear at all, not appear
+    as an empty list, when nothing was manually edited."""
+    manifest = load_manifest(FIXTURES / "review-report-manifest.json")
+    step_results = [{"step_id": "step-001", "text": "Click Save.", "used_fallback": False}]
+    report = build_sidecar_report(manifest, step_results, [], {})
+    assert "manually_edited_steps" not in report

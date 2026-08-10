@@ -177,21 +177,23 @@ def test_live_generation_reports_progress_on_the_processing_page(tmp_path, monke
 
     reached_second_step = threading.Event()
     release = threading.Event()
-    real_generate_step_text = generation_module.generate_step_text
+    # generate_all_steps calls _request_reply directly (task-04's
+    # memoization refactor split generate_step_text into
+    # _request_reply + _finalize_reply) -- gate that, not the no-longer-
+    # called generate_step_text, or this event never fires.
+    real_request_reply = generation_module._request_reply
     call_count = {"n": 0}
 
-    def gated_generate_step_text(step, llm_client, use_vision=False, screenshot_dir=None):
+    def gated_request_reply(step, llm_client):
         call_count["n"] += 1
         # Pause going into the SECOND call so step 1's progress (1 of 3) has
         # already been reported by the time this test inspects the page.
         if call_count["n"] == 2:
             reached_second_step.set()
             release.wait(timeout=5)
-        return real_generate_step_text(
-            step, llm_client, use_vision=use_vision, screenshot_dir=screenshot_dir
-        )
+        return real_request_reply(step, llm_client)
 
-    monkeypatch.setattr(generation_module, "generate_step_text", gated_generate_step_text)
+    monkeypatch.setattr(generation_module, "_request_reply", gated_request_reply)
 
     client = _make_client(tmp_path)
     manifest_path = FIXTURES / "sample-manifest.json"
@@ -232,6 +234,88 @@ def test_transcript_collapse_warning_renders_as_a_flagged_card():
     normal_page = render_session_page("sid", "Title", "date", normal_report, {})
     assert '<p class="muted">Transcript:' in normal_page
     assert 'data-status="yellow"><h2>Transcript placement</h2>' not in normal_page
+
+
+def test_narration_transcription_failure_renders_as_a_flagged_card():
+    from pipeline.webui.pages import render_session_page
+
+    failed_report = {
+        "narration_transcription": (
+            "narration.wav could not be transcribed (see server log) -- "
+            "doc generated from steps only"
+        )
+    }
+    page = render_session_page("sid", "Title", "date", failed_report, {})
+    assert '<section class="card" data-status="yellow"><h2>Narration transcription</h2>' in page
+    assert "could not be transcribed" in page
+
+    # A successful transcription note stays as plain muted text, not a
+    # flagged card.
+    ok_report = {
+        "narration_transcription": "narration.wav transcribed locally and placed onto steps"
+    }
+    ok_page = render_session_page("sid", "Title", "date", ok_report, {})
+    assert '<p class="muted">narration.wav transcribed locally' in ok_page
+    assert 'data-status="yellow"><h2>Narration transcription</h2>' not in ok_page
+
+    # No narration_transcription key at all (today's only path) -- no note.
+    no_report = {}
+    no_page = render_session_page("sid", "Title", "date", no_report, {})
+    assert "Narration transcription" not in no_page
+
+
+def test_session_page_shows_llm_preflight_result_without_a_section_status_tag():
+    from pipeline.webui.pages import render_session_page
+
+    report = {
+        "llm_preflight": {
+            "provider": "ollama",
+            "model": "qwen3:32b",
+            "status": "error",
+            "detail": "connection refused",
+            "latency_ms": None,
+        }
+    }
+    page = render_session_page("sid", "Title", "date", report, {})
+    assert "LLM preflight" in page
+    assert "connection refused" in page
+    assert "qwen3:32b" in page
+    # Must be a plain <div>, not a <section data-status=...> -- the UI-smoke
+    # test counts exactly 3 of those, one per fixed sidecar-report category.
+    assert (
+        '<div class="card" style="border-left:4px solid var(--bad)"><strong>LLM preflight' in page
+    )
+
+
+def test_session_page_hides_llm_preflight_card_when_absent():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {})
+    assert "LLM preflight" not in page
+
+
+def test_session_page_shows_manually_edited_steps_without_a_section_status_tag():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"manually_edited_steps": ["step-002", "step-005"]}
+    page = render_session_page("sid", "Title", "date", report, {})
+    assert "Manually edited steps" in page
+    assert "step-002" in page
+    assert "step-005" in page
+    assert (
+        '<div class="card" style="border-left:4px solid var(--warn)"><strong>Manually edited'
+        in page
+    )
+    # The fixed three sidecar-report <section data-status=...> categories
+    # must stay exactly 3 even with this card present (UI-smoke contract).
+    assert page.count('<section class="card" data-status="') == 3
+
+
+def test_session_page_hides_manually_edited_card_when_absent():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {})
+    assert "Manually edited steps" not in page
 
 
 def test_processing_page_shows_progress_bar_when_available():
@@ -300,7 +384,7 @@ def test_session_page_shows_doc_preview_iframe(tmp_path):
 
     resp = client.get(f"/ui/sessions/{session_id}")
     assert resp.status_code == 200
-    assert f'<iframe src="/sessions/{session_id}/doc.html"' in resp.text
+    assert f'<iframe name="docpreview" src="/sessions/{session_id}/doc.html"' in resp.text
 
 
 def test_session_page_colors_sidecar_sections_correctly(tmp_path):
@@ -320,6 +404,171 @@ def test_session_page_colors_sidecar_sections_correctly(tmp_path):
     assert title_to_status["Template-fallback steps"] == "red"
     assert title_to_status["Verify claims"] == "green"
     assert title_to_status["Empty-metadata steps"] == "yellow"
+
+
+def test_report_findings_render_as_thumbnail_rows_linked_to_their_step():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    steps = [
+        {
+            "step_id": "step-002",
+            "text": "Click 'Save'.",
+            "used_fallback": True,
+            "screenshot": "002.png",
+        }
+    ]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    assert 'src="/sessions/sid/002.png"' in page
+    assert 'href="/sessions/sid/doc.html#step-002"' in page
+    assert 'target="docpreview"' in page
+    assert "Click &#x27;Save&#x27;." in page
+    # The section contract (data-status + <h2> first) must still hold.
+    assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
+
+
+def test_report_findings_degrade_to_plain_ids_without_a_step_index():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    page = render_session_page("sid", "Title", "date", report, {}, steps=None)
+    assert "step-002" in page
+    assert "<img" not in page.split("Template-fallback steps</h2>", 1)[1].split("</section>", 1)[0]
+    assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
+
+
+def test_render_session_page_tolerates_malformed_step_entries():
+    """Caught by automated PR review: a damaged steps.json entry (not a
+    dict, or missing "step_id") used to raise TypeError/KeyError building
+    steps_by_id, 500ing the whole review page instead of degrading the way
+    every other "corrupt" path in this feature does."""
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    steps = ["not a dict", {"screenshot": "no step_id here"}, None, 42]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    # Must not raise, and must still render the section (degraded to a
+    # plain id since no entry actually matched step-002).
+    assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
+    assert "step-002" in page
+
+
+def test_session_page_has_a_named_doc_preview_iframe_and_lightbox():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {})
+    assert 'name="docpreview"' in page
+    assert 'id="lightbox"' in page
+
+
+def test_session_page_renders_an_edit_form_and_regenerate_button_per_step():
+    from pipeline.webui.pages import render_session_page
+
+    steps = [
+        {
+            "step_id": "step-001",
+            "text": "Click the 'Save' <button>.",
+            "used_fallback": False,
+            "manually_edited": False,
+            "screenshot": "001.png",
+        }
+    ]
+    page = render_session_page("sid", "Title", "date", {}, {}, steps=steps, can_regenerate=True)
+    assert 'id="edit-step-001"' in page
+    assert 'action="/ui/sessions/sid/steps/step-001"' in page
+    assert 'action="/ui/sessions/sid/steps/step-001/regenerate"' in page
+    assert '<textarea name="text"' in page
+    # The textarea content must be HTML-escaped (raw "<button>" would break markup).
+    assert "&lt;button&gt;" in page
+    assert "<button>" not in page.split('<textarea name="text"', 1)[1].split("</textarea>", 1)[0]
+
+
+def test_session_page_hides_regenerate_when_can_regenerate_is_false():
+    from pipeline.webui.pages import render_session_page
+
+    steps = [{"step_id": "step-001", "text": "x", "used_fallback": False, "screenshot": ""}]
+    page = render_session_page("sid", "Title", "date", {}, {}, steps=steps, can_regenerate=False)
+    assert 'action="/ui/sessions/sid/steps/step-001"' in page
+    assert "/regenerate" not in page
+
+
+def test_session_page_omits_the_editor_without_a_step_index():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "Title", "date", {}, {}, steps=None)
+    assert "Edit steps" not in page
+    assert "<textarea" not in page
+
+
+def test_finding_row_links_to_the_matching_editor_anchor():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"template_fallback_steps": ["step-002"]}
+    steps = [
+        {"step_id": "step-001", "text": "a", "used_fallback": False, "screenshot": ""},
+        {"step_id": "step-002", "text": "b", "used_fallback": True, "screenshot": ""},
+    ]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    assert 'href="#edit-step-002"' in page
+    assert 'id="edit-step-002"' in page
+
+
+def test_finding_row_shows_edited_badge_when_manually_edited():
+    from pipeline.webui.pages import render_session_page
+
+    # The badge is rendered by _finding_row, only reached via _step_section
+    # for the two step-id report categories -- empty_metadata_steps here
+    # puts step-002 through that path so the badge is actually exercised.
+    report = {"manually_edited_steps": ["step-002"], "empty_metadata_steps": ["step-002"]}
+    steps = [
+        {
+            "step_id": "step-002",
+            "text": "b",
+            "used_fallback": False,
+            "manually_edited": True,
+            "screenshot": "",
+        }
+    ]
+    page = render_session_page("sid", "Title", "date", report, {}, steps=steps)
+    assert '<span class="pill edited">edited</span>' in page
+
+
+def test_discard_edits_button_shown_only_when_steps_were_manually_edited():
+    from pipeline.webui.pages import render_session_page
+
+    with_edits = render_session_page(
+        "sid", "Title", "date", {"manually_edited_steps": ["step-001"]}, {}
+    )
+    assert "discard_edits" in with_edits
+    without_edits = render_session_page("sid", "Title", "date", {}, {})
+    assert "discard_edits" not in without_edits
+
+
+def test_session_page_finding_thumbnails_and_deep_links_actually_resolve(tmp_path):
+    """End-to-end: the stub LLM (see _stub_llm.py) forces every step to
+    template-fallback, so the "Template-fallback steps" section is
+    populated -- every thumbnail src the page renders must actually
+    resolve, and every doc.html#step-xxx anchor must land on a real id in
+    that document (task-06)."""
+    client = _make_client(tmp_path)
+    session_id = _create_and_wait(client, tmp_path)
+
+    page = client.get(f"/ui/sessions/{session_id}").text
+    section = page.split("Template-fallback steps</h2>", 1)[1].split("</section>", 1)[0]
+    srcs = re.findall(r'src="(/sessions/[^"]+)"', section)
+    assert srcs  # the stub fails every step's round-trip, so this must be non-empty
+    for src in srcs:
+        resp = client.get(src)
+        assert resp.status_code == 200, src
+        assert resp.headers["content-type"].startswith("image/")
+
+    hrefs = re.findall(r'href="(/sessions/[^"]+/doc\.html#step-[^"]+)"', section)
+    assert hrefs
+    for href in hrefs:
+        path, step_id = href.split("#", 1)
+        doc = client.get(path)
+        assert doc.status_code == 200, href
+        assert f'id="{step_id}"' in doc.text
 
 
 def test_session_page_has_rerender_form(tmp_path):

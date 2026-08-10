@@ -123,34 +123,11 @@ def test_max_concurrency_rejects_zero():
         ModelsConfig.model_validate(data)
 
 
-def test_use_vision_defaults_to_false(tmp_path):
-    path = tmp_path / "models.toml"
-    path.write_text(
-        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
-        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
-        encoding="utf-8",
-    )
-    config = load_models_config(path)
-    assert config.steps.use_vision is False
-
-
-def test_use_vision_round_trips(tmp_path):
-    data = _base_cfg()
-    data["steps"]["use_vision"] = True
-    cfg = ModelsConfig.model_validate(data)
-    path = tmp_path / "models.toml"
-    save_models_config(cfg, path)
-    reloaded = load_models_config(path)
-    assert reloaded.steps.use_vision is True
-    assert "use_vision = true" in dump_models_config_toml(cfg)
-
-
-def test_committed_default_config_lacks_use_vision_and_still_loads():
-    # config/models.toml predates this field -- confirms an existing
-    # real-world config without use_vision still validates (defaults False)
-    # and extra="forbid" hasn't been loosened to silently accept anything.
-    config = load_models_config(default_config_path())
-    assert config.steps.use_vision is False
+def test_committed_default_config_still_loads_and_rejects_unknown_fields():
+    # config/models.toml is the shipped default -- confirms it still
+    # validates and that extra="forbid" hasn't been loosened to silently
+    # accept anything.
+    load_models_config(default_config_path())
     with pytest.raises(ValidationError):
         SectionConfig(model="m", bogus_field=True)
 
@@ -165,7 +142,9 @@ def test_polish_defaults_sanely_when_section_is_absent(tmp_path):
     config = load_models_config(path)
     assert config.polish.enabled is False
     assert config.polish.provider == "ollama"
-    assert config.polish.model  # non-empty; default (gemma3:12b) is confirmed pulled/live on the Ollama host
+    assert (
+        config.polish.model
+    )  # non-empty; default (gemma3:12b) is confirmed pulled/live on the Ollama host
 
 
 def test_polish_parses_explicit_section(tmp_path):
@@ -235,6 +214,68 @@ def test_resolve_polish_config_rejects_unknown_mode():
     config = load_models_config(default_config_path())
     with pytest.raises(ValueError):
         resolve_polish_config("bogus", config)
+
+
+def test_transcription_defaults_sanely_when_section_is_absent(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.transcription.enabled is False
+    assert config.transcription.model_size == "base"
+    assert config.transcription.device == "cpu"
+    assert config.transcription.compute_type == "int8"
+
+
+def test_transcription_parses_explicit_section(tmp_path):
+    path = tmp_path / "models.toml"
+    path.write_text(
+        '[steps]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[narrative]\nendpoint = "http://x"\nmodel = "m"\n'
+        '[transcription]\nenabled = true\nmodel_size = "small"\ndevice = "cuda"\n'
+        'compute_type = "float16"\n',
+        encoding="utf-8",
+    )
+    config = load_models_config(path)
+    assert config.transcription.enabled is True
+    assert config.transcription.model_size == "small"
+    assert config.transcription.device == "cuda"
+    assert config.transcription.compute_type == "float16"
+
+
+def test_transcription_rejects_unknown_device():
+    data = _base_cfg()
+    data["transcription"] = {"enabled": True, "device": "bogus"}
+    with pytest.raises(ValidationError):
+        ModelsConfig.model_validate(data)
+
+
+def test_transcription_round_trips_through_dump_and_reload(tmp_path):
+    data = _base_cfg()
+    data["transcription"] = {
+        "enabled": True,
+        "model_size": "small",
+        "device": "cuda",
+        "compute_type": "float16",
+    }
+    cfg = ModelsConfig.model_validate(data)
+    path = tmp_path / "models.toml"
+    save_models_config(cfg, path)
+    reloaded = load_models_config(path)
+    assert reloaded.transcription.enabled is True
+    assert reloaded.transcription.model_size == "small"
+    assert reloaded.transcription.device == "cuda"
+    assert reloaded.transcription.compute_type == "float16"
+    assert "[transcription]" in dump_models_config_toml(cfg)
+
+
+def test_committed_default_config_has_transcription_disabled():
+    config = load_models_config(default_config_path())
+    assert config.transcription.enabled is False
+    assert config.transcription.model_size == "base"
 
 
 def test_rejects_missing_required_field(tmp_path):

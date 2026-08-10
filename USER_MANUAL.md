@@ -180,14 +180,11 @@ See §9 below.
 
 - Windows 11 (the capture agent uses Windows-only APIs — UI Automation, low-level
   input hooks, GDI screen capture).
-- The SOP Factory 2 docx engine, cloned to `C:\Users\Brian\Documents\SOP_Factory_2`
-  (only needed for building `sopforge-server.exe` yourself, or running from source —
-  the packaged EXE bundles the two files it actually needs):
-  ```powershell
-  gh repo clone soakal/SOP-Factory C:\Users\Brian\Documents\SOP_Factory_2
-  ```
-  (Private repo — `gh auth login` with access to `soakal/SOP-Factory` first.)
-  If cloned elsewhere, set `SOPFORGE_SOP_FACTORY_2_DIR` to that path.
+- The SOP Factory 2 docx engine is vendored in-repo at `vendor/sop_factory_2/`
+  (`sop_lib.py` + `SOP_TEMPLATE_WITH_PHOTOS.docx`) — nothing to clone, it's
+  already there whether building `sopforge-server.exe` yourself or running
+  from source. Set `SOPFORGE_SOP_FACTORY_2_DIR` only if you want to point at
+  a different copy of the engine.
 - (Optional, for LLM-phrased steps) Either an Ollama server reachable at the
   endpoint in `config/models.toml` (default `http://192.168.200.60:11434/v1`,
   with the `qwen3:32b` model pulled), or Anthropic routing configured with
@@ -225,12 +222,32 @@ Run the tray app (`dist\sopforge\sopforge.exe`, or from source: `.\.venv\Scripts
   Console" instead of a raw timestamp+id.
 - Right-click → **Exit** closes the tray app.
 
+### Recording narration (mic), off by default
+
+The tray menu also has a checkable **Record narration (mic)** item. It's
+off by default — turning it on records your microphone alongside the next
+session you start (toggling it doesn't affect a session already in
+progress) and saves it as `narration.wav` next to the manifest. If your
+machine has no microphone, or the mic is busy/blocked when you start
+recording, the session still records normally — narration is just silently
+skipped, never an error. The preference persists across restarts
+(`%USERPROFILE%\SOPForge\capture_settings.toml`).
+
+On its own, recording the WAV doesn't do anything with it — turning it
+into placed narration under each step also requires enabling
+**transcription** on the server's Configuration page (§7), which is
+*also* off by default. With both on, the pipeline server transcribes the
+recording locally (no cloud) the same way an uploaded `.txt`/`.md`/`.json`
+transcript would be placed (§5) — you don't need to do anything extra at
+upload time.
+
 If no server was running, or the upload failed for any reason, nothing is
 lost — each session is also always written to
 `%USERPROFILE%\SOPForge\captures\<timestamp>\`:
 - `manifest.json` — the ordered list of recorded steps (this is ground truth;
   nothing downstream can add, drop, or reorder a step from this file).
 - Numbered screenshots, one per step.
+- `narration.wav`, if narration recording was on and a mic was available.
 
 Upload it later through the review web UI's upload form (§5) once the server
 is running, or via the API (§4).
@@ -413,33 +430,36 @@ once. Off (`1`) by default: against an untuned single-slot Ollama
 server, raising it just queues requests and risks a queued step's own
 timeout expiring into a template fallback it didn't need.
 
-### Vision-augmented step generation (`use_vision`, off by default)
+### Repeated steps share one LLM call (prompt memoization)
 
-Every step also carries its own screenshot, but by default it's never sent
-to the LLM — step text is written from the manifest's text fields alone
-(action, element name, window title). Setting `use_vision = true` under
-`[steps]` in `config/models.toml` attaches that step's screenshot to the
-same LLM call, so the model can describe what's actually on screen instead
-of working from text alone.
+If several steps produce byte-identical prompts — a common pattern in
+real captures, e.g. ticking a run of checkboxes in the same dialog — the
+server dispatches **at most one** LLM call for that shared prompt and
+reuses the reply for every step in the group, instead of one call per
+step. Each step is still checked against the manifest's own facts
+independently (a shared reply can still pass for one step and fall back
+to the template for another, if their manifest details differ enough to
+matter), so this is purely a speed/cost win — it never changes which
+steps end up fluent versus template-fallback. Nothing to configure; it's
+always on.
 
-This is **config-file only** — there's no toggle for it on the
-Configuration page (§7), and it's a different feature from the **Vision**
-row you *do* see there, which is for screenshots-only builds with no
-manifest (§5, "Building without a capture"). `use_vision` augments the
-normal, manifest-driven step generation described above; it doesn't
-replace it, and it needs a model that can actually see images (the default
-`[steps]` model, `qwen3:32b`, is text-only — you'd need to point `[steps]`
-at a vision-capable model like `qwen2.5vl:7b` for this to do anything).
+### LLM preflight (reachability check)
 
-It's off by default because a live measurement (20 real steps from 2 real
-capture sessions, comparing the same model with and without the
-screenshot attached) found it doesn't reliably help: it fixed some steps
-that had been falling back to the template, but broke roughly the same
-number of steps that had been working fine without it — a net wash on
-accuracy, not a clear improvement — while running 25–50x slower per step
-(the vision call itself, not network latency). See
-`phases/05-vision-step-text-measurement.md` for the full data, including
-concrete before/after examples, if you're considering turning it on.
+Before you commit to a real generation run, you can check whether a
+section's configured provider/endpoint/model is actually reachable: the
+**Test connection** button next to each row (Steps/Narration/Vision/Polish)
+on the Configuration page (§7) probes it — is the endpoint reachable, and
+if so, is the configured model actually present — without generating any
+text or spending a real LLM call. The result shows next to the button
+(e.g. "ok: model present (340ms)" or "error: connection refused").
+
+The server also runs this same probe **automatically, once per generation
+job**, best-effort — its result appears as an **LLM preflight** card at
+the top of the session page once the doc is done, so you can tell at a
+glance whether a run full of template-fallback steps was caused by a dead
+endpoint versus something else. This never blocks or delays generation —
+if the probe itself fails for any reason, the job proceeds normally and
+just runs without that diagnostic card.
 
 ---
 
@@ -484,8 +504,27 @@ system fonts, no external assets — works fully offline).
   session's files, library entry, and everything — irreversible, no undo),
   a **Downloads** list (docx/pdf/single-file-html/markdown-zip — each
   downloads named from the session's title, e.g. `configure-smartdeploy-
-  console.docx`, not a generic `doc.docx`), and a read-only panel showing
-  the current `config/models.toml`.
+  console.docx`, not a generic `doc.docx`), a read-only panel showing
+  the current `config/models.toml`, and (once done) an **LLM preflight**
+  diagnostic card if the automatic reachability probe ran (see §4).
+- **Per-step editing**: every step on the finished session page has a
+  collapsed editor, not just the flagged ones. Two independent actions:
+  - **Save** — replaces that step's text with whatever you typed and
+    re-exports all six formats immediately, with **zero LLM calls**. Fast
+    even on a long session, since nothing is regenerated but the one step.
+  - **Regenerate with AI** — makes exactly one fresh LLM call for that
+    step, through the same round-trip check and template-fallback safety
+    net as normal generation. If the fresh attempt would just replace
+    already-good text (a prior manual edit, or a step that already
+    generated successfully) with a template fallback, it's declined
+    automatically and the good text is kept — regenerating never
+    downgrades a step.
+  Edits persist across a plain **Re-render**; a separate **Re-render from
+  scratch** button (`?discard_edits=1`) wipes every manual edit for that
+  session and starts clean. Every step you've hand-edited is listed under
+  a **Manually edited** category alongside the sidecar report's three
+  categories (§6), so it's clear which steps are no longer the AI's own
+  words.
 
 No JavaScript is required for the core workflow — the search box, upload
 form, transcript form, re-render button, and delete button are all plain
@@ -585,15 +624,24 @@ listing three things a reviewer should check:
   silently dropped. Today this is populated by the semantic transcript
   pipeline's polish stage (§5): if it rewrites a step's narration for
   clarity but can't confirm every part of the original survived, the
-  uncertain part is flagged here rather than silently lost. (The
-  still-unwired audio claim-coverage narrative path would also report here if
-  it were live.)
+  uncertain part is flagged here rather than silently lost. A locally
+  transcribed recording (§3, §7) is placed through this exact same pipeline,
+  so it reports here too.
 - **Empty-metadata steps** (yellow if non-empty) — steps where no UI
   Automation element info was captured at all. These render using screen
   coordinates instead of an element name — still factual, just less specific.
+- **Manually edited steps** — steps you've hand-edited via the per-step
+  editor (§5), listed so it's clear which steps are no longer the AI's
+  (or template's) own words.
 
-An all-green report means every step made it into the doc with full
-information and no fallback.
+On the session page, each flagged step in the first three categories shows
+as a row with a **thumbnail of that step's screenshot** next to its
+generated text, deep-linked into the doc preview (`doc.html#step-id`) so
+clicking it jumps straight to that step in context instead of leaving you
+to scroll and find it.
+
+An all-green report (first three categories empty) means every step made
+it into the doc with full information and no fallback.
 
 ---
 
@@ -617,6 +665,11 @@ names, or any model not yet in the list.
 **Steps** and **Vision** also have a **Max concurrency** field — how many
 LLM/vision calls that section dispatches at once (see §4 for what this
 actually does and why it defaults to `1`/off).
+
+Every row also has a **Test connection** button — a cheap reachability
+probe (see §4, "LLM preflight") that checks the endpoint currently in the
+form (not necessarily what's saved) and reports back inline, so you can
+confirm a change works before saving it.
 
 A separate **Document** card sets the metadata stamped on every generated
 SOP's title page and revision table: **Author** (defaults to "SOPForge")
@@ -696,6 +749,29 @@ keep the original text) — this is a model-capability limit, not a bug,
 and is exactly why it's off by default until you've reviewed its output
 on your own documents.
 
+### Narration transcription (`[transcription]`, off by default)
+
+If a capture session recorded audio (the tray's **Record narration (mic)**
+toggle, §3), the **Narration transcription** card on the Configuration
+page controls whether the server actually transcribes it:
+
+- **Transcribe recorded narration audio** — off by default. On: a
+  `narration.wav` sitting in a session's folder with no manually-uploaded
+  transcript gets run through a local speech-to-text model
+  (faster-whisper) before generation, and the result is placed onto steps
+  the same way an uploaded `.json` transcript would be (§5) — nothing
+  leaves your network.
+- **Model size**, **Device** (`cpu` / `cuda` / `auto`), **Compute type** —
+  passed straight to faster-whisper. `cpu`/`base`/`int8` (the defaults)
+  need no GPU and work everywhere; a bigger model size or `cuda` is more
+  accurate/faster if you have the hardware.
+
+An uploaded transcript always wins — if you've already added one by hand
+(§5), the WAV is never transcribed even with this on. A missing model or
+unavailable hardware just skips transcription for that session (noted in
+the sidecar report, §6); the document still generates normally from the
+steps alone.
+
 ### API keys (security)
 
 API keys are **never stored in the config file** — they're read only from
@@ -754,12 +830,10 @@ form posts.
   backend has never been exercised against a live API call in this
   deployment, so its actual reliability is unverified. This is why
   polish defaults to off.
-- Vision-augmented step generation (`use_vision`, §4) measured no net
-  accuracy improvement over text-only in a real-data comparison — it
-  traded some failures for others rather than reducing them — while
-  running 25–50x slower per step. See
-  `phases/05-vision-step-text-measurement.md` for the data. Off by
-  default for this reason.
+- Narration transcription (§3, §7) bundles faster-whisper's dependencies
+  (ctranslate2, onnxruntime) into `sopforge-server.exe`, meaningfully
+  growing its install size — an accepted tradeoff for local, no-cloud
+  transcription rather than a separate optional download.
 
 ---
 

@@ -14,12 +14,30 @@ criteria. Private — see [LICENSE](LICENSE).
 ## Install (packaged)
 
 Download **`SOPForge.zip`** from the repo's
-[Releases](https://github.com/soakal/SOPForge/releases) page, unzip, and run
-**`install.bat`** (or `install.ps1`). It installs both EXEs and, with autostart
-on by default, brings the capture tray + server up at logon. Record with
+[Releases](https://github.com/soakal/SOPForge/releases) page, unzip, and
+**double-click `install.bat`**. It installs both EXEs and, with autostart on
+by default, brings the capture tray + server up at logon. Record with
 **Ctrl+Alt+R**; the SOP appears in the review UI at `http://127.0.0.1:8420/ui`.
 Choose your AI from the tray → **Configuration** page (Ollama local by default,
 or OpenRouter / OpenAI / Anthropic — keys read from env vars, never stored).
+
+Use `install.bat` rather than running `install.ps1` directly — double-clicking
+a `.ps1` often just opens it in a text editor, or errors "running scripts is
+disabled on this system" (a Windows 11 default execution-policy thing, not
+specific to this script); `install.bat` runs `install.ps1` with that policy
+bypassed for you, and forwards any arguments (`install.bat -Port 9000
+-NoAutostart`). The default install path, `%ProgramFiles%\SOPForge`, needs
+administrator rights — **a UAC prompt will appear; accept it** to continue.
+To skip that entirely, install somewhere you already own, e.g.
+`install.bat -InstallPath "%LOCALAPPDATA%\SOPForge"`.
+
+**Signing/EDR note:** the EXEs are self-signed, trusted only on the machine
+that built them — on any other machine Windows will show "unknown publisher"
+and endpoint security (e.g. SentinelOne) may flag or block them, since the
+capture agent installs global keyboard/mouse hooks (which looks like a
+keylogger). Import `scripts/sopforge-signing-cert.cer` into Trusted Root, or
+have it allowlisted, to clear that.
+
 Full walkthrough (recording, config, transcripts, distribution): see
 [USER_MANUAL.md](USER_MANUAL.md).
 
@@ -55,12 +73,16 @@ fallback it didn't need — so it defaults to `1` (strictly sequential).
 ## SOP Factory 2 dependency
 
 The docx assembler (Phase 2, task-15) extends the existing `SOPBuilder` engine
-from the private repo `soakal/SOP-Factory`, expected at
-`C:\Users\Brian\Documents\SOP_Factory_2` (`gh repo clone soakal/SOP-Factory
-SOP_Factory_2`). It is **imported at runtime via `sys.path`
-(`src/pipeline/docx_assembler.py`), never copied into this repo** — that
-directory is a full working project (active jobs, per-client archives with real
-photos/documents, its own git history, install scripts), not a clean library, so
-vendoring it wholesale would leak proprietary business content into SOPForge's
-history. Override the path with the `SOPFORGE_SOP_FACTORY_2_DIR` env var if it's
-cloned somewhere else.
+originally from the private repo `soakal/SOP-Factory`. The clean, reusable
+engine files — `sop_lib.py` and `SOP_TEMPLATE_WITH_PHOTOS.docx`, the only two
+files `src/pipeline/docx_assembler.py` reads — are **vendored directly into
+this repo** at `vendor/sop_factory_2/` (see that directory's README for
+provenance), so a clean clone builds and tests end-to-end with zero external
+dependency. This is only the engine, not `SOP-Factory`'s full working project
+(active jobs, per-client archives with real photos/documents, its own git
+history) — vendoring that wholesale would leak proprietary business content
+into SOPForge's history, so only the two engine files are here.
+
+Set the `SOPFORGE_SOP_FACTORY_2_DIR` env var to point at a different copy of
+the engine (e.g. while iterating on `sop_lib.py` itself upstream) if needed;
+otherwise nothing extra is required to run `pytest -x -q` in a fresh clone.

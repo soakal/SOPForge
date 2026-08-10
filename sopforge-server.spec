@@ -10,21 +10,13 @@ pays on its very first launch after a build.
 
 Bundles config/models.toml (read at runtime via
 pipeline.resource_path.resource_path(), task-08) and the SOP Factory 2
-docx-assembly engine's two actual files — sop_lib.py and
-SOP_TEMPLATE_WITH_PHOTOS.docx, the only two files docx_assembler.py reads
-— into a "sop_factory_2" folder inside the bundle (task-08's frozen
-sop_factory_2_dir() expects exactly this name). This is NOT the whole
-external SOP_Factory_2 working project (which has active jobs, per-client
-archives with real photos/documents, and its own git history) — only the
-clean, reusable engine files, matching the "extend it, do not rewrite it,
-never vendor it into this repo" rule that already governs the source-level
-import in dev mode."""
-
-import os
-
-_SOP_FACTORY_2_TEMPLATE_DIR = os.path.expandvars(
-    r"%USERPROFILE%\Documents\SOP_Factory_2\template"
-)
+docx-assembly engine, vendored in-repo at vendor/sop_factory_2/ (sop_lib.py
++ SOP_TEMPLATE_WITH_PHOTOS.docx, the only two files docx_assembler.py
+reads) — into a "vendor/sop_factory_2" folder inside the bundle, matching
+sop_factory_2_dir()'s resource_path()-based resolution. See
+vendor/sop_factory_2/README.md for provenance: this is only the clean,
+reusable engine, not the whole external SOP-Factory working project (which
+has active jobs and per-client archives)."""
 
 a = Analysis(
     ["src/pipeline/__main__.py"],
@@ -37,13 +29,10 @@ a = Analysis(
         # the frozen EXE fails on startup (caught by actually running the
         # first build attempt, not assumed).
         ("fixtures/manifest.schema.json", "fixtures"),
+        ("vendor/sop_factory_2/sop_lib.py", "vendor/sop_factory_2"),
         (
-            os.path.join(_SOP_FACTORY_2_TEMPLATE_DIR, "sop_lib.py"),
-            "sop_factory_2",
-        ),
-        (
-            os.path.join(_SOP_FACTORY_2_TEMPLATE_DIR, "SOP_TEMPLATE_WITH_PHOTOS.docx"),
-            "sop_factory_2",
+            "vendor/sop_factory_2/SOP_TEMPLATE_WITH_PHOTOS.docx",
+            "vendor/sop_factory_2",
         ),
         # DejaVu Sans (Bitstream Vera license -- freely redistributable/
         # embeddable, see assets/fonts/dejavu-sans/LICENSE) gives export_pdf.py
@@ -79,18 +68,31 @@ a = Analysis(
         # by actually running the built EXE, not assumed.
         "pywinauto",
         "pywinauto.unittests",
-        "numpy",
         "playwright",
-        # Not on server.py's import graph today (no narration/LLM wiring
-        # into the live app yet — see phases/DEVIATIONS.md's task-09
-        # entry) but present in the pipeline package/venv; excluding them
-        # keeps the server EXE from pulling in faster-whisper's heavy
-        # transitive deps (ctranslate2, av, onnxruntime) for code paths
-        # this EXE never reaches. Revisit if/when narration gets wired in.
-        "faster_whisper",
-        "ctranslate2",
-        "av",
-        "onnxruntime",
+        # NOT excluding "numpy" (unlike earlier revisions of this spec) --
+        # faster_whisper's transitive deps (ctranslate2, onnxruntime) both
+        # require it at import time; excluding it would make the frozen EXE
+        # fail the moment transcription.Transcriber._get_model() actually
+        # imports faster_whisper, exactly the "revisit when narration gets
+        # wired in" this comment used to point at.
+        #
+        # faster_whisper/ctranslate2/av/onnxruntime themselves are also NOT
+        # excluded now that transcription.py's Transcriber is wired into
+        # server.py's generation path (see the [transcription] config
+        # section) -- a real `from faster_whisper import WhisperModel`
+        # inside pipeline source (transcription.py's lazy _get_model(), not
+        # a dynamically-loaded module like sop_lib.py) is on PyInstaller's
+        # own static-analysis import graph, so no extra hiddenimports
+        # should be needed for the pure-Python side. ctranslate2 ships
+        # native binary extensions, though, and PyInstaller's bundling of
+        # those has not been verified against a real build on this task --
+        # confirm with an actual `pyinstaller --noconfirm --clean
+        # sopforge-server.spec` + EXE smoke test (per CLAUDE.md's
+        # verification pipeline) before shipping, the same way the "docx"
+        # hiddenimport above was found by running the built EXE, not
+        # assumed. This also grows the EXE meaningfully (ctranslate2 +
+        # onnxruntime are heavy) -- an accepted tradeoff for local,
+        # no-cloud transcription.
     ],
     noarchive=False,
     optimize=0,

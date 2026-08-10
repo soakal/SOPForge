@@ -361,3 +361,208 @@ handle in the round-trip/fallback gate, a cost/latency increase per step on
 every real-capture generation run). Per the Task D framing this is a decision
 for Brian to make explicitly, not something to build off the back of this
 investigation.
+
+## POST /ui/config/test outbound probe: accepted risk, not a vulnerability (definitive write-up)
+
+**Date: 2026-08-07.** Recorded after the same finding recurred ~15 times
+across automated PR review rounds under shifting labels (SSRF, internal
+network probing, cloud-metadata access, port scanning). This entry is the
+single authoritative answer; every fact below was verified against the code
+at the cited lines, not assumed.
+
+**Plain-English summary:** the "Test connection" button on the Configuration
+page makes the server issue one GET request to the LLM endpoint typed into
+the form, and reports whether something OpenAI-shaped answered. Yes, that is
+an outbound request to a user-chosen URL — that is the feature. It is
+reachable only by the machine's single local operator (loopback-only by
+default, host- and CSRF-guarded), it returns no response content beyond
+model IDs and coarse status, and the operator who can invoke it already has
+a strictly more powerful primitive: saving that same endpoint into the
+config, which makes every generation job POST to it. A curl in the
+operator's own terminal has more capability than this route. There is no
+victim, no confused deputy, and no data path back to an attacker — so there
+is nothing to fix without removing the feature itself.
+
+### (a) No new trust boundary is crossed
+
+The probe (`src/pipeline/server.py:2235-2276`, `POST /ui/config/test`) probes
+"the values currently in the form" so a user can test before saving. The
+exact same user, via the same page, can instead click Save (`POST
+/ui/config`, `server.py:2278-2352`), which persists an arbitrary
+`endpoint` string into `models.toml` — after which:
+
+- every generation job constructs a real `LLMClient` against that endpoint
+  and POSTs to `{endpoint}/chat/completions` with full request/response
+  bodies (`src/pipeline/llm_client.py:50` sets `base_url` from the
+  configured endpoint; `llm_client.py:81` posts to it), and
+- `_generate` itself runs the identical `probe_section` GET once per job as
+  a best-effort preflight (`server.py:889-891` and `server.py:2029-2031`).
+
+So "server makes a request to a user-supplied URL" is not something this
+route introduced; it is the config system's core, deliberate capability
+(pointing the app at any local Ollama instance is the product's main
+configuration act — CLAUDE.md: default endpoint
+`http://192.168.200.60:11434/v1`, a private LAN address). The test button
+is a strictly *weaker* form of an ability the same principal already has:
+one GET, no attacker-controllable body, tight timeouts
+(`src/pipeline/preflight.py:21-22`: 4s read / 2s connect).
+
+Classic SSRF is a *confused deputy*: an unprivileged remote attacker
+launders requests through a server that has network access or credentials
+the attacker lacks. Here the only principal who can reach the route is the
+local operator of a single-user desktop app, whose own machine already has
+exactly the same network vantage point as the server process (they are the
+same machine, same user account — the server runs unelevated as the
+logged-in user, per this repo's install/autostart design). The deputy is
+not confused, and it has no privileges its caller lacks.
+
+### (b) What the probe does and does not return
+
+`probe_section` (`src/pipeline/preflight.py:55-152`) issues a single GET to
+`models_url(provider, endpoint)` (`preflight.py:25-33` — the endpoint plus
+`/models`) and returns only:
+`{provider, model, endpoint, reachable, model_present, latency_ms, status, detail}`.
+The `detail` string is one of (every branch enumerated):
+
+- `"<KEY_ENV> is not set"` (`preflight.py:84`) — no request sent at all;
+- `str(exc)[:200]` for a transport failure (`preflight.py:102`);
+- `"HTTP <status>"` for any >=400 response (`preflight.py:114`) — status
+  code only, never the body;
+- `"reachable, but the model list response could not be parsed"`
+  (`preflight.py:129`) for any 2xx body that is not exactly an
+  OpenAI/Anthropic-shaped `{"data": [{"id": ...}]}` list
+  (`_model_ids`, `preflight.py:44-52`);
+- `"reachable and model found"` (`preflight.py:140`);
+- `"reachable, but '<model>' was not found ...: <up to 5 id strings>"`
+  (`preflight.py:142-151`).
+
+The only response-derived content that can ever reach the caller is up to
+five `id` fields from a body that already parses as an OpenAI-compatible
+model list. Response bodies, headers, and redirect targets are never
+returned. The docstring contract (`preflight.py:8-11`) is enforced by the
+code: never raises, never sends a request for a keyed provider whose key is
+unset, never puts a key value in the returned dict.
+
+Credential exposure is also structurally excluded: the only provider with a
+user-configurable endpoint is `ollama`, which is keyless
+(`src/pipeline/config.py:26-31` — `"ollama": {"endpoint": None, "key_env":
+None}`; `provider_endpoint`, `config.py:200-203`, ignores the configured
+endpoint for openrouter/openai, and anthropic uses the fixed
+`ANTHROPIC_MODELS_URL`, `preflight.py:20,30-31`). So no `Authorization` /
+`x-api-key` header can ever be sent to an arbitrary user-chosen host
+(`_headers`, `preflight.py:36-41`).
+
+### (c) Cloud metadata endpoints (169.254.169.254 etc.)
+
+Metadata-service SSRF is a real technique *when an external attacker can
+make a cloud-hosted server fetch a URL and read the response*. Neither half
+applies here:
+
+1. **Who can trigger it:** the route is behind `_host_guard` and
+   `_csrf_guard` (`server.py:626-742`) — loopback-only Host allowlist by
+   default, Origin checked (scheme + host + RFC 6454-normalized port) on
+   every POST, so a malicious web page in the operator's browser cannot
+   drive it, and a remote host cannot reach it at all under the default
+   `127.0.0.1` bind. The only possible caller is the local operator, who
+   can already run `curl http://169.254.169.254/` themselves with strictly
+   better results.
+2. **What comes back:** per (b), a metadata service's responses (plain text
+   token/role listings, JSON documents) do not parse as
+   `{"data": [{"id": ...}]}`, so the caller gets
+   `status: "warn", detail: "…could not be parsed"` — reachability and
+   latency, nothing more. IMDSv2 additionally requires a PUT with a token
+   header the probe never sends.
+3. **Where it runs:** this is a self-hosted Windows desktop app for an
+   on-prem LAN (CLAUDE.md: "Nothing leaves the network"; build/runtime
+   host is an interactive Windows 11 VM, distribution is a zip + installer
+   run by the end user on their own machine). There is no cloud instance
+   role to steal. Even if someone ran it on EC2, point 1 still holds: the
+   only principal who can invoke the probe is the machine's own operator.
+
+The residual capability — a same-machine operator using the form as an
+awkward one-URL-at-a-time reachability checker against their own LAN — is
+equivalent to `Test-NetConnection`, which they already have.
+
+### (d) What would have to change for this to become a real finding
+
+Any one of the following would invalidate this acceptance and require a
+mitigation (allowlist/deny-list of probe targets, authentication on the
+route, or removing the free-form endpoint field):
+
+- **Multi-tenancy or authentication:** if the server ever serves more than
+  one principal (user accounts, an auth layer, a shared/hosted deployment),
+  the "caller == machine operator" identity collapses and the probe becomes
+  a way for a less-privileged user to scan from the server's vantage point.
+- **Remote exposure by default:** if the default bind moved off loopback,
+  or the host/CSRF guards were removed, a non-operator could reach the
+  route. (Today, even the documented `--host 0.0.0.0` mode keeps CSRF
+  enforcement via the self-referential Origin check, and deploying that
+  mode is an explicit operator choice.)
+- **Richer probe output:** if `probe_section` ever returned response bodies
+  or headers instead of the enumerated status/latency/id-sample fields.
+- **Credentialed requests to configurable hosts:** if a keyed provider ever
+  gained a user-configurable endpoint (see `config.py:34-38` for an
+  existing note where exactly this class of bug was deliberately excluded
+  for vision).
+- **A cloud-hosted product posture:** if SOPForge became a hosted service
+  rather than local-first software (contradicting CLAUDE.md's prime
+  directive 4, "Local-first. Runtime has zero required cloud
+  dependencies").
+
+None of these is true today, and the first two are contrary to the
+project's written contract (CLAUDE.md: local-first, single-operator tray
+app, localhost review UI). Until one of them changes, re-reporting this
+route under a new label (SSRF / internal scan / metadata access / DNS
+probing) does not change the analysis above: the route grants its only
+possible caller no capability they do not already possess, and returns no
+data an attacker could use even if one could reach it.
+
+## Vision-in-step-text: dropped, not adopted (closes phase-05)
+
+`phases/05-vision-step-text-measurement.md` was a measurement report, not a
+recommendation — it deliberately made no adopt/reject call, leaving the
+decision to a human. That decision is now made: **dropped.** The
+`use_vision` config toggle (per-step screenshot attached to the `[steps]`
+generation call) has been removed from the codebase entirely, not merely
+left off by default.
+
+**Why drop rather than keep it as an off-by-default option:** the
+phase-05 data showed no net benefit to justify carrying the complexity.
+Across 20 real steps from 2 real captured sessions, attaching the
+screenshot changed the round-trip pass/fail outcome for 8 of 20 steps — 4
+Fixed, 4 Broke — an exact wash on correctness. On latency it was
+one-directional and severe: every vision-on call took ~10.7–11.1s versus
+~0.2–0.9s without vision, roughly 25–50x slower per step, every time,
+regardless of whether that step's outcome improved, worsened, or stayed
+the same. A knob that is a coin-flip on quality and a guaranteed order-of-
+magnitude latency tax on a per-step, per-generation-job hot path is not
+worth the config surface, the extra code path through
+`generate_all_steps`/`generate_step_text`, or the maintenance burden of a
+second (memoization-disabled) generation mode.
+
+**What was removed** (not just defaulted off):
+- `SectionConfig.use_vision` (`config.py`) and its TOML dump/doc-comment
+  lines — an existing `models.toml` with this key would now fail to load
+  (`extra="forbid"`), but no released build ever shipped with it: this
+  feature landed and was reverted within the same PR-review cycle, so no
+  real user config was ever written with the key set.
+- `use_vision`/`screenshot_dir` params from `generation._request_reply`,
+  `generation.generate_step_text`, `generation.generate_all_steps`, and
+  `render.render_steps_llm_mode` — step generation is unconditionally
+  plain-text now, and `generate_all_steps`' prompt memoization (a real,
+  proven win — see its own docstring) is no longer conditionally disabled
+  for a mode that no longer exists.
+- The "Attach each step's screenshot to the LLM call (experimental)"
+  checkbox on `/ui/config` (`webui/pages.py`) and its wiring in
+  `ui_config_save` (`server.py`).
+
+**Not touched:** the separate `[vision]` section (screenshot *captioning*
+as an independent pipeline stage, `vision.py`) is a different feature and
+is unaffected — this closes out step-text vision specifically, the subject
+of phase-05's measurement.
+
+If vision-for-step-text is ever revisited, phase-05's report and its raw
+data (`scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json`)
+remain in the repo as the baseline to beat; re-adding the toggle without a
+new measurement showing a real improvement would just reintroduce the same
+wash-on-correctness/severe-latency-cost tradeoff documented here.

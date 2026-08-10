@@ -11,6 +11,7 @@ from pathlib import Path
 
 from capture.hooks import InputRecorder
 from capture.manifest import ManifestBuilder
+from capture.narration import NarrationRecorder
 from capture.redact import OcrUnavailableError, blur_regions, is_password_field, load_config
 from capture.redact import redact_screenshot_tagged as _redact_screenshot_tagged
 from capture.shots import ScreenshotWriter
@@ -54,7 +55,15 @@ class Recorder:
     operation; it still takes a lock for defense in depth since tests and
     selftest.py call _process_event directly for deterministic behavior)."""
 
-    def __init__(self, captures_root, session_id=None, machine="", os_build="", redact_config=None):
+    def __init__(
+        self,
+        captures_root,
+        session_id=None,
+        machine="",
+        os_build="",
+        redact_config=None,
+        record_narration=False,
+    ):
         self.session_id = session_id or new_session_id()
         self.output_dir = Path(captures_root) / self.session_id
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -67,11 +76,23 @@ class Recorder:
         self._lock = threading.Lock()
         self._queue = queue.Queue()
         self._worker = None
+        # Optional: NarrationRecorder itself already degrades cleanly with no
+        # mic (start() returns False, stop() returns None) -- only
+        # instantiated at all when the caller has opted in, so a disabled
+        # session never even touches the winmm/MCI machinery.
+        self._narration = NarrationRecorder() if record_narration else None
+        self._narration_started = False
 
     def start(self):
         self._worker = threading.Thread(target=self._drain_queue, daemon=True)
         self._worker.start()
         self._input.start()
+        if self._narration is not None:
+            try:
+                self._narration.start()
+                self._narration_started = True
+            except Exception:  # noqa: BLE001 - optional feature, must not fail the session
+                logger.exception("failed to start narration recording; continuing without it")
 
     def stop(self):
         # Listener threads are joined inside InputRecorder.stop() (hooks.py),
@@ -80,7 +101,17 @@ class Recorder:
         self._input.stop()
         self._queue.put(_STOP_SENTINEL)
         self._worker.join()
+        narration_wav = None
+        if self._narration is not None and self._narration_started:
+            try:
+                result = self._narration.stop(self.output_dir / "narration.wav")
+            except Exception:  # noqa: BLE001 - optional feature, must not fail the session
+                logger.exception("failed to stop narration recording; narration_wav omitted")
+                result = None
+            if result:
+                narration_wav = "narration.wav"
         with self._lock:
+            self._builder.narration_wav = narration_wav
             self._builder.finish(_now_iso())
             return self._builder.write(self.output_dir / "manifest.json")
 

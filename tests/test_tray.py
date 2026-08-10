@@ -237,6 +237,85 @@ def test_successful_upload_does_not_notify(tmp_path):
     assert notes == []
 
 
+def test_default_narration_setting_is_off_when_no_settings_file(tmp_path):
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+1",
+        settings_path=tmp_path / "does-not-exist.toml",
+    )
+    assert app._settings.record_narration is False
+
+
+def test_toggle_narration_flips_and_persists(tmp_path):
+    settings_path = tmp_path / "capture_settings.toml"
+    app = TrayApp(
+        captures_root=tmp_path, hotkey="<ctrl>+<alt>+<shift>+2", settings_path=settings_path
+    )
+    assert app._settings.record_narration is False
+
+    app.toggle_narration()
+    assert app._settings.record_narration is True
+
+    from capture.settings import load_settings
+
+    assert load_settings(settings_path).record_narration is True
+
+    app.toggle_narration()
+    assert app._settings.record_narration is False
+    assert load_settings(settings_path).record_narration is False
+
+
+def test_toggle_narration_never_raises_when_persisting_fails(tmp_path, monkeypatch):
+    import capture.tray as tray_module
+
+    settings_path = tmp_path / "capture_settings.toml"
+    app = TrayApp(
+        captures_root=tmp_path, hotkey="<ctrl>+<alt>+<shift>+3", settings_path=settings_path
+    )
+
+    def boom(settings, path):
+        raise OSError("simulated: disk full")
+
+    monkeypatch.setattr(tray_module, "save_settings", boom)
+
+    app.toggle_narration()  # must not raise
+    assert app._settings.record_narration is True  # in-memory flag still flips
+
+
+def test_start_recording_passes_narration_setting_to_recorder(tmp_path, monkeypatch):
+    settings_path = tmp_path / "capture_settings.toml"
+    app = TrayApp(
+        captures_root=tmp_path,
+        hotkey="<ctrl>+<alt>+<shift>+4",
+        settings_path=settings_path,
+        upload_fn=_noop_upload,
+    )
+    app.toggle_narration()  # turn it on
+
+    captured_kwargs = {}
+
+    class _FakeRecorder:
+        def __init__(self, captures_root, record_narration=False):
+            captured_kwargs["record_narration"] = record_narration
+            self.output_dir = tmp_path
+
+        def start(self):
+            pass
+
+        def stop(self):
+            return self.output_dir / "manifest.json"
+
+    import capture.tray as tray_module
+
+    monkeypatch.setattr(tray_module, "Recorder", _FakeRecorder)
+
+    with app._lock:
+        app._start_recording()
+        app._stop_recording(upload=False)
+
+    assert captured_kwargs["record_narration"] is True
+
+
 def test_tray_tooltip_includes_version(tmp_path):
     from capture import __version__
 
