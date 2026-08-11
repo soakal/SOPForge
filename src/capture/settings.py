@@ -5,8 +5,8 @@ technique redact.py already uses for its bundled config) and written with a
 hand-rolled serializer -- there's exactly one field, so pulling in the
 pipeline's pydantic/models.toml machinery would be overkill.
 
-A missing or corrupt settings file always resolves to the safe default
-(narration recording off) rather than raising -- an optional preference
+A missing or corrupt settings file always resolves to the default
+(narration recording on) rather than raising -- an optional preference
 must never be able to crash the tray on startup."""
 
 import os
@@ -20,7 +20,7 @@ DEFAULT_SETTINGS_PATH = Path.home() / "SOPForge" / "capture_settings.toml"
 
 @dataclass
 class CaptureSettings:
-    record_narration: bool = False
+    record_narration: bool = True
 
 
 def load_settings(path=None):
@@ -30,7 +30,7 @@ def load_settings(path=None):
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return CaptureSettings()
-    return CaptureSettings(record_narration=bool(data.get("record_narration", False)))
+    return CaptureSettings(record_narration=bool(data.get("record_narration", True)))
 
 
 def save_settings(settings, path=None):

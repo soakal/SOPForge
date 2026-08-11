@@ -1,16 +1,16 @@
 from capture.settings import CaptureSettings, load_settings, save_settings
 
 
-def test_missing_file_defaults_off(tmp_path):
+def test_missing_file_defaults_on(tmp_path):
     settings = load_settings(tmp_path / "does-not-exist.toml")
-    assert settings == CaptureSettings(record_narration=False)
+    assert settings == CaptureSettings(record_narration=True)
 
 
-def test_corrupt_file_defaults_off(tmp_path):
+def test_corrupt_file_defaults_on(tmp_path):
     path = tmp_path / "capture_settings.toml"
     path.write_text("this is not valid { toml", encoding="utf-8")
     settings = load_settings(path)
-    assert settings == CaptureSettings(record_narration=False)
+    assert settings == CaptureSettings(record_narration=True)
 
 
 def test_save_then_load_round_trips_true(tmp_path):

@@ -237,13 +237,13 @@ def test_successful_upload_does_not_notify(tmp_path):
     assert notes == []
 
 
-def test_default_narration_setting_is_off_when_no_settings_file(tmp_path):
+def test_default_narration_setting_is_on_when_no_settings_file(tmp_path):
     app = TrayApp(
         captures_root=tmp_path,
         hotkey="<ctrl>+<alt>+<shift>+1",
         settings_path=tmp_path / "does-not-exist.toml",
     )
-    assert app._settings.record_narration is False
+    assert app._settings.record_narration is True
 
 
 def test_toggle_narration_flips_and_persists(tmp_path):
@@ -251,18 +251,18 @@ def test_toggle_narration_flips_and_persists(tmp_path):
     app = TrayApp(
         captures_root=tmp_path, hotkey="<ctrl>+<alt>+<shift>+2", settings_path=settings_path
     )
-    assert app._settings.record_narration is False
+    assert app._settings.record_narration is True
 
     app.toggle_narration()
-    assert app._settings.record_narration is True
+    assert app._settings.record_narration is False
 
     from capture.settings import load_settings
 
-    assert load_settings(settings_path).record_narration is True
+    assert load_settings(settings_path).record_narration is False
 
     app.toggle_narration()
-    assert app._settings.record_narration is False
-    assert load_settings(settings_path).record_narration is False
+    assert app._settings.record_narration is True
+    assert load_settings(settings_path).record_narration is True
 
 
 def test_toggle_narration_never_raises_when_persisting_fails(tmp_path, monkeypatch):
@@ -279,7 +279,7 @@ def test_toggle_narration_never_raises_when_persisting_fails(tmp_path, monkeypat
     monkeypatch.setattr(tray_module, "save_settings", boom)
 
     app.toggle_narration()  # must not raise
-    assert app._settings.record_narration is True  # in-memory flag still flips
+    assert app._settings.record_narration is False  # in-memory flag still flips
 
 
 def test_start_recording_passes_narration_setting_to_recorder(tmp_path, monkeypatch):
@@ -290,7 +290,7 @@ def test_start_recording_passes_narration_setting_to_recorder(tmp_path, monkeypa
         settings_path=settings_path,
         upload_fn=_noop_upload,
     )
-    app.toggle_narration()  # turn it on
+    assert app._settings.record_narration is True  # on by default, no toggle needed
 
     captured_kwargs = {}
 

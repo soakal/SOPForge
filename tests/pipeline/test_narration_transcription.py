@@ -40,10 +40,9 @@ class _StubTranscriber:
 def _make_client(tmp_path, transcription_enabled=False, transcriber_factory=None):
     cfg = tmp_path / "models.toml"
     shutil.copyfile(default_config_path(), cfg)
-    if transcription_enabled:
-        models_cfg = load_models_config(cfg)
-        models_cfg.transcription.enabled = True
-        save_models_config(models_cfg, cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.transcription.enabled = transcription_enabled
+    save_models_config(models_cfg, cfg)
     app = create_app(
         sessions_root=tmp_path / "sessions",
         llm_client_factory=stub_llm_client_factory,
@@ -130,11 +129,12 @@ def _create_with_wav(client, tmp_path, fixture="sample-manifest.json"):
     return resp.json()["session_id"]
 
 
-def test_transcription_disabled_by_default_ignores_uploaded_wav(tmp_path):
-    """[transcription].enabled defaults False -- a narration.wav sitting in
-    the session dir must never be transcribed (no transcript.json), so a
+def test_transcription_disabled_ignores_uploaded_wav(tmp_path):
+    """With [transcription].enabled off, a narration.wav sitting in the
+    session dir must never be transcribed (no transcript.json), so a
     session that happens to have a WAV behaves exactly like one that
-    doesn't unless the operator explicitly opted in on /ui/config too."""
+    doesn't -- transcription is on by default, but this covers the
+    operator explicitly opting out on /ui/config."""
     calls = []
     client = _make_client(
         tmp_path,

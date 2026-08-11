@@ -272,9 +272,9 @@ def test_transcription_round_trips_through_dump_and_reload(tmp_path):
     assert "[transcription]" in dump_models_config_toml(cfg)
 
 
-def test_committed_default_config_has_transcription_disabled():
+def test_committed_default_config_has_transcription_enabled():
     config = load_models_config(default_config_path())
-    assert config.transcription.enabled is False
+    assert config.transcription.enabled is True
     assert config.transcription.model_size == "base"
 
 

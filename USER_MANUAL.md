@@ -222,21 +222,21 @@ Run the tray app (`dist\sopforge\sopforge.exe`, or from source: `.\.venv\Scripts
   Console" instead of a raw timestamp+id.
 - Right-click → **Exit** closes the tray app.
 
-### Recording narration (mic), off by default
+### Recording narration (mic), on by default
 
 The tray menu also has a checkable **Record narration (mic)** item. It's
-off by default — turning it on records your microphone alongside the next
-session you start (toggling it doesn't affect a session already in
-progress) and saves it as `narration.wav` next to the manifest. If your
-machine has no microphone, or the mic is busy/blocked when you start
-recording, the session still records normally — narration is just silently
-skipped, never an error. The preference persists across restarts
-(`%USERPROFILE%\SOPForge\capture_settings.toml`).
+on by default — recording your microphone alongside the session you start
+(toggling it doesn't affect a session already in progress) and saving it
+as `narration.wav` next to the manifest. Turn it off if you'd rather not
+record audio. If your machine has no microphone, or the mic is
+busy/blocked when you start recording, the session still records normally
+— narration is just silently skipped, never an error. The preference
+persists across restarts (`%USERPROFILE%\SOPForge\capture_settings.toml`).
 
 On its own, recording the WAV doesn't do anything with it — turning it
-into placed narration under each step also requires enabling
-**transcription** on the server's Configuration page (§7), which is
-*also* off by default. With both on, the pipeline server transcribes the
+into placed narration under each step also requires **transcription** on
+the server's Configuration page (§7), which is also on by default. With
+both on, the pipeline server transcribes the
 recording locally (no cloud) the same way an uploaded `.txt`/`.md`/`.json`
 transcript would be placed (§5) — you don't need to do anything extra at
 upload time.
@@ -749,13 +749,13 @@ keep the original text) — this is a model-capability limit, not a bug,
 and is exactly why it's off by default until you've reviewed its output
 on your own documents.
 
-### Narration transcription (`[transcription]`, off by default)
+### Narration transcription (`[transcription]`, on by default)
 
 If a capture session recorded audio (the tray's **Record narration (mic)**
 toggle, §3), the **Narration transcription** card on the Configuration
 page controls whether the server actually transcribes it:
 
-- **Transcribe recorded narration audio** — off by default. On: a
+- **Transcribe recorded narration audio** — on by default. On: a
   `narration.wav` sitting in a session's folder with no manually-uploaded
   transcript gets run through a local speech-to-text model
   (faster-whisper) before generation, and the result is placed onto steps

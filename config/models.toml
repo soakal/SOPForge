@@ -69,11 +69,12 @@ model = "gemma3:12b"
 
 # Optional local speech-to-text (faster-whisper) over a capture session's
 # recorded narration.wav (see capture/narration.py's tray toggle). Entirely
-# local -- no provider/endpoint routing, no cloud fallback. Off by default:
-# an uploaded/derived transcript.json is only produced when this is true.
+# local -- no provider/endpoint routing, no cloud fallback. On by default:
+# an uploaded/derived transcript.json is only produced when narration audio
+# was actually captured for a session, regardless of this flag.
 # device: "cpu" (default, always available) / "cuda" / "auto".
 [transcription]
-enabled = false
+enabled = true
 model_size = "base"
 device = "cpu"
 compute_type = "int8"

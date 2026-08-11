@@ -643,7 +643,7 @@ def render_config_page(config, keystatus, saved=False):
         '<div class="card"><h2>Narration transcription</h2>'
         '<div class="field"><label><input type="checkbox" name="transcription_enabled"'
         f"{transcription_checked}> Transcribe recorded narration audio</label>"
-        '<p class="muted">Off by default. When a capture session\'s optional tray '
+        '<p class="muted">On by default. When a capture session\'s optional tray '
         '"Record narration (mic)" toggle produced a narration.wav, and no transcript '
         "was uploaded by hand, enabling this runs it through a local speech-to-text "
         "model (faster-whisper) before generation — nothing leaves your network. A "
