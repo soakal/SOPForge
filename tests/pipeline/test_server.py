@@ -386,6 +386,84 @@ def test_photo_polish_rewrite_that_loses_the_transcript_claim_is_reverted(tmp_pa
     assert report["polish_reverted_steps"] == ["step-001"]
 
 
+def _photo_png(color):
+    buf = io.BytesIO()
+    Image.new("RGB", (120, 90), color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_photo_polish_keeps_descriptive_vision_caption_rewrite(tmp_path, monkeypatch):
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(
+        server_module,
+        "caption_images",
+        lambda paths, *a, **k: ["The Settings dialog is shown."] * len(paths),
+    )
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.vision.enabled = True
+    save_models_config(models_cfg, cfg)
+    monkeypatch.setattr(
+        server_module,
+        "generate_polish_fields",
+        _fake_polish(lambda step: "The Settings dialog appears on screen."),
+    )
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+    client = TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=stub_llm_client_factory,
+            narrative_llm_client_factory=stub_llm_client_factory,
+            polish_llm_client_factory=lambda section: object(),
+            config_path=cfg,
+        )
+    )
+    files = [("files", ("a.png", _photo_png((10, 10, 10)), "image/png"))]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "The Settings dialog appears on screen." in md
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "polish_reverted_steps" not in report
+
+
+def test_photo_single_block_transcript_survives_claim_extraction_failure(tmp_path, monkeypatch):
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    def _boom(*a, **k):
+        raise RuntimeError("extraction down")
+
+    monkeypatch.setattr(server_module, "_claims_for_narrative", _boom)
+    client = TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=stub_llm_client_factory,
+            narrative_llm_client_factory=stub_llm_client_factory,
+            config_path=default_config_path(),
+        )
+    )
+    files = [
+        ("files", ("a.png", _photo_png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", _photo_png((20, 20, 20)), "image/png")),
+        ("transcript_file", ("t.md", b"Zebra widget calibration notes.", "text/markdown")),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Zebra widget calibration notes." in md
+
+
 def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     """[polish].enabled=true routes narrative_text and every step's
     "text"/present "narration" through generate_polish_fields (polish.py)

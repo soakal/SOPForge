@@ -590,7 +590,8 @@ def create_app(
             try:
                 claims = _claims_for_narrative(matches[0], narration)
             except Exception:  # noqa: BLE001 - a bad transcript must never block Stage 2
-                claims = []
+                # Plain line split needs no parsing/LLM, so the text still lands.
+                claims = _narration_to_claims(narration)
             if claims:
                 claim_text, narrative_verify_ids = _narrative_with_coverage(
                     claims, "", load_models_config(resolved_config_path).narrative.passes
@@ -737,7 +738,12 @@ def create_app(
                     new["narration"] = old["narration"]
                 if new["text"] != old["text"] and (
                     old.get("used_fallback")
-                    or not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]
+                    # Photo mode's synthetic manifest has no real action/element/
+                    # window to round-trip against (every step is a bare click).
+                    or (
+                        not verbatim_narration
+                        and not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]
+                    )
                     or any(
                         _claim_covered(c, old["text"]) and not _claim_covered(c, new["text"])
                         for c in claims
