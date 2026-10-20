@@ -21,6 +21,23 @@ def _mock_transport(status_code=200, payload=None, on_request=None):
     return httpx.MockTransport(handler)
 
 
+def test_probe_client_trust_env_follows_provider(monkeypatch):
+    seen = []
+    real = httpx.Client
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("trust_env"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr("pipeline.preflight.httpx.Client", spy)
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    ollama = SectionConfig(endpoint="http://fake-ollama/v1", model="m")
+    probe_section(ollama, transport=_mock_transport(payload={"data": []}))
+    openai = SectionConfig(provider="openai", model="m")
+    probe_section(openai, transport=_mock_transport(payload={"data": []}))
+    assert seen == [False, True]
+
+
 def test_probe_ollama_reachable_with_model_present():
     section = SectionConfig(endpoint="http://fake-ollama/v1", model="qwen3:32b")
     calls = []

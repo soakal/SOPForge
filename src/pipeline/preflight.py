@@ -87,7 +87,10 @@ def probe_section(
     started = time.perf_counter()
     try:
         with httpx.Client(
-            transport=transport, timeout=httpx.Timeout(timeout, connect=connect_timeout)
+            transport=transport,
+            timeout=httpx.Timeout(timeout, connect=connect_timeout),
+            # ollama is LAN-only: never redirected by HTTP(S)_PROXY/ALL_PROXY
+            trust_env=provider != "ollama",
         ) as client:
             response = client.get(endpoint, headers=_headers(provider, key))
     except Exception as exc:  # noqa: BLE001 - a probe failure is data, never an exception
