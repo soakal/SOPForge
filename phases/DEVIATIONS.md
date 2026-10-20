@@ -10,6 +10,11 @@ caption could never round-trip. The claim-coverage gate and the verbatim
 transcript-narration protection still apply. Pinned by
 `test_photo_polish_keeps_descriptive_vision_caption_rewrite`.
 
+Likewise the step-text claim gate (`gate_steps_on_claims`) is off for capture
+jobs without a transcript: their claims are synthesized from the step texts
+themselves, so gating on them would revert every genuine rephrase. Those jobs
+are still protected by `round_trip_ok` and the template-fallback revert.
+
 ## UIPI
 
 **Acceptance criterion 6** (phases/01-capture.md): "Hotkey start/stop works
