@@ -1200,6 +1200,62 @@ def test_unplaced_single_block_transcript_is_not_dumped_on_step_1(tmp_path):
     assert "WARNING" in report["transcript"]
 
 
+class _RaisingNarrativeStub:
+    def chat(self, messages, **kwargs):
+        raise RuntimeError("narrative model down")
+
+
+class _ParaphraseNarrativeStub:
+    def chat(self, messages, **kwargs):
+        return "The operator saves the settings and then moves on."
+
+
+_RUN_ON = "first click save then enter the computer name then click somewhere in chrome"
+
+
+def _run_narrative_job(tmp_path, narrative_stub, transcript):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: narrative_stub,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files.append(("transcript_file", ("t.md", transcript.encode(), "text/markdown")))
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    return md, client.get(f"/sessions/{session_id}/report").json()
+
+
+def test_failed_narrative_stage_emits_verify_blockquotes_and_reports_them(tmp_path):
+    md, report = _run_narrative_job(tmp_path, _RaisingNarrativeStub(), _RUN_ON)
+    assert "[verify] (claim-001)" in md
+    assert md.count("[verify]") == 1
+    assert _RUN_ON in md
+    assert report["verify_claims"] == [{"claim_id": "claim-001", "text": _RUN_ON}]
+
+
+def test_failed_narrative_stage_with_placed_transcript_adds_no_verify_noise(tmp_path):
+    transcript = (
+        "First, open the console.\n\nThen enter the computer name.\n\nFinally, check the downloads."
+    )
+    md, report = _run_narrative_job(tmp_path, _RaisingNarrativeStub(), transcript)
+    assert "[verify]" not in md
+    assert report["verify_claims"] == []
+
+
+def test_narrative_stage_verify_ids_reach_the_sidecar_report(tmp_path):
+    md, report = _run_narrative_job(tmp_path, _ParaphraseNarrativeStub(), _RUN_ON)
+    assert md.count("[verify]") == 1
+    assert report["verify_claims"][0]["claim_id"] == "claim-001"
+    assert report["verify_claims"][0]["text"] == _RUN_ON
+
+
 def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monkeypatch):
     """Manifest-free mode: POST /ui/build with just images (+ a transcript)
     produces a full SOP -- one step per image, in order, with the transcript

@@ -24,6 +24,7 @@ restore is possible."""
 
 import io
 import json
+import logging
 import mimetypes
 import os
 import shutil
@@ -48,7 +49,7 @@ from PIL import Image
 
 from pipeline import __version__
 from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
-from pipeline.claim_coverage import validate_claim_coverage
+from pipeline.claim_coverage import ensure_claim_coverage, validate_claim_coverage
 from pipeline.claims import extract_claims
 from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
@@ -89,6 +90,8 @@ from pipeline.webui.pages import (
     render_steps_review_page,
 )
 from pipeline.webui.review import render_review_page
+
+logger = logging.getLogger(__name__)
 
 
 def _synthesize_narration_from_steps(manifest, step_results):
@@ -401,28 +404,22 @@ def create_app(
             claims = _claims_for_narrative(transcript_path, synthetic_narration)
         except Exception:  # noqa: BLE001 - a bad transcript must never block Stage 2
             claims = []
+        narrative_verify_ids = []
         if claims:
-            narrative_llm = make_narrative_llm_client()
-            try:
-                narrative_text, _covered, _verify_ids = generate_narrative(
-                    claims,
-                    narrative_llm,
-                    passes=models_cfg.narrative.passes,
-                )
-            except Exception:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
-                narrative_text = None
-            finally:
-                close = getattr(narrative_llm, "close", None)
-                if callable(close):
-                    close()
+            placed_text = "\n".join(r["narration"] for r in step_results if r.get("narration"))
+            narrative_text, narrative_verify_ids = _narrative_with_coverage(
+                claims, placed_text, models_cfg.narrative.passes
+            )
 
-        # narration_polish's minted verify_claims (dropped clauses from a
-        # polished rewrite) finally give this hardcoded-empty parameter real
-        # content, the same [verify]-blockquote accounting the sidecar report
-        # has always supported for the (still-unwired) audio narration path.
+        # Verify claims come from two places: the narrative stage's uncovered
+        # claims and narration_polish's dropped clauses (placement_meta).
         verify_claims = (placement_meta or {}).get("verify_claims", [])
-        verify_claim_ids = [c["claim_id"] for c in verify_claims]
-        claims_by_id = {c["claim_id"]: c for c in verify_claims}
+        claims_by_id = {c["claim_id"]: c for c in claims}
+        claims_by_id.update({c["claim_id"]: c for c in verify_claims})
+        verify_claim_ids = list(narrative_verify_ids)
+        verify_claim_ids += [
+            c["claim_id"] for c in verify_claims if c["claim_id"] not in verify_claim_ids
+        ]
         report = build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)
         if transcript_note:
             report["transcript"] = transcript_note
@@ -443,6 +440,27 @@ def create_app(
             polish_override=polish_override,
             claims=claims,
         )
+
+    def _narrative_with_coverage(claims, placed_text, passes):
+        """Stage 2 narrative -> (text_or_None, verify_claim_ids). If the LLM
+        stage fails, every claim not already placed verbatim under a step
+        (`placed_text`) still comes out as a [verify] blockquote rather than
+        being silently dropped."""
+        narrative_llm = make_narrative_llm_client()
+        try:
+            text, _covered, verify_ids = generate_narrative(
+                claims,
+                narrative_llm,
+                passes=passes,
+            )
+        except Exception as exc:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
+            logger.warning("narrative stage failed (%s); emitting unplaced claims as [verify]", exc)
+            text, _covered, verify_ids = ensure_claim_coverage("", claims, placed_text=placed_text)
+        finally:
+            close = getattr(narrative_llm, "close", None)
+            if callable(close):
+                close()
+        return (text if text and text.strip() else None), verify_ids
 
     def _generate_photo(session_id, polish_override=None):
         """Manifest-free mode: one step per uploaded image, in order. When

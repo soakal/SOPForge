@@ -53,14 +53,15 @@ def parse_verify_line(line):
     return claim_text.strip() or "(unspecified)"
 
 
-def ensure_claim_coverage(narrative_text, claims):
+def ensure_claim_coverage(narrative_text, claims, placed_text=""):
     """Returns (final_text, covered_claim_ids, verify_claim_ids). Every claim
-    ends up covered by the narrative's own content or flagged with an
+    ends up covered by the narrative's own content (or by transcript text
+    already placed verbatim under a step, `placed_text`) or flagged with an
     appended [verify] blockquote — never silently dropped."""
     covered = []
     uncovered = []
     for claim in claims:
-        if _claim_covered(claim, narrative_text):
+        if _claim_covered(claim, narrative_text) or _claim_covered(claim, placed_text):
             covered.append(claim["claim_id"])
         else:
             uncovered.append(claim)
