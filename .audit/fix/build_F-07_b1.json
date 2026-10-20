@@ -1,0 +1,11 @@
+{
+  "summary": "F-07 implemented. The narrative ollama default is now qwen3:32b in config/models.toml, the pages.py _RECOMMENDED and _MODEL_SUGGESTIONS tables, and the two tests that expect it. qwen3.6:27b is kept only as a suggestion and marked UNVERIFIED in models.toml. Added scripts/verify_models.py (collect_expected_tags, fetch_installed with injectable transport, main returns 1 on missing tags) and tests/test_verify_models.py with the two named tests. ruff check and format are clean. The full pytest run (test_frozen_paths.py deselected) gave 560 passed and 5 skipped with 3 failures: test_recorder, test_uia_resolver and test_verify_models. I fixed the test_verify_models failure (the all-present case now serves every expected tag). The first -x run also hit a test_tray failure. The recorder, tray and UIA failures look flaky from live mouse/window state. A rerun of test_recorder.py and test_tray.py passed except test_tray::test_exit_stops_server_then_icon (OSError); test_uia_resolver was not rerun. So there has been no fully green run. The tags were not checked against the real Ollama host, which was down earlier today. Nothing committed.",
+  "files_changed": [
+    "config/models.toml",
+    "src/pipeline/webui/pages.py",
+    "scripts/verify_models.py",
+    "tests/pipeline/test_models_config.py",
+    "tests/pipeline/test_server.py",
+    "tests/test_verify_models.py"
+  ]
+}

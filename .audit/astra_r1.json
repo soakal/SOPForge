@@ -1,0 +1,307 @@
+{
+  "responses": [
+    {
+      "peer_id": "F-01",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-04",
+      "file": "src/pipeline/server.py",
+      "line": 544,
+      "command": null,
+      "evidence": "Independently verified: :542 constructs make_llm_client(), whose factory at :289-291 selects .steps; :544 calls generate_title_and_overview(narration, llm, on_screen_texts=on_screen_texts). The photo export call at :595-605 omits claims, whose default at :617 is (). This confirms the ungated photo overview."
+    },
+    {
+      "peer_id": "F-02",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-05",
+      "file": "src/pipeline/server.py",
+      "line": 407,
+      "command": null,
+      "evidence": "Verified `_covered, _verify_ids` are discarded at :407, exceptions set `narrative_text = None` at :412-413, and :423 obtains report claims solely from placement_meta. Qualification: this drops narrative coverage/accounting, not necessarily every claim from the document, because :819 retains placed narration. With polish enabled, :680 additionally passes None to validate_claim_coverage; an independent dependency-free probe produced `AttributeError 'NoneType' object has no attribute 'lower'`."
+    },
+    {
+      "peer_id": "F-03",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-04",
+      "file": "src/pipeline/server.py",
+      "line": 530,
+      "command": null,
+      "evidence": "Verified photo results contain `\"text\": caption or per_step.get(step.id) or \"(no description provided)\"` and `\"used_fallback\": caption is None` at :530-531, with no narration field. render.py:120-121 renders separate narration only through result.get(\"narration\"). config/models.toml:32 sets vision enabled=true. Successful captions therefore displace placed narration."
+    },
+    {
+      "peer_id": "F-04",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-13",
+      "file": "src/pipeline/claim_coverage.py",
+      "line": 70,
+      "command": null,
+      "evidence": "Verified :23 uses `return stripped.lower() in text.lower()` and :70-71 appends uncovered source text as blockquotes. server.py:401 constructs claims from the transcript independently of narration already attached at :819. Independent probe: ensure_claim_coverage('Access preferences.', [{'claim_id':'claim-001','text':'Open settings.'}]) returned ('Access preferences.\\n\\n> [verify] (claim-001): Open settings.\\n', [], ['claim-001']). Qualification: whole-transcript duplication occurs when all claims fail the substring check, not for every possible paraphrase."
+    },
+    {
+      "peer_id": "F-05",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-06",
+      "file": "src/pipeline/server.py",
+      "line": 776,
+      "command": null,
+      "evidence": "Verified the original mapping is replaced only under `if aligned:` at :776 and returned at :792 otherwise. Independent align_transcript_to_steps probe returned `{'s1': 'Open settings. Save the changes.'}` for two steps and one paragraph. Shared ollama_probe.txt reports `TcpTestSucceeded False`. In photo mode, successful captions can subsequently hide this misplaced narration altogether."
+    },
+    {
+      "peer_id": "F-06",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-14",
+      "file": "src/pipeline/generation.py",
+      "line": 82,
+      "command": null,
+      "evidence": "Verified :82-87 attaches image_url content when use_vision is enabled; server.py:1245 accepts `form.get(\"steps_use_vision\") == \"on\"`. SectionConfig and ModelsConfig contain no model-capability validation. config.py:82-85 incorrectly says the flag has no runtime effect, while pages.py:472 warns `qwen3:32b can't see images`. This confirms the configuration/documentation gap without independently asserting live provider capabilities."
+    },
+    {
+      "peer_id": "F-07",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-07",
+      "file": "config/models.toml",
+      "line": 28,
+      "command": "Get-Content .audit/evidence/ollama_probe.txt",
+      "evidence": "Verified models.toml:28 selects `model = \"qwen3.6:27b\"`, while USER_MANUAL.md:641 lists narration as qwen3:32b and CLAUDE.md:67-68 agrees with that older value. Shared output states `model tags CANNOT be verified live`. Historical measurement records and comments exist for other tags; unavailable live verification does not establish that any tag is nonexistent."
+    },
+    {
+      "peer_id": "F-08",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-08",
+      "file": "src/pipeline/llm_client.py",
+      "line": 104,
+      "command": null,
+      "evidence": "Confirm the shared residency-control/model-switching issue: close() only executes `self._client.close()` at :105. server.py invokes steps at :346, conditional narrative placement at :769/:778, steps title generation at :380, narrative at :407, and optional polish at :659. Qualification: the asserted 45 GB residency and eviction at every switch are not established. Quantization, server residency policy, and peak memory were not measured; polish defaults to disabled in models.toml:65."
+    },
+    {
+      "peer_id": "F-09",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-05",
+      "file": "src/pipeline/server.py",
+      "line": 578,
+      "command": null,
+      "evidence": "Verified photo results set `\"used_fallback\": caption is None` at :531 but their report sets `\"template_fallback_steps\": []` at :578. sidecar.py:26 derives that category from used_fallback in the capture flow. Photo fallback use is therefore absent from the report; naming a separate photo fallback category would avoid implying that a capture template was used."
+    },
+    {
+      "peer_id": "F-10",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-02",
+      "file": "src/pipeline/polish.py",
+      "line": 382,
+      "command": null,
+      "evidence": "Verified all step text enters polishing through `items.append((step_id, step[\"text\"]))`, without excluding used_fallback. :473 installs accepted rewrites. server.py:659 calls this after generation, and :680 rechecks only narrative coverage. Independent _field_gate probe returned `(True, None)` when Save was removed from `Click Save in the Editor window.`."
+    },
+    {
+      "peer_id": "F-11",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-09",
+      "file": "src/capture/recorder.py",
+      "line": 141,
+      "command": "rg -n 'DPI|dpi|SetProcess|SetThread' src tests scripts",
+      "evidence": "Search produced no matches. Verified recorder.py:141-143 calls resolve_at, captures the screenshot, then subtracts the monitor origin without scaling; tests/test_recorder.py:155 uses a positive-origin 1920x1080 mock monitor. Confirm the missing explicit DPI contract and regression coverage. The stronger assertion that the process is still DPI-unaware when listeners start is not established: hooks.py:10 already imports pynput, and dependency initialization was not inspected or measured."
+    },
+    {
+      "peer_id": "F-12",
+      "verdict": "DISPUTE",
+      "duplicate_of": null,
+      "file": "src/capture/shots.py",
+      "line": 25,
+      "command": null,
+      "evidence": "Verified :26-28 explicitly documents fallback to monitor 1 when no rectangle contains the point, and :30-36 implements it. This proves behavior for an out-of-monitor input, but does not establish that ordinary hook clicks can occur in virtual-desktop gaps or provide a reproduced DPI mismatch. recorder.py:143 correctly subtracts the selected origin for valid inputs. Keep this as an unverified edge-case hypothesis; clamping could conceal a coordinate-frame defect rather than correct it."
+    },
+    {
+      "peer_id": "F-13",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-10",
+      "file": "pyproject.toml",
+      "line": 5,
+      "command": "rg -n 'Transcriber|import numpy|from numpy' src",
+      "evidence": "Verified the complete [project] metadata contains name, version, and requires-python, but no dependencies declaration. requirements.txt:7,9,17 separately pins numpy, pyinstaller, and faster-whisper. Search returned only `src\\pipeline\\transcription.py:7:class Transcriber:`. This establishes no direct NumPy imports or production Transcriber caller; it does not establish that NumPy is unnecessary to every dependency."
+    },
+    {
+      "peer_id": "F-14",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-11",
+      "file": "src/pipeline/docx_assembler.py",
+      "line": 21,
+      "command": "git ls-files scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json",
+      "evidence": "Command returned the measurement JSON path, confirming it is tracked. Independently verified docx_assembler.py:21 contains `Path(r\"C:\\Users\\Brian\\Documents\\SOP_Factory_2\\template\")`; README.md:58 names private repo soakal/SOP-Factory; measurement JSON:103 contains `Precision 3930 Rack 3-26-2024 4-44-20 PM - File Explorer`. Shared repo_visibility.txt reports PUBLIC. A-11 is expanded to include these published metadata items; no credential leak is asserted."
+    },
+    {
+      "peer_id": "F-15",
+      "verdict": "CONFIRM",
+      "duplicate_of": "A-15",
+      "file": "src/pipeline/config.py",
+      "line": 200,
+      "command": "rg -n 'generate_polish_pass' src",
+      "evidence": "Verified `used = {cfg.steps.provider, cfg.narrative.provider, cfg.vision.provider}` omits polish. Search finds generate_polish_pass's definition at polish.py:277 and documentation references, but no production caller. server.py:228 says the narrative factory was previously unused and :229 limits its use to placement/polish, whereas :405-411 uses it for narrative generation. The functional issue is incomplete API-key status."
+    }
+  ],
+  "withdrawn": [],
+  "findings": [
+    {
+      "id": "A-01",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "Round-trip validation accepts contradictory and additional destructive instructions",
+      "file": "src/pipeline/roundtrip.py",
+      "line": 33,
+      "evidence": "The gate checks action-verb presence and element/window substrings at :33-41. Independently rerun probes returned `negation: (True, [])` for `Do not click Save in the Editor window.` and `extra action: (True, [])` for `Click Save in the Editor window, then delete all records.` generation.py:97 uses this gate to accept the reply.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from pipeline.roundtrip import round_trip_ok; from types import SimpleNamespace as S; s=S(action='click',element=S(name='Save'),window=S(title='Editor')); print(round_trip_ok('Do not click Save in the Editor window.',s)); print(round_trip_ok('Click Save in the Editor window, then delete all records.',s))\"",
+      "proposed_fix": "Restrict accepted instructions to the recorded action and target; reject negation and additional action clauses to the deterministic template. Add regression cases for both examples."
+    },
+    {
+      "id": "A-02",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "Polish can remove validated targets and rewrite template fallback instructions",
+      "file": "src/pipeline/server.py",
+      "line": 659,
+      "evidence": "server.py:659 polishes step results after generation; :680 validates only narrative coverage. polish.py:382 includes every step text, including used_fallback results, and :473 installs accepted rewrites. Independent probe output: `dropped target: (True, None)` for rewriting `Click Save in the Editor window.` to `Click in the Editor window.`. All six exports use the resulting fields.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from pipeline.polish import _field_gate; print(_field_gate('Click Save in the Editor window.','Click in the Editor window.'))\"",
+      "proposed_fix": "Preserve template-fallback text and validate every polished capture instruction against its manifest record before export. Revert invalid rewrites and report reverted steps."
+    },
+    {
+      "id": "A-03",
+      "severity": "high",
+      "checklist_item": 1,
+      "title": "Reachable narrative pipeline checks omissions but accepts invented instructions",
+      "file": "src/pipeline/narrative.py",
+      "line": 40,
+      "evidence": "server.py:407 invokes generate_narrative. narrative.py:40-45 runs draft/critique/revise and returns ensure_claim_coverage; critique and revision prompts at :19-29 omit source claims. claim_coverage.py:23 checks substring presence only. Independent probe output: `invented narrative: ('Open settings. Disable all security controls.', ['claim-001'], [])`.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from pipeline.claim_coverage import ensure_claim_coverage; print(ensure_claim_coverage('Open settings. Disable all security controls.',[{'claim_id':'claim-001','text':'Open settings.'}]))\"",
+      "proposed_fix": "Include source claims in critique/revision and reject unsupported final instructions. Until reliable validation exists, assemble narrative content from source claims."
+    },
+    {
+      "id": "A-04",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "Photo builds discard placed narration and bypass narrative claim coverage",
+      "file": "src/pipeline/server.py",
+      "line": 530,
+      "evidence": "Photo results use `\"text\": caption or per_step.get(step.id) or \"(no description provided)\"` with no narration field. :544 obtains the overview through generate_title_and_overview using the steps client, rather than generate_narrative. The export call at :595-605 omits claims; :617 defaults claims to (). Thus successful captions suppress placed human instructions, and overview omissions/additions are ungated.",
+      "command": null,
+      "proposed_fix": "Preserve per-step narration independently of captions. Extract transcript claims, generate and validate the photo narrative through the narrative stage, and pass claims plus verification IDs into exports and the report."
+    },
+    {
+      "id": "A-05",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "Narrative failures bypass coverage, and the sidecar omits narrative flags and photo fallbacks",
+      "file": "src/pipeline/server.py",
+      "line": 407,
+      "evidence": "At :407 `_verify_ids` is discarded; :412-413 sets narrative_text=None on failure; :423 builds report verification claims only from placement_meta. Placed narration may still preserve source text, so total document loss is not universal. When polish is enabled, :680 validates the None narrative; an independent probe returned `AttributeError 'NoneType' object has no attribute 'lower'`. Photo results set used_fallback at :531 but hardcode an empty fallback report at :578.",
+      "command": null,
+      "proposed_fix": "On narrative failure, produce verified fallback content from the claims. Merge narrative verification IDs into the sidecar, handle absent narratives safely, and report photo fallback steps under an accurate category. Test failure paths with polish both enabled and disabled."
+    },
+    {
+      "id": "A-06",
+      "severity": "med",
+      "checklist_item": 2,
+      "title": "Single-paragraph narration lands entirely on step 1 when semantic placement fails",
+      "file": "src/pipeline/transcript.py",
+      "line": 216,
+      "evidence": "Independent probe returned `{'s1': 'Open settings. Save the changes.'}` for a two-step manifest, followed by the warning that the whole transcript landed on step 1. server.py:776 replaces placement only if semantic alignment succeeds; :792 otherwise returns the original mapping. Shared ollama_probe.txt reports `TcpTestSucceeded False`.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from types import SimpleNamespace as S; from pipeline.transcript import align_transcript_to_steps; m=S(steps=[S(id='s1'),S(id='s2')],step_ids=lambda:['s1','s2']); print(align_transcript_to_steps('t.txt','Open settings. Save the changes.',m))\"",
+      "proposed_fix": "When semantic placement fails, retain ambiguous narration as unplaced content with a visible review warning. Do not infer that sentence order establishes step correspondence."
+    },
+    {
+      "id": "A-07",
+      "severity": "med",
+      "checklist_item": 4,
+      "title": "Model defaults lack current deployment verification and disagree with documentation",
+      "file": "config/models.toml",
+      "line": 28,
+      "evidence": "models.toml selects qwen3:32b for steps, qwen3.6:27b for narrative, qwen2.5vl:7b for vision, and optional gemma3:12b polish. USER_MANUAL.md:641 and CLAUDE.md:67-68 instead document qwen3:32b narrative. Shared evidence states `model tags CANNOT be verified live`. Historical vision measurements and July 11 polish comments establish historical testing only; no nonexistent-tag claim is made.",
+      "command": "Get-Content .audit/evidence/ollama_probe.txt; rg -n 'qwen|gemma' config/models.toml CLAUDE.md USER_MANUAL.md src/pipeline/webui/pages.py",
+      "proposed_fix": "Reconcile defaults and documentation, verify selected tags against each intended provider, and record dated results. Label unverified suggestions without blocking arbitrary user-configured names."
+    },
+    {
+      "id": "A-08",
+      "severity": "med",
+      "checklist_item": 5,
+      "title": "Stage concurrency limits do not establish a 40 GB residency budget",
+      "file": "src/pipeline/llm_client.py",
+      "line": 104,
+      "evidence": "close() executes only `self._client.close()`. The payload at :80 is `{\"model\": self.config.model, \"messages\": messages, **kwargs}`. Capture scheduling can alternate steps, narrative placement, steps title, narrative, and optional polish models. models.toml:23 limits step concurrency to 1 and :36 sets vision concurrency to 4, but neither controls retained models. Live quantization, residency, eviction, and peak memory remain unmeasured; polish is disabled by default.",
+      "command": null,
+      "proposed_fix": "Group work by model where practical, establish a deployment residency policy, and measure peak memory for selected quantizations and concurrency. Use a provider-supported unload mechanism if required; do not assume HTTP client closure unloads models."
+    },
+    {
+      "id": "A-09",
+      "severity": "med",
+      "checklist_item": 7,
+      "title": "Coordinate regression coverage omits mixed DPI and negative monitor origins",
+      "file": "tests/test_recorder.py",
+      "line": 155,
+      "evidence": "The monitor-local regression uses `{\"left\": 1920, \"top\": 0, \"width\": 1920, \"height\": 1080}`. recorder.py:143 correctly subtracts origin, and :149-152 translates element bounds. `rg -n 'DPI|dpi|SetProcess|SetThread' src tests scripts` produced no matches; sopforge.spec:29 specifies runtime_hooks=[]. No test establishes physical-coordinate agreement under mixed scaling. Dependency-provided DPI awareness remains unverified.",
+      "command": "rg -n 'DPI|dpi|SetProcess|SetThread' src tests scripts",
+      "proposed_fix": "Add negative-origin cases and a Windows mixed-DPI integration test. Establish explicit per-monitor awareness before relevant imports if testing reveals an import-order dependency."
+    },
+    {
+      "id": "A-10",
+      "severity": "med",
+      "checklist_item": 8,
+      "title": "Project metadata omits runtime dependencies and the requirements file mixes dependency roles",
+      "file": "pyproject.toml",
+      "line": 5,
+      "evidence": "The [project] section declares only name, version, and requires-python. requirements.txt separately pins runtime packages, pyinstaller at :9, numpy at :7, and faster-whisper at :17. A source search for Transcriber and direct NumPy imports returned only `src\\pipeline\\transcription.py:7:class Transcriber:`. Absence of direct NumPy imports does not prove absence of transitive requirements.",
+      "command": "Get-Content pyproject.toml; Get-Content requirements.txt; rg -n 'Transcriber|import numpy|from numpy' src",
+      "proposed_fix": "Declare runtime dependencies in project metadata with appropriate platform markers/extras, separate build tooling, and audit unused feature dependencies before removing them. Maintain one dependency source of truth."
+    },
+    {
+      "id": "A-11",
+      "severity": "low",
+      "checklist_item": 8,
+      "title": "Public repository publishes deployment addresses, personal paths, and capture metadata",
+      "file": "src/pipeline/config.py",
+      "line": 65,
+      "evidence": "config.py:65 defaults to `http://192.168.200.60:11434/v1`. docx_assembler.py:21 contains `Path(r\"C:\\Users\\Brian\\Documents\\SOP_Factory_2\\template\")`; README.md:58 names private repo soakal/SOP-Factory. The tracked measurement JSON contains session IDs and at :103 the window title `Precision 3930 Rack 3-26-2024 4-44-20 PM - File Explorer`. Shared repo visibility output is `{\"isPrivate\":false,\"visibility\":\"PUBLIC\"}`. This expands the earlier finding; no credential leak is asserted.",
+      "command": "Get-Content .audit/evidence/repo_visibility.txt; git ls-files scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json",
+      "proposed_fix": "Use generic or user-configured endpoints and paths, and sanitize published measurement metadata. Keep deployment-specific values in untracked user configuration."
+    },
+    {
+      "id": "A-12",
+      "severity": "high",
+      "checklist_item": 8,
+      "title": "Environment proxies can route local-only capture and model traffic outside the LAN",
+      "file": "src/pipeline/llm_client.py",
+      "line": 49,
+      "evidence": "llm_client.py:49-53 creates httpx.Client with base_url, transport, and timeout but no trust_env=False. vision.py:62 and capture/upload.py:62 likewise create clients without disabling environment proxy handling. Production transport defaults to None. An external proxy environment setting without a matching bypass can therefore route LAN-bound prompts, screenshots, and uploads through that proxy. No actual proxy configuration or egress is established by this audit.",
+      "command": null,
+      "proposed_fix": "Disable environment proxy inheritance for local-only clients and make proxy use explicit. Add a regression verifying that proxy environment variables cannot redirect local traffic."
+    },
+    {
+      "id": "A-13",
+      "severity": "med",
+      "checklist_item": 2,
+      "title": "Narrative-only coverage duplicates already placed narration as verification blocks",
+      "file": "src/pipeline/claim_coverage.py",
+      "line": 70,
+      "evidence": "server.py:819 attaches placed narration, but :401 builds narrative claims independently from the same transcript. claim_coverage.py:23 requires an exact case-insensitive substring in the narrative, and :70-71 appends every uncovered claim. Probe output for source `Open settings.` and narrative `Access preferences.` was `('Access preferences.\\n\\n> [verify] (claim-001): Open settings.\\n', [], ['claim-001'])`. When all claims are paraphrased, the source transcript is repeated above its per-step placements.",
+      "command": null,
+      "proposed_fix": "Track source claims preserved in step narration and append verification blocks only for claims not preserved anywhere in the final document. Preserve source-to-step provenance rather than weakening omission checks."
+    },
+    {
+      "id": "A-14",
+      "severity": "low",
+      "checklist_item": 3,
+      "title": "Step-image configuration accepts incompatible models and is documented as inert",
+      "file": "src/pipeline/config.py",
+      "line": 82,
+      "evidence": "The comment says generate_step_text does not yet branch on use_vision and the flag has no runtime effect. generation.py:82-87 actually attaches screenshot image_url content. server.py:1245 accepts the toggle independently of model selection, while pages.py:472 warns that the default qwen3:32b cannot see images. No model-capability check exists in SectionConfig or ModelsConfig.",
+      "command": null,
+      "proposed_fix": "Correct the stale comment and surface a capability warning or validation when enabling images for a known incompatible model. Preserve an explicit override for custom models rather than imposing a fixed tag allowlist."
+    },
+    {
+      "id": "A-15",
+      "severity": "low",
+      "checklist_item": 8,
+      "title": "API-key status omits the polish provider and pipeline documentation is stale",
+      "file": "src/pipeline/config.py",
+      "line": 200,
+      "evidence": "`used = {cfg.steps.provider, cfg.narrative.provider, cfg.vision.provider}` excludes cfg.polish.provider, so a provider used only for polish is absent from key status. Source search finds generate_polish_pass defined at polish.py:277 with documentation references but no production caller. server.py:228-229 understates narrative factory usage despite its generate_narrative call at :405-411.",
+      "command": "rg -n 'generate_polish_pass' src",
+      "proposed_fix": "Include relevant polish providers in key status, update the factory documentation, and remove or clearly mark the obsolete whole-document polish entry point after checking its remaining test/API uses."
+    }
+  ]
+}

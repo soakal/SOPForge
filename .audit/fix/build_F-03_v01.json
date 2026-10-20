@@ -1,0 +1,8 @@
+{
+  "subject": "keep photo transcript verbatim through export polish",
+  "summary": "Photo-build step narration is now restored to the placed transcript text after the export polish pass, so polish can no longer rewrite it. Ruff is clean and pytest gives 576 passed, 5 skipped, run with all of tests/pipeline/test_frozen_paths.py deselected (10 tests).\n\nThe semantic-rescue path is not covered. In photo mode the rescue still polishes the placed transcript through `polish_narration` before it becomes step narration or step text. I tried skipping that polish for photo builds, but `test_photo_build_caption_beats_placed_narration_and_informs_context` asserts the polished 'Second thing happens.', and the task says its assertions must stay unchanged. I reverted the change. The `polish_narration` stage has its own gate against invented or dropped content. If rescued text must be verbatim too, that test's expectation has to change.\n\nI added `test_photo_build_export_polish_keeps_transcript_verbatim`. A fake `generate_polish_fields` upper-cases text and narration, and doc.md must still carry the transcript sentences unchanged. The two named F-03 tests were already in `tests/pipeline/test_server.py` and pass.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

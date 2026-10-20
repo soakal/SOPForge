@@ -1,0 +1,136 @@
+{
+  "findings": [
+    {
+      "id": "A-01",
+      "severity": "critical",
+      "checklist_item": 6,
+      "title": "Round-trip validation accepts contradictory and additional destructive instructions",
+      "file": "src/pipeline/roundtrip.py",
+      "line": 33,
+      "evidence": "src/pipeline/roundtrip.py:33-41 checks only action-verb presence and element/window substrings: `if not action_verbs.search(text):`, `if step.element.name and step.element.name.lower() not in text.lower():`, and `if step.window.title and step.window.title.lower() not in text.lower():`. Read-only probe output: `roundtrip negation: (True, [])` and `roundtrip extra action: (True, [])`. Both replies therefore bypass the template fallback in generation.py:97-100. Existing tests test_wrong_action_verb_fails, test_missing_element_name_fails, and test_wrong_window_title_fails do not cover these cases.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from pipeline.roundtrip import round_trip_ok; from types import SimpleNamespace as S; step=S(action='click',element=S(name='Save'),window=S(title='Editor')); print('roundtrip negation:',round_trip_ok('Do not click Save in the Editor window.',step)); print('roundtrip extra action:',round_trip_ok('Click Save in the Editor window, then delete all records.',step))\"",
+      "proposed_fix": "Make generate_step_text accept only a constrained instruction grounded in the recorded action and target; reject negation and additional action clauses to render_step_template. Add regression tests for both demonstrated replies."
+    },
+    {
+      "id": "A-02",
+      "severity": "critical",
+      "checklist_item": 6,
+      "title": "Polish can remove the validated target before every export",
+      "file": "src/pipeline/server.py",
+      "line": 659,
+      "evidence": "server.py:659-660 calls `generate_polish_fields(narrative_text, step_results, polish_llm)`; its subsequent validation at :680 is only `validate_claim_coverage(md_narrative_text, claims)`. polish.py:250-252 checks `novel_tokens = rewrite_tokens - orig_tokens`, and :263 permits a length ratio down to 0.4. Probe output: `polish drops target: (True, None)` for rewriting `Click Save in the Editor window.` to `Click in the Editor window.`. polish.py:473 installs that accepted rewrite with `new_step[\"text\"] = resolved.get(step_id, step[\"text\"])`. No manifest round-trip check follows before the six exports. test_polish_rejected_when_it_drops_claim_coverage covers narrative coverage, not preservation of step targets.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from pipeline.polish import _field_gate; print('polish drops target:',_field_gate('Click Save in the Editor window.','Click in the Editor window.'))\"",
+      "proposed_fix": "In _write_all_exports, round-trip-check each polished capture step against its manifest record and retain the original step text on failure. Add an end-to-end test removing Save from a polished instruction."
+    },
+    {
+      "id": "A-03",
+      "severity": "critical",
+      "checklist_item": 1,
+      "title": "Reachable narrative pipeline checks omissions but accepts invented instructions",
+      "file": "src/pipeline/narrative.py",
+      "line": 40,
+      "evidence": "The narrative path is reachable: definition narrative.py:33; sole production invocation server.py:407; unit invocations test_narrative_multipass.py:30,47,56,62,72 and test_sidecar_report.py:52. render.py has no generation invocation; it renders the resulting narrative. narrative.py:40-45 executes `text = llm_client.chat([{\"role\": \"user\", \"content\": _draft_prompt(claims)}])`, then critique/revise calls, then `return ensure_claim_coverage(text, claims)`. Critique and revision prompts contain no original claims. claim_coverage.py:23 only tests `return stripped.lower() in text.lower()`. Probe output: `invented narrative: ('Open settings. Disable all security controls.', ['claim-001'], [])`. Thus an unsupported instruction ships without a verification flag even though all source claims are present. test_real_capture_session_gets_a_narrative_from_transcript_claims tests reachability and omissions, not invented additions.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from pipeline.claim_coverage import ensure_claim_coverage; c=[{'claim_id':'claim-001','text':'Open settings.'}]; print('invented narrative:',ensure_claim_coverage('Open settings. Disable all security controls.',c))\"",
+      "proposed_fix": "Pass the original claims into critique and revision, and reject unsupported final narrative content before export. Until that validation exists, assemble the narrative from source claims rather than unrestricted model prose."
+    },
+    {
+      "id": "A-04",
+      "severity": "critical",
+      "checklist_item": 6,
+      "title": "Photo builds discard placed narration whenever a caption succeeds",
+      "file": "src/pipeline/server.py",
+      "line": 530,
+      "evidence": "server.py:521-522 computes semantic placement, but :530 chooses `\"text\": caption or per_step.get(step.id) or \"(no description provided)\"`; no narration field is attached to photo step results. Consequently, a successful caption replaces even correctly placed human instructions, including details invisible in the screenshot. :544 calls `generate_title_and_overview(narration, llm, on_screen_texts=on_screen_texts)` instead of generate_narrative; the export call at :595-605 passes no claims, and _write_all_exports defaults to `claims=()` at :617. The 1:1 assertion is present at :534, but photo captions have neither manifest round-trip validation nor claim coverage; their fallback is narration/placeholder rather than the capture template. test_photo_build_caption_beats_placed_narration_and_informs_context explicitly exercises caption precedence.",
+      "command": null,
+      "proposed_fix": "Keep the caption as step text and preserve per_step narration in a separate narration field. Extract photo transcript claims and validate their coverage across narration and overview before export, flagging unmatched claims rather than silently dropping them."
+    },
+    {
+      "id": "A-05",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "Sidecar omits narrative verification claims and photo fallback steps",
+      "file": "src/pipeline/server.py",
+      "line": 407,
+      "evidence": "server.py:407 receives `narrative_text, _covered, _verify_ids = generate_narrative(` but discards _verify_ids. At :423-426 the report is built exclusively from `verify_claims = (placement_meta or {}).get(\"verify_claims\", [])`. Photo results set `\"used_fallback\": caption is None` at :531, while their report hardcodes `\"template_fallback_steps\": []` at :578. report.json is written for both paths at :747, but it cannot accurately enumerate these review conditions. test_sidecar_report_captures_all_three_categories_from_crafted_fixtures manually supplies narrative verification IDs; test_get_report_lists_expected_categories checks keys, not this production wiring.",
+      "command": null,
+      "proposed_fix": "Merge generate_narrative verification IDs and their source claims into the capture report. Populate a clearly named photo fallback list from used_fallback results. Add server tests comparing exported verification flags and fallback steps with report.json."
+    },
+    {
+      "id": "A-06",
+      "severity": "med",
+      "checklist_item": 2,
+      "title": "Single-paragraph narration still lands entirely on step 1 when semantic placement fails",
+      "file": "src/pipeline/transcript.py",
+      "line": 216,
+      "evidence": "Read-only probe output: `single-line placement: ({'s1': 'Open settings. Save the changes.'}, \"1 transcript block(s) placed in order across 1 of 2 step(s) -- WARNING: the whole transcript landed on step 1 ...\")`. transcript.py:216-222 adds a warning without changing placement. Both capture (_apply_transcript, server.py:811-819) and photo (_generate_photo, :513-523) invoke _run_semantic_pipeline, but :776 changes placement only `if aligned:` and :792 returns the original mapping otherwise. semantic_align.py catches a failed LLM call and returns None. The operator's ollama_probe.txt reports `TcpTestSucceeded False`, so the repair cannot operate against that host at audit time. Line-separated transcripts and equal-timestamp JSON now have deterministic distribution; the single-paragraph case is only conditionally repaired. test_single_run_on_line_collapses_to_step_1_with_a_loud_warning explicitly preserves the remaining behavior.",
+      "command": "python -B -c \"import sys; sys.path.insert(0,'src'); from types import SimpleNamespace as S; from pipeline.transcript import align_transcript_to_steps; m=S(steps=[S(id='s1'),S(id='s2')],step_ids=lambda:['s1','s2']); print('single-line placement:',align_transcript_to_steps('t.txt','Open settings. Save the changes.',m))\"",
+      "proposed_fix": "When semantic placement fails for an ambiguous single block, retain it as unplaced narration with a visible review warning instead of assigning it to step 1. Apply the same fallback in both build paths."
+    },
+    {
+      "id": "A-07",
+      "severity": "med",
+      "checklist_item": 4,
+      "title": "Model defaults and suggestions lack deployment verification and disagree with documentation",
+      "file": "config/models.toml",
+      "line": 28,
+      "evidence": ".audit/evidence/ollama_probe.txt: `No connection could be made because the target machine actively refused it.` and `=> Ollama not listening at audit time; model tags CANNOT be verified live. Treat every tag as UNVERIFIED.` Hardcoded production/documentation tag inventory, currently UNVERIFIED: qwen3:32b, qwen3:14b, qwen3.6:27b, qwen2.5vl:7b, gemma3:12b, gemma3:27b, gemma3n:e4b, anthropic/claude-haiku-4.5, anthropic/claude-sonnet-5, anthropic/claude-opus-4.8, openai/gpt-5.4-mini, openai/gpt-5.5, gpt-5.4-mini, gpt-5.4-nano, gpt-5.4, gpt-5.5, gpt-4o, claude-haiku-4-5-20251001, claude-haiku-4-5, claude-sonnet-5, claude-opus-4-8, claude-fable-5. Sources: config/models.toml:22,28,35,47-49,68; config.py:107-123; webui/pages.py:298-354; CLAUDE.md:62-68; .claude/agents/planner.md:4 and reviewer.md:4. Test-only strings additionally include `anthropic/claude-3.5-haiku` (test_server.py:1805), `claude-x` (test_llm_client.py:91), and dummy `m` (test_models_config.py:35); these are not proof of deployed models. Transcriber also defaults to Whisper `base` at transcription.py:8, unverified. Historical exceptions: qwen2.5vl:7b has a dated measurement in scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json:2-4; models.toml:47-50 records gemma3:12b and gemma3n:e4b live testing on 2026-07-11. These establish historical testing, not current availability. Actual steps are `model = \"qwen3:32b\"`, not the brief's qwen3:14b; actual narrative is `model = \"qwen3.6:27b\"`, while USER_MANUAL.md:641 and CLAUDE.md:68 say qwen3:32b. qwen3.6:27b and the Claude 5/4.8 suggestions particularly need provider confirmation; the evidence does not establish that they exist or are nonexistent. Step screenshots are off by default (`use_vision: bool = False`, config.py:87): generation.py:58-62 constructs `Write one short imperative instruction telling the reader to ` plus action/target/window text; :81 uses `content = prompt`; :92 sends `llm_client.chat([{\"role\": \"user\", \"content\": content}])`. Only :82-87 adds `{\"type\": \"image_url\", \"image_url\": {\"url\": _image_data_url(screenshot_path)}}` when use_vision is enabled. Separate photo vision uses qwen2.5vl:7b and image messages in vision.py:67-77.",
+      "command": "Get-Content .audit/evidence/ollama_probe.txt; rg -n --hidden -g '!.audit/**' -g '!.git/**' 'qwen|gemma|claude-|gpt-|model_size=' config src tests scripts phases CLAUDE.md USER_MANUAL.md .claude",
+      "proposed_fix": "Verify configured tags against the intended provider before treating them as deployment defaults, record dated results, and reconcile the narrative documentation with models.toml. Label unverified suggestions accordingly; preserve arbitrary user-entered model names."
+    },
+    {
+      "id": "A-08",
+      "severity": "med",
+      "checklist_item": 5,
+      "title": "Stage concurrency limits do not establish a 40 GB model-residency budget",
+      "file": "src/pipeline/llm_client.py",
+      "line": 104,
+      "evidence": "models.toml:22-36 selects 32B steps with `max_concurrency = 1`, 27B narrative, and 7B vision with `max_concurrency = 4`; :65-68 makes 12B polish optional and disabled by default. jobs.py:60-66 serializes jobs with `job_id, fn = self._queue.get()` followed by `fn()`. server.py:346 then :407 then :659 schedules capture steps, narrative, and optional polish sequentially; photo vision at :493 precedes semantic placement at :521 and text generation at :544. generation.py:141 uses `ThreadPoolExecutor(max_workers=min(max_concurrency, total))`; vision concurrency is forwarded at server.py:500. LLMClient.close at llm_client.py:104-105 is only `self._client.close()`, and the request payload at :80 contains `{\"model\": self.config.model, \"messages\": messages, **kwargs}` with no residency control. Thus simultaneous active stages are not demonstrated, but HTTP closure does not request model unloading across successive builds. Illustrative raw 4-bit weights for 32B + 27B + 7B + 12B total approximately 39 GB decimal (16 + 13.5 + 3.5 + 6), before quantization overhead, vision components, KV caches, and parallel contexts; retaining all four can exceed 40 GB. Actual residency, quantization, eviction, and OOM behavior cannot be established from the unreachable host.",
+      "command": null,
+      "proposed_fix": "Document and enforce an Ollama residency policy for the 40 GB deployment, such as one loaded model at a time or explicit unloads between model transitions. Measure peak residency with the selected quantizations and vision concurrency before raising limits."
+    },
+    {
+      "id": "A-09",
+      "severity": "med",
+      "checklist_item": 7,
+      "title": "Coordinate regression coverage omits mixed DPI and negative monitor origins",
+      "file": "tests/test_recorder.py",
+      "line": 168,
+      "evidence": "test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame uses a mocked monitor at `{\"left\": 1920, \"top\": 0, \"width\": 1920, \"height\": 1080}` (:155), mocked UIA bounds `[2000, 100, 2100, 130]` (:187), and asserts local coordinates at :214-215. Production recorder.py:143 correctly subtracts the origin: `screen_x, screen_y = x - origin_x, y - origin_y`; :149-152 does the same for element bounds, which also handles negative origins algebraically. However, `rg -n 'DPI|dpi|SetProcess|SetThread' src tests scripts` produced no matches, and sopforge.spec supplies `runtime_hooks=[]` without an explicit DPI-awareness manifest. The application does not establish or test whether hook coordinates, UIA bounds, and screenshot pixels share a physical coordinate space under mixed scaling. Dependency-provided awareness may help, but it is not verified by the existing mocked positive-origin test.",
+      "command": "rg -n 'DPI|dpi|SetProcess|SetThread' src tests scripts",
+      "proposed_fix": "Add negative-left and negative-top cases to the monitor-local regression and a Windows mixed-DPI test that verifies process/thread awareness plus physical screenshot alignment. Establish per-monitor awareness before GUI imports if that test reveals dependence on import order."
+    },
+    {
+      "id": "A-10",
+      "severity": "med",
+      "checklist_item": 8,
+      "title": "Project metadata declares no runtime dependencies",
+      "file": "pyproject.toml",
+      "line": 5,
+      "evidence": "pyproject.toml's complete [project] section is `name = \"sopforge-capture\"`, `version = \"1.6.1\"`, and `requires-python = \">=3.12\"`; it has neither dependencies nor a dynamic dependencies declaration. requirements.txt separately pins httpx==0.28.1, pydantic==2.13.4, fastapi==0.139.0, and the capture/export dependencies. Runtime imports include `import httpx` in llm_client.py:16 and `from pydantic import BaseModel, ConfigDict, Field, model_validator` in config.py:19. Installing the project through its metadata therefore does not install those required packages. The audit interpreter also returned `ModuleNotFoundError: No module named 'httpx'`, preventing broader application probes; only dependency-free in-memory checks were run.",
+      "command": "Get-Content pyproject.toml; Get-Content requirements.txt",
+      "proposed_fix": "Declare runtime dependencies in pyproject.toml, using Windows markers or extras for capture-only packages, and derive requirements from the same source. Keep packaging and test tools in development dependencies."
+    },
+    {
+      "id": "A-11",
+      "severity": "low",
+      "checklist_item": 8,
+      "title": "Public repository publishes a deployment-specific LAN endpoint",
+      "file": "config/models.toml",
+      "line": 21,
+      "evidence": ".audit/evidence/repo_visibility.txt contains `$ gh repo view soakal/SOPForge --json visibility,isPrivate` followed by `{\"isPrivate\":false,\"visibility\":\"PUBLIC\"}`. Tracked config/models.toml:21,27,34,67 repeats `endpoint = \"http://192.168.200.60:11434/v1\"`; config.py:65,153 hardcodes the same address; scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json:4 records `\"steps_endpoint\": \"http://192.168.200.60:11434/v1\"`. This exposes deployment topology and ships a private deployment address as the public default. The inspected tracked fixtures use example machine names; this finding does not assert a committed secret or real capture.",
+      "command": "Get-Content .audit/evidence/repo_visibility.txt; rg -n '192\\.168\\.200\\.60' config src/pipeline/config.py scripts/vision_measurements",
+      "proposed_fix": "Use a generic local default or require endpoint configuration, and replace the deployment address in published examples and measurement metadata with a placeholder."
+    },
+    {
+      "id": "A-12",
+      "severity": "critical",
+      "checklist_item": 8,
+      "title": "Environment proxies can route local-only capture and model traffic outside the LAN",
+      "file": "src/pipeline/llm_client.py",
+      "line": 49,
+      "evidence": "llm_client.py:49-53 constructs `httpx.Client(base_url=endpoint.rstrip(\"/\"), transport=transport, timeout=httpx.Timeout(timeout, connect=connect_timeout))` without disabling environment proxy handling. vision.py:62 likewise uses `with httpx.Client(transport=transport, timeout=client_timeout) as client:` before sending base64 screenshots at :73-76. capture/upload.py:62 uses `with httpx.Client(transport=transport, timeout=timeout) as client:` before posting manifest_json and screenshot files at :65-66. HTTPX's default environment trust therefore applies even with all providers configured as Ollama. An external HTTP_PROXY/ALL_PROXY without a matching NO_PROXY can receive plaintext LAN-bound prompts, screenshots, and captures. This is a conditional egress path, not evidence that such a proxy was configured or that data actually left this host.",
+      "command": null,
+      "proposed_fix": "Set trust_env=False for Ollama and local capture-upload clients, and make any proxy use an explicit opt-in. Add a regression with an external proxy environment setting that asserts local requests use the direct transport."
+    }
+  ]
+}

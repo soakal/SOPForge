@@ -1,0 +1,7 @@
+{
+  "summary": "F-10 implemented: post-polish loop in _write_all_exports reverts step text when old used_fallback, round_trip_ok fails, or a covered claim is lost; records report['polish_reverted_steps']. Added _RoundTripPassingStub + 3 new tests; swapped 4 existing polish tests (incl. test_polish_rejected_when_it_drops_claim_coverage, not listed in the task but failed for the same reason) to the new stub factory. ruff check/format clean; pytest 550 passed, 5 skipped with test_frozen_paths.py deselected.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

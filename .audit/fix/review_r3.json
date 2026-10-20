@@ -1,0 +1,130 @@
+{
+  "verdicts": [
+    {
+      "id": "A-01",
+      "verdict": "OBJECT",
+      "evidence": "The proposed gate still accepts an additional destructive instruction when its vocabulary comes from a manifest literal. For element='Delete all records', window='Editor', 'Click Delete all records in the Editor window. Delete all records.' leaves one recognized action, no negation and zero unsupported tokens after masking. A read-only PowerShell reproduction confirmed those results. roundtrip.py:16 excludes 'delete' from the recognized action verbs.",
+      "file": "src/pipeline/roundtrip.py",
+      "line": 16,
+      "command": "PowerShell reproduction of planned checks: action count=1; unsupported count=0; negation=False.",
+      "amendment": "Validate a complete single-instruction grammar with manifest literals confined to target/window/value slots; do not authorize arbitrary residual words merely because they occur in manifest strings. Fall back for unmatched text. Add this repeated-label destructive instruction as both a gate regression and a generation fallback regression."
+    },
+    {
+      "id": "A-12",
+      "verdict": "AGREE",
+      "evidence": "The four production httpx.Client constructors are llm_client.py:49, vision.py:62, capture/upload.py:62 and capture/tray.py:42. The plan covers each and propagates the vision provider choice from server.py:493 through caption_images to _caption_one.",
+      "file": "src/pipeline/llm_client.py",
+      "line": 49,
+      "command": "rg -n 'httpx\\.|caption_images' src",
+      "amendment": null
+    },
+    {
+      "id": "A-03",
+      "verdict": "OBJECT",
+      "evidence": "Single-claim token subsets still accept unsupported instructions. Claim 'Copy files from backup to production.' supports 'Copy files from production to backup.' under the proposed rule: both produce {backup,copy,files,from,production} using polish.py:197 and both have zero negations. PowerShell reproduced identical token sets. Coverage subsequently appending the original claim does not remove the contradictory instruction.",
+      "file": "src/pipeline/polish.py",
+      "line": 197,
+      "command": "PowerShell token comparison: claim_tokens=backup,copy,files,from,production; rewrite_tokens=backup,copy,files,from,production; unsupported count=0.",
+      "amendment": "Replace token-subset authorization with deterministic source-text assembly or a constrained transformation that preserves predicate arguments, conditions and polarity. Apply the same rule after polish. Add source/destination reversal and conditional-to-unconditional instruction regressions for generation and post-polish validation."
+    },
+    {
+      "id": "F-05",
+      "verdict": "AGREE",
+      "evidence": "transcript.py:124 currently places the sole unlabelled block on step 1. The proposed early return prevents that while preserving the WARNING consumed by server.py:765. F-04 retains the unplaced block as a claim, and the proposed server test exercises declined semantic rescue.",
+      "file": "src/pipeline/transcript.py",
+      "line": 124,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-04",
+      "verdict": "OBJECT",
+      "evidence": "Part (6) removes claims from _write_all_exports for captures without transcripts. This disables A-03's proposed 'if claims' post-polish grounding check precisely for synthetic narratives. server.py:659 still polishes those narratives, while polish.py:197 and its novel-token budget can accept short unsupported additions. _assert_1to1_mapping only checks step IDs; it cannot validate narrative content.",
+      "file": ".audit/fix/plan_r2.json",
+      "line": 126,
+      "command": null,
+      "amendment": "Always pass synthetic claims as grounding evidence to _write_all_exports. Separate grounding_claims from claims requiring exact-text coverage if synthetic coverage must be treated differently. Add a no-transcript capture test where polish appends 'Transfer funds.' and assert rejection while legitimate step phrasing remains allowed."
+    },
+    {
+      "id": "F-02",
+      "verdict": "AGREE",
+      "evidence": "server.py:412 currently discards the narrative on generation failure, and :423 builds verify accounting solely from placement metadata. The shared fallback and narrative_verify_ids wiring address both defects; the planned tests distinguish placed claims from genuinely unplaced claims.",
+      "file": "src/pipeline/server.py",
+      "line": 412,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "AGREE",
+      "evidence": "server.py:680 passes a potentially None narrative into claim_coverage.py:23, which calls text.lower(). The explicit empty-string guard fixes that call, and the combined polish-enabled/raising-narrative regression exercises the reported failure path.",
+      "file": "src/pipeline/server.py",
+      "line": 680,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "AGREE",
+      "evidence": "generate_polish_fields creates separate step dictionaries at polish.py:469-476, so reverting individual text fields preserves the originals. The proposed gate sits before the shared renderers at server.py:685 onward and covers fallback preservation, manifest fidelity and transcript-bearing photo text.",
+      "file": "src/pipeline/polish.py",
+      "line": 469,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-03",
+      "verdict": "AGREE",
+      "evidence": "server.py:530 currently lets a caption replace placed transcript text. Adding narration when both exist reaches Markdown at render.py:120, HTML at :170, DOCX at docx_assembler.py:140 and PDF at export_pdf.py:254. When captions fail, the transcript already occupies the protected step-text field.",
+      "file": "src/pipeline/server.py",
+      "line": 530,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-01",
+      "verdict": "OBJECT",
+      "evidence": "The consistency pass still rewrites the entire narrative, including source-derived [verify] blockquotes. With an unplaced 'Install Hilsshier driver.' claim, title 'Hilschier Driver Install' and a failed narrative client, canonicalization changes the existing claim quote. claim_coverage.py:63-71 then appends the original quote again because coverage checks raw text, and narrative_verify_ids += late_ids duplicates its report entry. consistency.py applies replacements to every supplied field.",
+      "file": ".audit/fix/plan_r2.json",
+      "line": 249,
+      "command": null,
+      "amendment": "Split verify lines out before canonicalization and restore them verbatim afterward, as polish already does. Merge verify IDs with order-preserving deduplication. Add a photo regression combining failed narrative generation, an unplaced transcript and spelling canonicalization; assert one unchanged verify quote and one report entry per claim."
+    },
+    {
+      "id": "F-09",
+      "verdict": "AGREE",
+      "evidence": "server.py:531 records caption failure in used_fallback, but :578 hardcodes an empty template list. The new caption category derives directly from that flag, distinguishes disabled vision, and updates both report views at pages.py:533 and review.py:24.",
+      "file": "src/pipeline/server.py",
+      "line": 531,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "AGREE",
+      "evidence": "config.py:82 documents use_vision as inert despite generation.py:82 attaching images. The plan corrects that documentation and adds the save-time warning explicitly allowed by the finding, covering the POST handler and GET page rendering without rejecting custom tags.",
+      "file": "src/pipeline/config.py",
+      "line": 82,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "AGREE",
+      "evidence": "pages.py:304 and :339 currently select qwen3.6:27b, conflicting with CLAUDE.md's qwen3:32b narrative default. The plan synchronizes the committed configuration, UI and tests, labels the alternative unverified, and adds injectable installed-tag verification without claiming a successful live probe.",
+      "file": "src/pipeline/webui/pages.py",
+      "line": 304,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-11",
+      "verdict": "AGREE",
+      "evidence": "capture/__main__.py:9 imports the capture package before importing TrayApp, making package initialization an appropriate early awareness hook. recorder.py:143 translates global coordinates by monitor origin; the plan preserves that physical-pixel calculation, adds optional scale to both schema representations, and tests negative origins, scale wiring and fresh-process awareness.",
+      "file": "src/capture/__main__.py",
+      "line": 9,
+      "command": null,
+      "amendment": null
+    }
+  ]
+}

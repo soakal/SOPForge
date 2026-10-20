@@ -1,0 +1,7 @@
+{
+  "summary": "F-16 done. server.py now calls `validate_claim_coverage(md_narrative_text or \"\", claims)`, so a None narrative can't raise AttributeError. I added both named tests to test_server.py, sharing a small `_run_polish_job` helper. `ruff check` and `ruff format` are clean. Full pytest gives 552 passed, 5 skipped, and only the 2 expected test_frozen_paths failures. Nothing is committed.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

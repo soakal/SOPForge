@@ -1,0 +1,130 @@
+{
+  "verdicts": [
+    {
+      "id": "A-01",
+      "verdict": "OBJECT",
+      "evidence": "Masking every occurrence of manifest names also masks genuine additional actions. For element='Delete', window='Editor', 'Click Delete in the Editor window, then delete all records.' becomes 'Click   in the   window, then   all records.' A read-only PowerShell reproduction counted only one action. The existing checks at roundtrip.py:33-41 also accept this input. Separately, unmasked negation rejects correct templates for an element named 'Do not show again' (template.py:23,35).",
+      "file": "src/pipeline/roundtrip.py",
+      "line": 33,
+      "command": null,
+      "amendment": "Identify and exempt only the literal target/window spans in a validated single-instruction structure; do not globally erase matching words. Apply negation checks outside those literal spans. Fall back whenever the remaining instruction structure cannot be validated. Add tests for the Delete example, additional inflected destructive verbs, and correct templates containing negation in UI labels."
+    },
+    {
+      "id": "A-12",
+      "verdict": "OBJECT",
+      "evidence": "The three identified data-bearing clients are covered, but another local-only capture client remains: _request_server_shutdown constructs httpx.Client(timeout=timeout) and POSTs to the local server. The plan's claim to disable proxy inheritance for every local-only client misses this call site.",
+      "file": "src/capture/tray.py",
+      "line": 42,
+      "command": "rg -n 'httpx.Client' src",
+      "amendment": "Also set trust_env=False in capture.tray._request_server_shutdown, add src/capture/tray.py to the files list, and test that its client receives trust_env=False with proxy environment variables set."
+    },
+    {
+      "id": "A-03",
+      "verdict": "OBJECT",
+      "evidence": "The extracted gate measures vocabulary, not factual support. polish.py:35-40 excludes 'not', and :250-259 checks only novel tokens. Source 'Do not disable security controls.' therefore permits rewrite 'Disable security controls.': there are no novel tokens, so even the destructive-word check is skipped. Coverage then appends the original claim while retaining the contradictory instruction. The proposed tests do not exercise reused-vocabulary fabrication.",
+      "file": "src/pipeline/polish.py",
+      "line": 250,
+      "command": null,
+      "amendment": "Retain source claims in all prompts, but use deterministic source-claim assembly unless output is validated through a conservative source-span construction that cannot change polarity, targets, or action relationships. Do not treat the novel-token heuristic as sufficient validation. Add regressions for removed negation and invented instructions composed entirely of source vocabulary, including final output with polish enabled."
+    },
+    {
+      "id": "F-05",
+      "verdict": "AGREE",
+      "evidence": "transcript.py:118-125 separates labelled placement from positional placement, so the proposed guard removes only the ambiguous single-block positional case. The matching warning condition already exists at :216. Both server flows invoke semantic rescue when the note contains WARNING (server.py:513-523 and :807-814). Combined with F-01/F-02, unplaced text remains available through claims.",
+      "file": "src/pipeline/transcript.py",
+      "line": 118,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-04",
+      "verdict": "OBJECT",
+      "evidence": "Two concrete gaps remain. First, server.py:121-143 preserves 'Step 1:' in claims, while transcript.py:39-46 strips it from placed narration; exact substring coverage cannot recognize the labelled fixtures the plan expects to pass. Synthetic claims also include 'Windows involved: ...' at server.py:107, which is absent from _placed_corpus. Second, the PRE-polish corpus can certify text no longer exported: polish.py:233-264 permits deleting ordinary words, and :475 installs rewritten narration. For example, removing 'security' from 'Open settings and check security controls.' introduces no tokens and retains a permitted length ratio.",
+      "file": "src/pipeline/server.py",
+      "line": 125,
+      "command": null,
+      "amendment": "Build text-transcript claims from the shared parsed content with structural labels removed, preserving stable IDs; explicitly account for the synthetic window-summary claim. Validate coverage against the actual final step text/narration after polish. Restore affected original fields or append original missing claims as verify blockquotes and update the report. Add labelled, heading-only, synthetic-summary, and narration-word-deletion regressions."
+    },
+    {
+      "id": "F-02",
+      "verdict": "AGREE",
+      "evidence": "server.py:407 discards narrative verify IDs, :412-413 drops the narrative on generation failure, and :423-426 reports only placement claims. The proposed coverage fallback and merged claim lookup address both paths; claim_coverage.py:69-74 already constructs the required blockquotes and IDs. The raising-client and sidecar tests target these failures.",
+      "file": "src/pipeline/server.py",
+      "line": 407,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "AGREE",
+      "evidence": "server.py:680 passes a potentially None narrative to validate_claim_coverage, whose _claim_covered calls text.lower() at claim_coverage.py:23. Normalizing to an empty string removes that crash, while F-02 supplies claim-preserving fallback content. The proposed polish-enabled failure test exercises the affected export path.",
+      "file": "src/pipeline/server.py",
+      "line": 680,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "AGREE",
+      "evidence": "generate_polish_fields returns copied step dictionaries (polish.py:469-476), so reverting their text leaves the original inputs available. server.py:685-744 passes md_step_results to all six exporters. A gate immediately after polishing therefore protects every export, and the two proposed tests cover missing manifest facts and rewritten fallback text.",
+      "file": "src/pipeline/server.py",
+      "line": 659,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-03",
+      "verdict": "AGREE",
+      "evidence": "server.py:530 currently chooses a successful caption instead of placed transcript text without storing narration. Adding narration when both exist mirrors the capture assignment at :816-819. When the caption is absent, the transcript already occupies text, so omitting a duplicate narration field is appropriate. The proposed success/failure tests distinguish both cases.",
+      "file": "src/pipeline/server.py",
+      "line": 530,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-01",
+      "verdict": "OBJECT",
+      "evidence": "The new narrative routing addresses the missing stage, but retaining canonicalize_terms after coverage invalidates its guarantees. server.py:564-574 rewrites both narrative and step text after claims would be checked. The existing test at test_server.py:1525 demonstrates replacement of 'Hilsshier' with 'Hilschier'. With captions absent, an originally covered transcript claim can consequently disappear from both fields. The post-polish check only runs when polish is enabled (:656-683), and reverting to the already-canonicalized narrative cannot recover the original claim.",
+      "file": "src/pipeline/server.py",
+      "line": 564,
+      "command": null,
+      "amendment": "Perform final claim accounting after canonicalization against the text actually exported, preserving original claim text and existing verify blockquotes from canonicalization. Append original missing claims as verify blockquotes and merge their IDs into the report. Add photo regressions with the existing Hilsshier/Hilschier fixture, captions absent, and polish both disabled and enabled. Adjust the existing spelling test to permit original spellings inside verification callouts."
+    },
+    {
+      "id": "F-09",
+      "verdict": "AGREE",
+      "evidence": "Photo results already record caption failure through used_fallback at server.py:531, but the report hardcodes an empty fallback list at :578. A separate caption_fallback_steps category accurately distinguishes photo failures from capture templates. Conditioning it on vision being enabled avoids flagging intentionally disabled captioning, and both report-rendering call sites are included.",
+      "file": "src/pipeline/server.py",
+      "line": 531,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "AGREE",
+      "evidence": "config.py:82-85 contains the stale inert-flag comment, while server.py:353 forwards use_vision and :1245 accepts it from the form. The proposed save-time banner and runtime warning cover both UI-edited and directly edited configuration without rejecting custom tags. The tests exercise warning delivery and persistence.",
+      "file": "src/pipeline/config.py",
+      "line": 82,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "AGREE",
+      "evidence": "config/models.toml:28 and pages.py:304,339 currently select qwen3.6:27b, whereas CLAUDE.md specifies qwen3:32b for narrative. Reverting those defaults resolves the documented mismatch. Collecting configured Ollama models plus both UI tag tables covers the advertised tags, and the injected /api/tags tests check missing and complete inventories without claiming live verification.",
+      "file": "config/models.toml",
+      "line": 28,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "F-11",
+      "verdict": "AGREE",
+      "evidence": "capture/__main__.py imports capture at line 9 before capture.tray at line 10; tray imports pynput at line 23. Package initialization therefore provides the proposed early awareness hook for both the module entry point and the entry script identified by sopforge.spec. recorder.py:141-153 already translates global coordinates using monitor origins. Adding optional scale metadata to both schema and Screen preserves existing manifests, while the proposed recorder tests exercise negative origins and per-step scale.",
+      "file": "src/capture/__main__.py",
+      "line": 9,
+      "command": null,
+      "amendment": null
+    }
+  ]
+}

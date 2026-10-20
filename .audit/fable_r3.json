@@ -1,0 +1,318 @@
+{
+  "responses": [
+    {
+      "peer_id": "A-01",
+      "verdict": "CONFIRM",
+      "duplicate_of": null,
+      "file": "src/pipeline/roundtrip.py",
+      "line": 33,
+      "command": null,
+      "evidence": "Re-read roundtrip.py:33-43 this round: `action_verbs = _CLICK_VERBS if step.action == \"click\" else _TYPE_VERBS` / `if not action_verbs.search(text)` / `if step.element.name and step.element.name.lower() not in text.lower()` / `if step.window.title and step.window.title.lower() not in text.lower()` / `return (len(mismatches) == 0, mismatches)`. Three presence checks only; 'Do not click Save in the Editor window.' contains `click` (:16), 'save', 'editor' -> (True, []). generation.py:97-99 `ok, _mismatches = round_trip_ok(reply, step); if not ok: return render_step_template(step), True` is the only gate before the text is accepted. Shell denied again this round; peer's probe output re-derived statically."
+    },
+    {
+      "peer_id": "A-02",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-10",
+      "file": "src/pipeline/polish.py",
+      "line": 382,
+      "command": null,
+      "evidence": "polish.py:380-382 `for step in step_results: step_id = step[\"step_id\"]; items.append((step_id, step[\"text\"]))` with no `used_fallback` check; `_field_gate` :221-266 checks shape, digit/path tokens (:233-236), novel tokens (:250-259), length ratio (:263) and never calls `round_trip_ok`; :457-463 installs the rewrite into `resolved`, :473 `new_step[\"text\"] = resolved.get(step_id, step[\"text\"])`. server.py:659-661 `generate_polish_fields(narrative_text, step_results, polish_llm)` then :680 `validate_claim_coverage(md_narrative_text, claims)` only, and the :678-679 comment states 'Step text/narration polish ... is kept either way.' Same issue as my F-10."
+    },
+    {
+      "peer_id": "A-03",
+      "verdict": "CONFIRM",
+      "duplicate_of": null,
+      "file": "src/pipeline/narrative.py",
+      "line": 40,
+      "command": null,
+      "evidence": "narrative.py:19-23 `_critique_prompt(draft)` and :26-30 `_revise_prompt(draft, critique)` take no claims; :40-45 `text = llm_client.chat(...)` ... `return ensure_claim_coverage(text, claims)`. claim_coverage.py:23 `return stripped.lower() in text.lower()`; :62-66 only classifies claims as covered/uncovered -- no check in either direction for narrative sentences that match no claim. 'open settings.' is a substring of 'Open settings. Disable all security controls.' so the result is (text, ['claim-001'], []). Sole production caller server.py:407."
+    },
+    {
+      "peer_id": "A-04",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-03",
+      "file": "src/pipeline/server.py",
+      "line": 530,
+      "command": null,
+      "evidence": "server.py:526-533 `\"text\": caption or per_step.get(step.id) or \"(no description provided)\"`, `\"used_fallback\": caption is None` -- no `\"narration\"` key (contrast `_apply_transcript` :816-819 `result[\"narration\"] = narration`). :542-546 `llm = make_llm_client()` + `generate_title_and_overview(narration, llm, on_screen_texts=on_screen_texts)`, not `generate_narrative`. :595-605 `_write_all_exports(...)` passes no `claims=`; :617 default `claims=()` so :680 is a no-op. config/models.toml:32 `enabled = true`. Same as my F-03 (plus F-01 for the ungated overview)."
+    },
+    {
+      "peer_id": "A-05",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-02",
+      "file": "src/pipeline/server.py",
+      "line": 407,
+      "command": null,
+      "evidence": "server.py:407 `narrative_text, _covered, _verify_ids = generate_narrative(` (`_verify_ids` unused); :412-413 `except Exception: ... narrative_text = None`; :423-426 sidecar claims only from `(placement_meta or {}).get(\"verify_claims\", [])`. Photo: :531 `\"used_fallback\": caption is None` vs :578 `\"template_fallback_steps\": []` (my F-09). AttributeError sub-claim re-traced: :444 `claims=claims`; :654 `md_narrative_text = narrative_text` (None); :659 `generate_polish_fields(None, ...)` -> polish.py:421-422 `(narrative_text, [])`, returns None via :446-448 or :465-467 (`_splice_verify_lines(None, [])` -> :361-362 `return body_text`); server.py:680 `validate_claim_coverage(None, claims)` -> claim_coverage.py:84 -> :23 `text.lower()` on None -> AttributeError; jobs.py:69-72 marks the job `error`. My F-16 covers that sub-claim."
+    },
+    {
+      "peer_id": "A-06",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-05",
+      "file": "src/pipeline/transcript.py",
+      "line": 216,
+      "command": null,
+      "evidence": "transcript.py:95-96 `if len(paragraphs) >= 2` fails for one paragraph; :99-100 one block per non-empty line -> one block, `labelled=False`; :124-125 `for i, (_num, text) in enumerate(blocks): add(i, text)` -> step 1 only; :216-223 appends only the WARNING text. server.py:769-776 rescue is `semantic_align(...)` behind `if aligned:` else :792 returns the original mapping. .audit/evidence/ollama_probe.txt:5 `TcpTestSucceeded False`. Same as my F-05."
+    },
+    {
+      "peer_id": "A-07",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-07",
+      "file": "config/models.toml",
+      "line": 28,
+      "command": null,
+      "evidence": ".audit/evidence/ollama_probe.txt:6 `Ollama not listening at audit time; model tags CANNOT be verified live.` config/models.toml:22 `model = \"qwen3:32b\"`, :28 `model = \"qwen3.6:27b\"`, :35 `qwen2.5vl:7b`, :68 `gemma3:12b` (dated note :47-49 only covers gemma3:12b, 2026-07-11). CLAUDE.md:67-68 and USER_MANUAL.md:641 say narrative = `qwen3:32b`; pages.py:304 and :339 say `qwen3.6:27b`; tests/pipeline/test_models_config.py:24 asserts `qwen3.6:27b`. Same as my F-07."
+    },
+    {
+      "peer_id": "A-08",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-08",
+      "file": "src/pipeline/llm_client.py",
+      "line": 104,
+      "command": null,
+      "evidence": "llm_client.py:104-105 `def close(self): self._client.close()`; :80 `payload = {\"model\": self.config.model, \"messages\": messages, **kwargs}`; grep `keep_alive` across *.py -> no matches. Model switches in `_generate`: steps :344, narrative :769/:778 (conditional), steps :380, narrative :405, polish :657 (opt-in, models.toml:65 `enabled = false`). jobs.py:60-66 single worker. Residency/eviction unmeasured (host down). Same as my F-08."
+    },
+    {
+      "peer_id": "A-09",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-11",
+      "file": "tests/test_recorder.py",
+      "line": 155,
+      "command": null,
+      "evidence": "tests/test_recorder.py:152-156 fixture: all monitors `\"top\": 0`, non-negative `left`, 100% scale. Grep `DPI|dpi|SetProcess|SetThread|shcore|GetDpiForWindow` over *.py in the repo -> no matches. recorder.py:142-153 subtracts `origin_x/origin_y` from the click and the UIA rect with no scale factor. Same root cause as my F-11; peer's qualification that import-order DPI behaviour is unproven is already reflected there."
+    },
+    {
+      "peer_id": "A-10",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-13",
+      "file": "pyproject.toml",
+      "line": 5,
+      "command": null,
+      "evidence": "pyproject.toml:5-8 `[project]` = `name`, `version = \"1.6.1\"`, `requires-python` only, no `dependencies`. requirements.txt:7 `numpy==2.5.0`, :9 `pyinstaller==6.21.0`, :17 `faster-whisper==1.2.1`. Grep `import numpy|from numpy|Transcriber` over *.py -> src: only `transcription.py:7:class Transcriber:`; tests: `tests/test_redaction.py:6:import numpy as np` and `tests/pipeline/test_transcription.py:17`. Peer's numpy-in-tests point accepted and folded into F-13."
+    },
+    {
+      "peer_id": "A-11",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-14",
+      "file": "src/pipeline/config.py",
+      "line": 65,
+      "command": null,
+      "evidence": ".audit/evidence/repo_visibility.txt:3 `{\"isPrivate\":false,\"visibility\":\"PUBLIC\"}`. config.py:65 and :153 `endpoint: str = \"http://192.168.200.60:11434/v1\"`; config/models.toml:21,27,34,67 same; docx_assembler.py:21 `DEFAULT_SOP_FACTORY_2_DIR = Path(r\"C:\\Users\\Brian\\Documents\\SOP_Factory_2\\template\")`; README.md:58-59 and USER_MANUAL.md:187-189 `soakal/SOP-Factory`; scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json:4 endpoint. Also selftest.py:34 `C:\\Users\\Brian\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe`. Same as my F-14."
+    },
+    {
+      "peer_id": "A-12",
+      "verdict": "CONFIRM",
+      "duplicate_of": null,
+      "file": "src/pipeline/llm_client.py",
+      "line": 49,
+      "command": null,
+      "evidence": "Grep `httpx\\.Client\\(|trust_env|proxies=|proxy=` in src -> exactly four constructions and zero proxy settings: llm_client.py:49 `httpx.Client(base_url=..., transport=transport, timeout=...)`, vision.py:62 `httpx.Client(transport=transport, timeout=client_timeout)`, capture/upload.py:62 `httpx.Client(transport=transport, timeout=timeout)`, capture/tray.py:42 `httpx.Client(timeout=timeout)`. All four inherit httpx's default `trust_env=True` (httpx 0.28.1 per requirements.txt:14), so HTTP(S)_PROXY on the host routes LAN-bound prompts/screenshots through the proxy unless NO_PROXY covers 192.168.200.60 and 127.0.0.1. Precondition is a proxy env var; I rate it med, not high, but the path is real."
+    },
+    {
+      "peer_id": "A-13",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-04",
+      "file": "src/pipeline/claim_coverage.py",
+      "line": 70,
+      "command": null,
+      "evidence": "server.py:401 `claims = _claims_for_narrative(transcript_path, synthetic_narration)` builds claims from the same transcript `_apply_transcript` already placed at :816-819. claim_coverage.py:23 `return stripped.lower() in text.lower()`; :69-71 `if uncovered: blockquotes = ...; final_text = f\"{narrative_text.rstrip()}\\n\\n{blockquotes}\\n\"`. Every claim failing the substring check is re-emitted verbatim above the per-step placements. Same as my F-04."
+    },
+    {
+      "peer_id": "A-14",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-06",
+      "file": "src/pipeline/config.py",
+      "line": 82,
+      "command": null,
+      "evidence": "config.py:82-84 `generate_step_text does not yet branch on this flag, so it currently has no runtime effect` vs generation.py:82-88 `if use_vision and screenshot_dir is not None: ... {\"type\": \"image_url\", ...}`. server.py:1245 `\"use_vision\": form.get(\"steps_use_vision\") == \"on\"` with no model check; pages.py:471-472 'it needs a vision-capable model above -- the default qwen3:32b can't see images'. config.py:62-93 `SectionConfig` has only the `_legacy_anthropic` validator. Same as my F-06."
+    },
+    {
+      "peer_id": "A-15",
+      "verdict": "CONFIRM",
+      "duplicate_of": "F-15",
+      "file": "src/pipeline/config.py",
+      "line": 200,
+      "command": null,
+      "evidence": "config.py:200 `used = {cfg.steps.provider, cfg.narrative.provider, cfg.vision.provider}` omits `cfg.polish.provider`. server.py:227-230 says `[narrative]` is 'used only for the semantic transcript-placement/polish path', contradicting :405-411 `make_narrative_llm_client()` -> `generate_narrative`. Grep `generate_polish_pass` over *.py: definition polish.py:277, no caller in src, but scripts/proof_polish_live.py:66,233 and tests/pipeline/test_polish.py:21,276-339 call it. Peer's 'not globally dead' qualification accepted; F-15 updated."
+    }
+  ],
+  "withdrawn": [],
+  "findings": [
+    {
+      "id": "F-01",
+      "severity": "high",
+      "checklist_item": 1,
+      "title": "[narrative] draft->critique->revise is live only for the capture flow; photo builds never call it and ship an ungated LLM overview from the [steps] model",
+      "file": "src/pipeline/server.py",
+      "line": 544,
+      "evidence": "Capture flow: server.py:405-411 `narrative_llm = make_narrative_llm_client()` ... `generate_narrative(claims, narrative_llm, passes=models_cfg.narrative.passes)`. Photo flow: server.py:542-546 `llm = make_llm_client()` ... `gen_title, narrative_text = generate_title_and_overview(narration, llm, on_screen_texts=on_screen_texts)` -- the [steps] client, no claims extracted. `_write_all_exports` call at :595-605 has no `claims=`, so :617 `claims=()` and :680 `validate_claim_coverage(md_narrative_text, claims)` is a no-op. Peer A-04 confirms.",
+      "command": null,
+      "proposed_fix": "In `_generate_photo`, build claims from the transcript via `_claims_for_narrative(matches[0] if matches else None, narration)` and produce the overview with `generate_narrative(claims, make_narrative_llm_client(), passes=cfg.narrative.passes)` (keep `generate_title_and_overview` for the title only); pass `claims=claims` to `_write_all_exports` and merge the returned verify ids into `report['verify_claims']`."
+    },
+    {
+      "id": "F-02",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "Claim-coverage gate silently drops every claim when narrative generation fails, and the narrative stage's [verify] ids never reach the sidecar report",
+      "file": "src/pipeline/server.py",
+      "line": 412,
+      "evidence": "server.py:407 `narrative_text, _covered, _verify_ids = generate_narrative(` (`_verify_ids` never read). :412-413 `except Exception:  # noqa: BLE001 - narrative is best-effort, never blocks the doc` / `narrative_text = None`. :423-426 `verify_claims = (placement_meta or {}).get(\"verify_claims\", [])` ... `build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)` -- only placement/narration_polish claims reach the sidecar. Scope: when a transcript was placed under steps (:816-819) the source text survives in the doc; what is lost is the narrative-stage accounting and the claims' [verify] rendering. Peer A-05 confirms. See F-16 for the polish-enabled crash on the same path.",
+      "command": null,
+      "proposed_fix": "In `_generate`: on exception set `narrative_text, _covered, _verify_ids = ensure_claim_coverage(\"\", claims)` so every claim is emitted as a [verify] blockquote; keep `_verify_ids` and extend `verify_claim_ids`/`claims_by_id` with them before `build_sidecar_report`. Add a test with a raising narrative stub asserting `md.count('[verify]') == len(claims)` and `report['verify_claims']` lists them."
+    },
+    {
+      "id": "F-03",
+      "severity": "high",
+      "checklist_item": 2,
+      "title": "Photo build with the committed default [vision].enabled=true replaces the uploaded transcript with captions; transcript text is never placed verbatim under steps",
+      "file": "src/pipeline/server.py",
+      "line": 530,
+      "evidence": "config/models.toml:31-32 `[vision]` / `enabled = true`. server.py:526-533 `\"text\": caption or per_step.get(step.id) or \"(no description provided)\"`, `\"used_fallback\": caption is None` -- no `\"narration\"` key is set in photo mode (contrast `_apply_transcript` server.py:816-819 `result[\"narration\"] = narration`), so render.py's `result.get(\"narration\")` prints nothing. Holds even after `_run_semantic_pipeline` (:521-523) placed the transcript correctly. CLAUDE.md: transcripts 'are placed verbatim under each step.' Peer A-04 confirms.",
+      "command": null,
+      "proposed_fix": "In `_generate_photo`, after computing `per_step`, set `result[\"narration\"] = per_step[step.id]` for every step with transcript text (mirroring `_apply_transcript`) regardless of caption success; add a test uploading a labelled transcript with vision enabled asserting each step's transcript sentence appears in doc.md."
+    },
+    {
+      "id": "F-04",
+      "severity": "med",
+      "checklist_item": 2,
+      "title": "Capture flow re-dumps paraphrased transcript lines at the top of the document as [verify] blockquotes even though the same lines are already placed under steps",
+      "file": "src/pipeline/server.py",
+      "line": 401,
+      "evidence": "server.py:401 `claims = _claims_for_narrative(transcript_path, synthetic_narration)` builds one claim per transcript line from the same file `_apply_transcript` (:801-819) already placed under steps. Coverage is exact substring: claim_coverage.py:23 `return stripped.lower() in text.lower()`; :69-71 appends every uncovered claim verbatim. Scope: every claim the narrative paraphrases is duplicated; if all are paraphrased the entire transcript is repeated. tests/pipeline/test_server.py:1034-1036 `assert md.count(\"[verify]\") == 3` for 3 transcript lines. Peer A-13 confirms.",
+      "command": null,
+      "proposed_fix": "Treat step-level placements as coverage: run `ensure_claim_coverage` against `narrative_text + \"\\n\" + \"\\n\".join(r.get(\"narration\",\"\") for r in step_results)` (or build claims only from `synthetic_narration` when a transcript was placed), so only genuinely unplaced claims become [verify] blockquotes."
+    },
+    {
+      "id": "F-05",
+      "severity": "med",
+      "checklist_item": 2,
+      "title": "Single-block transcript still collapses onto step 1 unless an LLM rescue succeeds; with Ollama unreachable the bug is present in both flows",
+      "file": "src/pipeline/transcript.py",
+      "line": 216,
+      "evidence": "transcript.py:95 `if len(paragraphs) >= 2` fails for one paragraph; :99-100 yields one block; :124-125 `add(i, text)` places it on step 1; :216-223 appends only a WARNING to the note. Rescue is LLM-only: server.py:769-776 `semantic_align(content, manifest, step_contexts, narrative_llm)` ... `if aligned:` else :792 returns the original mapping. .audit/evidence/ollama_probe.txt:5 `TcpTestSucceeded False`. Peer A-06 confirms.",
+      "command": null,
+      "proposed_fix": "Add a deterministic last-resort in `_place_text_blocks`: when `len(blocks)==1` and `len(step_ids)>1`, hold the block as unplaced content with a visible review flag (peer's alternative, which avoids inventing correspondence) rather than attaching it to step 1; keep the WARNING in the report."
+    },
+    {
+      "id": "F-06",
+      "severity": "med",
+      "checklist_item": 3,
+      "title": "Step text uses qwen3:32b (text-only) with a manifest-fields-only prompt; use_vision attaches a base64 PNG per step with no model-capability guard, and config.py still documents the flag as inert",
+      "file": "src/pipeline/generation.py",
+      "line": 82,
+      "evidence": "config/models.toml:19-22 `[steps] ... model = \"qwen3:32b\"`. Prompt generation.py:57-63 built from manifest fields only. generation.py:82-88 `if use_vision and screenshot_dir is not None: ... {\"type\": \"image_url\", ...}`; wired at server.py:353 `use_vision=models_cfg.steps.use_vision`; server.py:1245 `\"use_vision\": form.get(\"steps_use_vision\") == \"on\"` accepts any model; pages.py:471-472 'the default qwen3:32b can't see images'. Stale: config.py:82-84 'generate_step_text does not yet branch on this flag, so it currently has no runtime effect'. Peer A-14 confirms.",
+      "command": null,
+      "proposed_fix": "Add a `ModelsConfig` validator (or /ui/config save-time warning) when `steps.use_vision=True` and `steps.model` is a known text-only tag, with an explicit override for custom models; delete the stale sentence at config.py:82-84."
+    },
+    {
+      "id": "F-07",
+      "severity": "med",
+      "checklist_item": 4,
+      "title": "Every model tag is unverified; narrative default disagrees across CLAUDE.md/USER_MANUAL (qwen3:32b) vs config/pages/tests (qwen3.6:27b), and qwen3.6:27b has no pull/test record in the repo",
+      "file": "config/models.toml",
+      "line": 28,
+      "evidence": ".audit/evidence/ollama_probe.txt:6 'model tags CANNOT be verified live. Treat every tag as UNVERIFIED.' config/models.toml:22 `qwen3:32b`, :28 `qwen3.6:27b`, :35 `qwen2.5vl:7b`, :68 `gemma3:12b` (dated note :47-49, 2026-07-11, covers gemma3:12b only). CLAUDE.md:67-68 and USER_MANUAL.md:641 say narrative = `qwen3:32b`; pages.py:304,339 and tests/pipeline/test_models_config.py:24 say `qwen3.6:27b`. No dated record for `qwen3.6:27b` anywhere in the repo. Peer A-07 confirms.",
+      "command": null,
+      "proposed_fix": "Pick one narrative default and update CLAUDE.md:68, USER_MANUAL.md:641, config/models.toml:28 and pages.py:304/339 together; add a dated comment once `qwen3.6:27b` is actually pulled, or revert to `qwen3:32b`; add `scripts/verify_models.py` that GETs `/api/tags` and diffs against every tag in config.py/pages.py."
+    },
+    {
+      "id": "F-08",
+      "severity": "low",
+      "checklist_item": 5,
+      "title": "Within one job the pipeline alternates steps and narrative models up to five times with no keep_alive control; residency/eviction behaviour on the 40 GB host is unmeasured",
+      "file": "src/pipeline/server.py",
+      "line": 346,
+      "evidence": "jobs.py:60-66 single worker. Stage order in `_generate`: steps model :344-354, narrative model :769 and :778 (when placement rescue runs), steps model again :380 (title), narrative again :405, polish model :657 (opt-in; models.toml:65 `enabled = false`). No request sets `keep_alive` (grep over *.py -> none); llm_client.py:80 `payload = {\"model\": ..., \"messages\": messages, **kwargs}`; :104-105 `close()` only closes HTTP. Co-residency/eviction NOT measured -- host down (ollama_probe.txt). Peer A-08 confirms.",
+      "command": null,
+      "proposed_fix": "Reorder `_generate` so all [steps]-model work (steps + title) precedes [narrative]-model work (5 switches -> 2); optionally pass `keep_alive` via `LLMClient.chat(**kwargs)` (already forwarded at llm_client.py:80); measure peak VRAM once the host is back."
+    },
+    {
+      "id": "F-09",
+      "severity": "med",
+      "checklist_item": 6,
+      "title": "Photo build bypasses build_sidecar_report and hardcodes template_fallback_steps=[] even though failed captions set used_fallback=True",
+      "file": "src/pipeline/server.py",
+      "line": 578,
+      "evidence": "server.py:531 `\"used_fallback\": caption is None,` then :577-584 `report = {\"template_fallback_steps\": [], \"verify_claims\": [...], \"empty_metadata_steps\": [], \"docx_warnings\": []}`. sidecar.py:26 `[r[\"step_id\"] for r in step_results if r[\"used_fallback\"]]` is only reached from the capture path (server.py:426). Peer A-05 confirms and suggests a distinct category name for photo fallbacks.",
+      "command": null,
+      "proposed_fix": "Build the photo report via `build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)` (or add a `caption_fallback_steps` list derived from `used_fallback`); add a test with one caption returning None asserting that step id appears in the report."
+    },
+    {
+      "id": "F-10",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "Polish stage rewrites step text after the round-trip gate without re-running it (a rewrite that drops the element name passes), and also rewrites template-fallback steps",
+      "file": "src/pipeline/server.py",
+      "line": 659,
+      "evidence": "server.py:659-661 `generate_polish_fields(narrative_text, step_results, polish_llm)`; polish.py:380-382 `items.append((step_id, step[\"text\"]))` with no `used_fallback` check. `_field_gate` polish.py:221-266 checks degenerate shape, digits/paths (:233-236), novel tokens (:250-259), length ratio (:263) -- never `round_trip_ok`. Trace 'Click Save in the Editor window.' -> 'Click in the Editor window.': `novel_tokens == set()`, ratio 0.84 -> `(True, None)`; :473 installs it. server.py:678-680 comment 'Step text/narration polish ... is kept either way' + `validate_claim_coverage(md_narrative_text, claims)` only. Peer A-02's probe returned `(True, None)`.",
+      "command": null,
+      "proposed_fix": "In `_write_all_exports`, after `generate_polish_fields`, loop `zip(manifest.steps, step_results, md_step_results)` and revert `new[\"text\"] = old[\"text\"]` when `old[\"used_fallback\"]` or `not round_trip_ok(new[\"text\"], step)[0]`, recording ids in `report['polish_reverted_steps']`; add a test where the polish stub drops the element name."
+    },
+    {
+      "id": "F-11",
+      "severity": "med",
+      "checklist_item": 7,
+      "title": "Capture agent declares no DPI awareness; click, screenshot and UIA-rect coordinate frames depend on whichever third-party library initializes first",
+      "file": "src/capture/recorder.py",
+      "line": 141,
+      "evidence": "Grep `DPI|dpi|SetProcess|SetThread|shcore|GetDpiForWindow` over all *.py in the repo -> no matches; sopforge.spec:29 `runtime_hooks=[]`. recorder.py:141-153 `element, window = resolve_at(x, y)` / `self._shots.capture(x, y)` / `screen_x, screen_y = x - origin_x, y - origin_y` and the same subtraction on `bounding_rect` -- pixel offsets only, no scale factor; pywinauto is imported lazily at uia.py:71 on the first click, after the pynput hook is installed. Whether pywinauto changes the process DPI context on import could not be checked (shell denied), so the 'frame depends on import order' part remains an unverified risk, as peer A-09 notes. tests/test_recorder.py:152-156 cover 100%-scale, non-negative origins only.",
+      "command": null,
+      "proposed_fix": "At the top of `capture/__main__.py` call `ctypes.windll.user32.SetProcessDpiAwarenessContext(-4)` (PER_MONITOR_AWARE_V2) with `shcore.SetProcessDpiAwareness(2)` fallback so hooks, mss and pywinauto share one physical-pixel frame; record `screen.scale` in the manifest; add negative-origin and mixed-DPI cases to test_recorder.py."
+    },
+    {
+      "id": "F-12",
+      "severity": "low",
+      "checklist_item": 7,
+      "title": "A click outside every monitor rect is silently attributed to monitor 1 and translated by monitor 1's origin; only reachable if hook and mss coordinate frames disagree",
+      "file": "src/capture/shots.py",
+      "line": 36,
+      "evidence": "shots.py:25-36 `monitor_for_point`: docstring 'falls back to 1 if the point isn't inside any known monitor rect'; loop over `sct.monitors[1:]` then `return 1`; :56-57 `monitor = sct.monitors[monitor_idx]; origin = (monitor[\"left\"], monitor[\"top\"])`; recorder.py:143 subtracts that origin. Peer A-09/F-12 dispute is partly right: Windows confines the cursor to the monitor union, so with pynput and mss in the same DPI context this branch is unreachable; it fires only under the F-11 frame-mismatch precondition, which I could not demonstrate. Retained as low because the fallback is silent (no log, no manifest flag) when it does fire -- the peer's own point that clamping could conceal the coordinate defect argues for making it visible, not for leaving it silent.",
+      "command": null,
+      "proposed_fix": "Log a warning and set a manifest flag when `monitor_for_point` falls through to 1 so a frame mismatch becomes visible rather than silently mis-placing the marker; fix the frame itself per F-11 rather than clamping to a different monitor."
+    },
+    {
+      "id": "F-13",
+      "severity": "low",
+      "checklist_item": 8,
+      "title": "Dependency drift: pyproject declares no dependencies; requirements pins build-only pyinstaller, test-only numpy, and faster-whisper for unreachable code",
+      "file": "requirements.txt",
+      "line": 7,
+      "evidence": "pyproject.toml:5-8 `[project]` has only `name`, `version = \"1.6.1\"`, `requires-python`. requirements.txt:7 `numpy==2.5.0`, :9 `pyinstaller==6.21.0`, :17 `faster-whisper==1.2.1`. Grep `import numpy|from numpy|Transcriber` over *.py: src -> only `transcription.py:7:class Transcriber:` (no production caller); tests -> `tests/test_redaction.py:6:import numpy as np`, `tests/pipeline/test_transcription.py:17`. sopforge.spec:44 and sopforge-server.spec:82 exclude `\"numpy\"`; sopforge-server.spec:90 excludes `\"faster_whisper\"` -- so neither ships in the EXEs. Peer A-10's correction accepted: numpy is test-used, not wholly unused.",
+      "command": null,
+      "proposed_fix": "Add `dependencies = [...]` to pyproject.toml mirroring the runtime subset of requirements.txt; move `pyinstaller` and `numpy` to a requirements-dev.txt (numpy stays for tests/test_redaction.py); delete transcription.py + faster-whisper or wire it with `local_files_only=True`."
+    },
+    {
+      "id": "F-14",
+      "severity": "low",
+      "checklist_item": 8,
+      "title": "Public repo commits internal LAN host IP as code defaults, personal Windows user paths, a private repo name, and real-capture session metadata",
+      "file": "src/pipeline/config.py",
+      "line": 65,
+      "evidence": ".audit/evidence/repo_visibility.txt:3 `{\"isPrivate\":false,\"visibility\":\"PUBLIC\"}`. config.py:65 and :153 `\"http://192.168.200.60:11434/v1\"`; config/models.toml:21,27,34,67; CLAUDE.md:31; USER_MANUAL.md:192,667. docx_assembler.py:21 `Path(r\"C:\\Users\\Brian\\Documents\\SOP_Factory_2\\template\")`; src/capture/selftest.py:34 `C:\\Users\\Brian\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe`; README.md:58-59 and USER_MANUAL.md:187-189 `soakal/SOP-Factory`. scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json:4 endpoint, :5-8 session ids, :103 real window title (tracked per `git ls-files`, confirmed by peer A-11). No credentials found.",
+      "command": "git ls-files scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json",
+      "proposed_fix": "Change code defaults to `http://127.0.0.1:11434/v1` (config.py:65,153) and `Path.home() / \"Documents\" / \"SOP_Factory_2\" / \"template\"` (docx_assembler.py:21); derive the VS Code path from `%LOCALAPPDATA%` in selftest.py; keep the LAN address only in the untracked per-user `~/SOPForge/models.toml`; redact or untrack the measurement JSON."
+    },
+    {
+      "id": "F-15",
+      "severity": "low",
+      "checklist_item": 8,
+      "title": "Stale code and docs: generate_polish_pass has no production caller, key_status ignores the polish provider, and create_app's docstring says the narrative factory is placement-only",
+      "file": "src/pipeline/config.py",
+      "line": 200,
+      "evidence": "config.py:200 `used = {cfg.steps.provider, cfg.narrative.provider, cfg.vision.provider}` omits `cfg.polish.provider`, so a polish section on openrouter/openai/anthropic never shows a key indicator. Grep `generate_polish_pass` over *.py: definition polish.py:277, no caller in src; callers are scripts/proof_polish_live.py:66,233 and tests/pipeline/test_polish.py:21,276-339 (peer A-15's correction accepted -- not globally dead). server.py:227-230 says `[narrative]` is 'used only for the semantic transcript-placement/polish path', contradicting :405-411 `make_narrative_llm_client()` -> `generate_narrative`.",
+      "command": null,
+      "proposed_fix": "Add `cfg.polish.provider` to `used` in `key_status`; migrate scripts/proof_polish_live.py and test_polish.py to `generate_polish_fields` then delete `generate_polish_pass`/`_gate`; rewrite the `create_app` docstring paragraph at server.py:227-230."
+    },
+    {
+      "id": "F-16",
+      "severity": "high",
+      "checklist_item": 6,
+      "title": "With polish enabled, a failed narrative stage crashes the whole generation job: validate_claim_coverage(None, claims) raises AttributeError and no document is written",
+      "file": "src/pipeline/server.py",
+      "line": 680,
+      "evidence": "server.py:412-413 sets `narrative_text = None` when `generate_narrative` raises (e.g. Ollama unreachable -- ollama_probe.txt:5), while :444 still passes `claims=claims` (non-empty: synthetic narration always yields claims). :646-652 selects `polish_section` when `[polish].enabled` or a `?polish=local|haiku` rerender override; :654 `md_narrative_text = narrative_text`; :659 `generate_polish_fields(None, step_results, polish_llm)` -> polish.py:421-422 `(narrative_text, [])` for falsy input, returns None either via :446-448 (LLM failure) or :465-467 `_splice_verify_lines(None, [])` -> :361-362 `return body_text`. server.py:680 `ok, missing = validate_claim_coverage(md_narrative_text, claims)` -> claim_coverage.py:84 `_claim_covered(claim, final_text)` -> :23 `stripped.lower() in text.lower()` with `text=None` -> AttributeError. jobs.py:69-72 catches it and marks the job `error`; `doc.md` (:692) is never written. Contradicts the :412 comment 'narrative is best-effort, never blocks the doc'. Static trace (shell denied both rounds); peer A-05's independent probe reproduced `AttributeError 'NoneType' object has no attribute 'lower'`.",
+      "command": null,
+      "proposed_fix": "Guard at server.py:680: `ok, missing = validate_claim_coverage(md_narrative_text or \"\", claims)` (or skip the check when `narrative_text is None`), and combine with F-02's fix so a failed narrative still emits [verify] blockquotes; add a test with polish enabled and a raising narrative stub asserting the job finishes and doc.md exists."
+    }
+  ]
+}

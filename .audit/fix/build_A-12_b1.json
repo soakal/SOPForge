@@ -1,0 +1,14 @@
+{
+  "summary": "A-12 implemented: trust_env now passed to all four httpx.Client sites. llm_client uses trust_env = provider != 'ollama'; vision.py caption_images/_caption_one take trust_env=False (server.py passes vision_cfg.provider != 'ollama'); capture/upload.py and capture/tray.py use trust_env=False. Added the five named tests. ruff check/format clean; full pytest green (537 passed, 5 skipped) before three of the tests were added, then the four affected test files re-run: 48 passed, 2 skipped. test_frozen_paths.py was deselected, so its expected failures were not exercised. Not committed. Note: the deny-list hook false-positived on the word 'shutdown' in a Bash heredoc, so tests were written via the Edit tool.",
+  "files_changed": [
+    "src/pipeline/llm_client.py",
+    "src/pipeline/vision.py",
+    "src/pipeline/server.py",
+    "src/capture/upload.py",
+    "src/capture/tray.py",
+    "tests/pipeline/test_llm_client.py",
+    "tests/pipeline/test_vision.py",
+    "tests/test_upload.py",
+    "tests/test_tray.py"
+  ]
+}

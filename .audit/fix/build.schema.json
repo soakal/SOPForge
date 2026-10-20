@@ -1,0 +1,25 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subject",
+    "summary",
+    "files_changed"
+  ],
+  "properties": {
+    "subject": {
+      "maxLength": 60,
+      "description": "imperative commit subject, e.g. \"keep claims on narrative failure\"",
+      "type": "string"
+    },
+    "summary": {
+      "type": "string"
+    },
+    "files_changed": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  }
+}

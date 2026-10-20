@@ -1,0 +1,10 @@
+{
+  "summary": "F-09 implemented. Photo-build report.json now has `caption_fallback_steps`: the step IDs whose caption came back None, and `[]` when vision is disabled. `template_fallback_steps` and `empty_metadata_steps` stay `[]`, and `build_sidecar_report` is untouched. The session page and review page both render a \"Caption-fallback steps\" section, and `_color_for` colours it red like template fallback. I added the three named tests (the vision-disabled one patches `load_models_config` instead of editing a temp config file). `ruff check` and `ruff format` are clean. The full `pytest` run gave 555 passed and 5 skipped, with all of `test_frozen_paths.py` (10 tests) deselected instead of run. I did not commit.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "src/pipeline/webui/pages.py",
+    "src/pipeline/webui/review.py",
+    "tests/pipeline/test_server.py",
+    "tests/pipeline/test_webui_pages.py"
+  ]
+}

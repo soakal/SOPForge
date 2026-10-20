@@ -1,0 +1,7 @@
+{
+  "summary": "F-16 implemented: validate_claim_coverage now gets `md_narrative_text or ''`; two named tests added. The earlier gate failure was a flaky test_recorder test (a real mouse click was captured during the run); it passes alone and in the full suite. ruff check and format are clean. Pytest gives 547 passed with only the expected test_frozen_paths.py failures deselected.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

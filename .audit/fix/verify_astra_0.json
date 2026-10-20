@@ -1,0 +1,102 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "LANDED",
+      "evidence": "On audit-fixes, all four src httpx.Client sites explicitly pass trust_env. Ollama LLM and vision clients disable environment proxies; cloud providers retain them; upload and shutdown clients disable them. Named regression tests were added. Runtime verification was blocked: Python 3.12 reports 'No installed Python found!'; Python 3.13 lacks mss, httpx and pydantic.",
+      "file": "src/pipeline/llm_client.py",
+      "line": 56,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider --capture=sys tests/pipeline/test_transcript.py",
+      "gap": null
+    },
+    {
+      "id": "F-05",
+      "verdict": "PARTIAL",
+      "evidence": "The splitter now returns {} for one unlabelled block across multiple steps and records WARNING. A read-only Python probe confirmed this. Capture mode retains the unplaced claim, but photo mode still uses generate_title_and_overview and passes no claims to exports.",
+      "file": "src/pipeline/transcript.py",
+      "line": 113,
+      "command": null,
+      "gap": "Photo builds need deterministic claim retention when semantic rescue declines. With the models unavailable, the entire unlabelled transcript now disappears: no step placement, no overview, and no [verify] fallback. The warning falsely promises that narrative claims preserve it."
+    },
+    {
+      "id": "F-02",
+      "verdict": "LANDED",
+      "evidence": "The capture narrative exception handler calls ensure_claim_coverage('', claims, placed_text=placed_text). Returned verify IDs and claim text feed build_sidecar_report at server.py:426–436. All three named regression tests exist. Server and sidecar tests could not run because the required interpreter/dependencies are unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 466,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "validate_claim_coverage receives md_narrative_text or '', removing the None crash; F-02 supplies the failure fallback. Both named tests exist, although the purported no-claims test uploads the normal manifest without a transcript, which still generates synthetic claims, so it does not exercise its advertised empty-claims path. Integration execution was blocked by missing dependencies.",
+      "file": "src/pipeline/server.py",
+      "line": 731,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "PARTIAL",
+      "evidence": "The post-polish loop restores fallback text, checks round_trip_ok, checks lost claims, and records reverted IDs. Python 3.13 ran test_polish.py: 37 passed. A direct probe nevertheless accepted 'Do not click Save in the Editor window.' through both the polish field gate and round-trip gate.",
+      "file": "src/pipeline/server.py",
+      "line": 704,
+      "command": "python -B -m pytest -q --noconftest -p no:cacheprovider --capture=sys tests/pipeline/test_polish.py",
+      "gap": "The planned strengthened round-trip validator is absent. Photo exports receive claims=(), making their claim-loss check ineffective; the new photo test passes through used_fallback rather than exercising claim coverage. Narration is still polished, contrary to the planned dependency on verbatim narration preservation."
+    },
+    {
+      "id": "F-03",
+      "verdict": "PARTIAL",
+      "evidence": "Captioned photo steps now receive placed text as narration; failed captions use it as step text without adding duplicate narration. However, semantic rescue still rewrites placements and generate_polish_fields still rewrites narration. A direct probe changed 'Then open the first screen.' to 'Open the first screen.'.",
+      "file": "src/pipeline/server.py",
+      "line": 560,
+      "command": null,
+      "gap": "Verbatim preservation is implemented for ordinary placement with polish disabled, but is not guaranteed after semantic rescue or optional export polish. Preserve source narration through both paths and test those combinations."
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "Photo reports list caption_fallback_steps from used_fallback only when vision is enabled, while template_fallback_steps stays empty. Both session and review pages render the category; session badges treat it as red. Named tests are present; execution was blocked by missing dependencies.",
+      "file": "src/pipeline/server.py",
+      "line": 608,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "The stale flag documentation is replaced. vision_model_warning implements the planned prefixes, is logged during capture generation, and is included in the config-save redirect. The config page escapes and displays the warning. Named tests cover saving, flag-off and custom-tag cases; execution was blocked by missing dependencies.",
+      "file": "src/pipeline/config.py",
+      "line": 98,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "LANDED",
+      "evidence": "Committed config, page recommendations and test expectations now agree on qwen3:32b. The config explicitly marks qwen3.6:27b unverified. verify_models.py collects configured/suggested Ollama tags, queries /api/tags without environment proxies, and returns 1 for missing tags. Injectable-transport tests exist; execution was blocked by missing dependencies.",
+      "file": "scripts/verify_models.py",
+      "line": 35,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-11",
+      "verdict": "PARTIAL",
+      "evidence": "Awareness initialization precedes capture imports; recorder writes scale and both manifest models accept it. Python 3.13 ran seven DPI tests successfully; a fresh-process probe reported awareness=2. Negative-origin and mixed-scale recorder tests were added.",
+      "file": "src/capture/dpi.py",
+      "line": 59,
+      "command": "python -B -m pytest -q --noconftest -p no:cacheprovider --capture=sys tests/test_dpi.py -k 'not fresh_process'",
+      "gap": "WinAPI functions lack ctypes signatures: MonitorFromPoint defaults to a 32-bit integer return instead of pointer-sized HMONITOR, risking truncation on 64-bit Windows and silently recording scale=1.0. The planned import-order documentation was not added. Python 3.12, recorder/schema tests, self-check and Ruff acceptance remain unverified; Ruff is unavailable."
+    }
+  ],
+  "regressions": [
+    {
+      "title": "Single-block photo transcripts can now disappear entirely",
+      "file": "src/pipeline/transcript.py",
+      "line": 113,
+      "evidence": "Previously the block survived under step 1. The new empty placement reaches photo generation, which still has no claim extraction or coverage fallback (server.py:569–640). When semantic rescue declines and title/overview generation fails, none of the transcript reaches the document, despite the warning claiming it is retained for review. Read-only probes confirmed empty placement and an offline title/overview result of (None, None)."
+    }
+  ]
+}

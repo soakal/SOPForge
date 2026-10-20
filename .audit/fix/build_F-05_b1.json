@@ -1,0 +1,8 @@
+{
+  "summary": "F-05 implemented: _place_text_blocks returns {} for a single unlabelled block on a multi-step manifest; WARNING reworded ('NOT placed under any step (0 of N)'). Renamed the transcript test and added the server test. ruff clean; pytest 547 passed, only the 2 expected test_frozen_paths failures. Not committed.",
+  "files_changed": [
+    "src/pipeline/transcript.py",
+    "tests/pipeline/test_transcript.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

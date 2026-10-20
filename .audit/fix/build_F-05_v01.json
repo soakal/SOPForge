@@ -1,0 +1,8 @@
+{
+  "subject": "keep unplaced photo transcript as verify claims",
+  "summary": "Fixed the photo-build gap: when the transcript is held unplaced and the semantic rescue declines, `_generate_photo` now keeps it. It extracts claims from the transcript and routes them through the same Stage 2 coverage the capture flow uses. Each claim is narrated or rendered as a [verify] blockquote, appended after the overview. The claims also go into the sidecar report's `verify_claims` and into `_write_all_exports`, so the polish coverage check applies. The WARNING note stays in `report['transcript']`. The earlier `transcript.py` change is unchanged. I added `test_photo_build_unplaced_transcript_is_kept_as_verify_claim`, which uses a stub that returns non-JSON. It checks that the transcript line appears exactly once in `doc.md`, that `[verify]` is present, that `report['transcript']` contains WARNING, and that `verify_claims` is non-empty. ruff check and format are clean. The full pytest run gave 580 passed, 5 skipped and only the 2 expected `test_frozen_paths.py` failures.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

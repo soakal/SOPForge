@@ -1,0 +1,7 @@
+{
+  "subject": "set ctypes signatures for DPI WinAPI calls",
+  "summary": "Added ctypes argtypes/restype in dpi._winapi() so MonitorFromPoint returns a pointer-sized HMONITOR (no 32-bit truncation), plus signatures for SetProcessDpiAwarenessContext and GetDpiForMonitor. Fakes in tests are unaffected. ruff check passes, ruff format left 52 files unchanged, pytest passes 576 (5 skipped) excluding the expected test_frozen_paths env failure; a plain `pytest -x -q` stops at that expected failure after 101 passed. `py -3.12 -m capture --self-check` was not run. NOT DONE: the DPI import-order note in .claude/skills/uia-notes.md could not be written because Edit and Bash were denied in this don't-ask-mode session; I did not work around the denial. The note text to append is: heading 'DPI awareness must be set at import capture, before pynput/mss/pywinauto (F-11)' explaining that capture/__init__.py calls set_process_dpi_awareness() first so hooks, screenshots and UIA rects share one physical-pixel frame, pywinauto's later SetProcessDPIAware becomes a no-op, nothing from pynput/mss/pywinauto/comtypes may be imported above that call, and each step records screen.scale (effective DPI/96).",
+  "files_changed": [
+    "src/capture/dpi.py"
+  ]
+}

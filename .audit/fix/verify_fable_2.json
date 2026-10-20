@@ -1,0 +1,114 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "LANDED",
+      "evidence": "All four httpx.Client sites carry trust_env: src/pipeline/llm_client.py:56 `trust_env=self.provider != \"ollama\"`; src/pipeline/vision.py:64-66 `trust_env=trust_env` (param on _caption_one :49-51 and caption_images :112), server.py:532 passes `trust_env=vision_cfg.provider != \"ollama\"`; src/capture/upload.py:62 and src/capture/tray.py:42 `trust_env=False`. rg 'httpx.Client(' src shows no other site. Tests test_ollama_client_ignores_proxy_environment, test_cloud_provider_client_still_honors_proxy_environment, test_caption_client_is_built_with_trust_env_false, test_upload_client_ignores_proxy_environment, test_shutdown_request_client_ignores_proxy_environment all pass.",
+      "file": "src/pipeline/llm_client.py",
+      "line": 56,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_llm_client.py tests/pipeline/test_vision.py tests/test_upload.py tests/test_tray.py ... -> 259 passed, 2 skipped (opt-in live tests). Full suite: 588 passed, 5 skipped, 2 failed -- both in untouched tests/pipeline/test_frozen_paths.py, caused by the SOPFORGE_SOP_FACTORY_2_DIR env override in this session, not by the diff.",
+      "gap": null
+    },
+    {
+      "id": "F-05",
+      "verdict": "LANDED",
+      "evidence": "src/pipeline/transcript.py:111-114 `if not labelled and len(blocks) == 1 and len(step_ids) > 1: return {}`; note reworded at :222-227 ('NOT placed under any step (0 of N)'). Capture flow: server.py:921 still routes the WARNING note through _run_semantic_pipeline, and the unplaced text reaches Stage 2 via _claims_for_narrative (server.py:412) -> [verify] blockquote before the first '## Step'. Photo flow got the matching deterministic path at server.py:586-601. Tests pass: test_single_run_on_line_is_held_unplaced_with_a_loud_warning, test_single_line_transcript_on_a_single_step_manifest_is_not_a_warning, test_single_labelled_block_is_not_a_warning, test_unplaced_single_block_transcript_is_not_dumped_on_step_1, test_photo_build_unplaced_transcript_is_kept_as_verify_claim, semantic-placement tests.",
+      "file": "src/pipeline/transcript.py",
+      "line": 111,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_transcript.py tests/pipeline/test_server.py -> all passed",
+      "gap": null
+    },
+    {
+      "id": "F-02",
+      "verdict": "LANDED",
+      "evidence": "server.py:455-483 `_narrative_with_coverage`: on exception logs and falls back to `ensure_claim_coverage(\"\", claims, placed_text=placed_text)` (line 477); the old `narrative_text = None` except branch is gone. Sidecar wiring server.py:424-431 now seeds claims_by_id from `claims` and puts narrative_verify_ids first in verify_claim_ids (placement_meta ids merged, deduplicated). tests/pipeline/test_sidecar_report.py untouched. Tests pass: test_failed_narrative_stage_emits_verify_blockquotes_and_reports_them (md.count('[verify]')==1 == unplaced claims, report['verify_claims'] has id+text), test_failed_narrative_stage_with_placed_transcript_adds_no_verify_noise, test_narrative_stage_verify_ids_reach_the_sidecar_report.",
+      "file": "src/pipeline/server.py",
+      "line": 477,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_server.py tests/pipeline/test_sidecar_report.py -> all passed",
+      "gap": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "server.py:781 `ok, missing = validate_claim_coverage(md_narrative_text or \"\", claims)` -- None can no longer reach claim_coverage._claim_covered. Tests pass: test_polish_enabled_with_failing_narrative_still_writes_the_doc (status done, doc.md 200 with '[verify] (claim-001)', report 200) and test_polish_enabled_with_no_claims_and_no_narrative_does_not_crash; existing polish wiring tests green. Note: the plan's approach text also passed placed_text to this check; that part was not done (see regression 1).",
+      "file": "src/pipeline/server.py",
+      "line": 781,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_server.py tests/pipeline/test_polish.py -> all passed",
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "PARTIAL",
+      "evidence": "Post-polish revert loop landed at server.py:740-766: reverts when `old.get(\"used_fallback\")`, when `round_trip_ok(new['text'], step)` fails, or when a claim covered by the old text is lost; records report['polish_reverted_steps']. The original finding is fixed for the capture flow: test_polish_rewrite_that_drops_the_element_name_is_reverted ('Click Save in the Editor window.' -> 'Click in the Editor window.' reverted) and test_polish_never_rewrites_template_fallback_steps pass; test_photo_polish_rewrite_that_loses_the_transcript_claim_is_reverted passes; the three stub-swapped polish tests (+ test_polish_rejected_when_it_drops_claim_coverage) pass with _RoundTripPassingStub.",
+      "file": "src/pipeline/server.py",
+      "line": 747,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_server.py tests/pipeline/test_polish.py -> all passed",
+      "gap": "Acceptance #1 is only conditionally met: (a) in photo mode (`verbatim_narration=True`, server.py:751-754) the round_trip_ok check is skipped entirely -- recorded in phases/DEVIATIONS.md:3-12 and pinned by test_photo_polish_keeps_descriptive_vision_caption_rewrite; (b) the claim-loss check is disabled for captures without a transcript via `gate_steps_on_claims=transcript_path is not None` (server.py:452, :756) -- a sensible choice (synthetic claims ARE the step texts) but NOT recorded in DEVIATIONS.md; (c) the plan assumed round_trip_ok would include A-01's masked-action/negation/token checks, but A-01 is held, so the gate is the original verb/element/window substring check only."
+    },
+    {
+      "id": "F-03",
+      "verdict": "LANDED",
+      "evidence": "server.py:557-568: `placed = per_step.get(step.id)`; `result[\"narration\"] = verbatim.get(step.id, placed)` only when `caption and placed` (so no duplicate narration when the caption failed and the transcript already is the step text); `verbatim` (server.py:545, filled by _run_semantic_pipeline's raw_out at :888-890) keeps semantic-rescue slices pre-polish. Export polish cannot rewrite it (server.py:745-746). Tests pass: test_photo_build_with_vision_on_places_transcript_verbatim_under_each_step ('**Narration:**' x2, both sentences in md and html), test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration, test_photo_build_semantic_rescue_keeps_aligned_slices_verbatim_under_captions, test_photo_build_export_polish_keeps_transcript_verbatim, test_build_uses_vision_captions_when_available, test_photo_build_caption_beats_placed_narration_and_informs_context.",
+      "file": "src/pipeline/server.py",
+      "line": 566,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_server.py -> all passed",
+      "gap": null
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "server.py:638-640 `\"caption_fallback_steps\": [r[\"step_id\"] for r in step_results if r[\"used_fallback\"]] if vision_cfg.enabled else []`; template_fallback_steps stays [] (server.py:637). Rendered: webui/pages.py:538-542 _section('Caption-fallback steps', ...), pages.py:96 colours it red like template fallback; webui/review.py:25 _list_section. Capture-flow build_sidecar_report untouched; tests/pipeline/test_sidecar_report.py unchanged. Tests pass: test_photo_build_report_lists_caption_fallback_steps (['step-002'], template_fallback_steps == []), test_photo_build_report_caption_fallback_empty_when_vision_disabled, test_session_page_renders_caption_fallback_section (session page + review page, red).",
+      "file": "src/pipeline/server.py",
+      "line": 638,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_server.py tests/pipeline/test_webui_pages.py tests/pipeline/test_sidecar_report.py -> all passed",
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "src/pipeline/config.py:82-85 stale 'does not yet branch on this flag / no runtime effect' sentence replaced with 'generate_step_text attaches the step screenshot as an image_url block when true'; config.py:95 TEXT_ONLY_MODEL_PREFIXES and :98-106 vision_model_warning (warn-only, None for unknown tags). Called from _generate (server.py:353-354 logger.warning) and from POST /ui/config (server.py:1399-1402, appends urlencoded warning to the redirect); GET /ui/config (server.py:1328-1334) passes it to render_config_page, which emits an html-escaped `<p class=\"warning\">` (pages.py:427-428; no CSS rule for .warning exists, so it renders as a plain paragraph -- still visible). Tests pass: test_vision_model_warning_for_known_text_only_model, test_vision_model_warning_is_none_for_vision_model_custom_tag_or_flag_off (3 cases), test_config_save_warns_when_use_vision_set_on_text_only_model (303 + 'warning=' + 'text-only' on page + use_vision persisted True), test_config_save_without_vision_has_no_warning.",
+      "file": "src/pipeline/config.py",
+      "line": 98,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_models_config.py tests/pipeline/test_server.py -> all passed",
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "LANDED",
+      "evidence": "config/models.toml:28-30 narrative model = \"qwen3:32b\" with the comment 'qwen3.6:27b is an UNVERIFIED tag with no pull record -- only switch after `ollama list` confirms it'; webui/pages.py:304 _RECOMMENDED narrative ollama = 'qwen3:32b', :339 _MODEL_SUGGESTIONS = ['qwen3:32b', 'qwen3.6:27b']; tests/pipeline/test_models_config.py:38 and tests/pipeline/test_server.py:2559 expect 'qwen3:32b'; CLAUDE.md:67-68 already says qwen3:32b (USER_MANUAL.md unchanged, as planned). scripts/verify_models.py:16-39 collect_expected_tags / fetch_installed(endpoint, transport) with trust_env=False / main() exits 1 on missing tags. Tests pass: test_loads_committed_config, test_config_page_model_datalists, test_collect_expected_tags_includes_config_and_page_ollama_tags, test_verify_models_reports_missing_tags. Live /api/tags on 192.168.200.60 not checked (host down per audit evidence; not an acceptance statement).",
+      "file": "config/models.toml",
+      "line": 30,
+      "command": "py -3.12 -m pytest -q tests/pipeline/test_models_config.py tests/test_verify_models.py tests/pipeline/test_server.py -> all passed",
+      "gap": null
+    },
+    {
+      "id": "F-11",
+      "verdict": "PARTIAL",
+      "evidence": "src/capture/dpi.py:68-88 set_process_dpi_awareness: SetProcessDpiAwarenessContext(-4) -> 'per_monitor_v2', else shcore.SetProcessDpiAwareness(2) with S_OK/E_ACCESSDENIED -> 'per_monitor', else SetProcessDPIAware -> 'system', else 'unavailable'; :91-101 monitor_scale = effective DPI / 96, 1.0 on failure; _winapi (:19-62) loads user32/shcore independently and sets ctypes argtypes/restype. Called from src/capture/__init__.py:7 before capture.tray/pynput import (capture/__main__.py:9-10; sopforge.spec:22 entry is src/capture/__main__.py). recorder.py:165 records screen.scale; manifest.py:44 Screen.scale: float = 1.0; fixtures/manifest.schema.json:54 optional number. Tests pass: all of tests/test_dpi.py including the win32 fresh-process test (awareness == 2 before pynput/mss/pywinauto/comtypes load) and idempotency; test_negative_origin_monitor_translates_to_local_frame; test_mixed_dpi_scale_is_recorded_per_step; test_screen_scale_is_optional_number; test_manifest_loader fixtures. `--self-check` exit 0 is covered by tests/test_tray.py::test_cli_self_check_exits_zero_with_no_stray_output (subprocess `python -m capture --self-check`), which passed.",
+      "file": "src/capture/dpi.py",
+      "line": 68,
+      "command": "py -3.12 -m pytest -v tests/test_dpi.py -> 10 passed (none skipped); tests/test_recorder.py tests/test_manifest_schema.py tests/pipeline/test_manifest_loader.py tests/test_tray.py -> all passed. `ruff check src/` / `ruff format --check src/` could not be run (command denied in this session) -- lint/format acceptance unverified.",
+      "gap": "The plan's 'Record the import-order note in .claude/skills/uia-notes.md' did not land: the file is untouched on audit-fixes (not in the diff stat; last commit touching it is 6ebc406 from phase-01) and contains no DPI/import-order note, while src/capture/__init__.py:6 comments '(see .claude/skills/uia-notes.md)' as if it existed. ruff check/format acceptance could not be verified here."
+    }
+  ],
+  "regressions": [
+    {
+      "title": "Post-polish claim-coverage check ignores placed_text, so narrative polish is always rejected (with a spurious report entry) whenever a transcript is placed under steps and the narrative paraphrases it",
+      "file": "src/pipeline/server.py",
+      "line": 781,
+      "evidence": "Static trace (no test covers paraphrasing narrative + placed transcript + polish enabled). narrative.py:46 now calls ensure_claim_coverage(text, claims, placed_text=placed_text), so a claim that is placed verbatim under a step is 'covered' and gets NO [verify] blockquote (claim_coverage.py:64). After polish, server.py:781 calls validate_claim_coverage(md_narrative_text or '', claims) WITHOUT placed_text; claim_coverage.py:84-88 then finds neither the claim text nor a [verify] marker in the narrative -> every placed-but-paraphrased claim is 'missing' -> report['polish_rejected_claim_coverage'] lists them and md_narrative_text reverts to the unpolished narrative (server.py:782-784). Before this branch those claims carried [verify] blockquotes inside narrative_text (spliced back verbatim by polish._splice_verify_lines), so the check passed. Effect: the narrative polish stage is silently dead for the common 'labelled transcript + paraphrasing narrative model' case and the sidecar reports a coverage failure that did not happen. The plan's own F-16 approach text specified `placed_text=` on this call. Fix: pass the same placed_text (join of step narrations) to validate_claim_coverage, which needs a `placed_text=''` keyword mirroring ensure_claim_coverage."
+    },
+    {
+      "title": "Test expectation weakened from 3 [verify] blockquotes to 0 and held-finding F-04 part (3) landed under F-02's banner",
+      "file": "tests/pipeline/test_server.py",
+      "line": 1370,
+      "evidence": "Commit 0af98b1 ('F-02: pass placed_text through narrative coverage') changes test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json from `md.count('[verify]') == 3` to `== 0`. The placed_text coverage is part of the agreed F-02 approach text, so it is in plan, but it is also exactly part (3) of F-04, which .audit/fix/PLAN_UNRESOLVED.md records as held pending Brian's decision; the claim text still appears in the doc under each step, so CLAUDE.md's 'every claim ID appears in output or is [verify]-flagged' invariant holds. Flagged for awareness, not as an invariant break."
+    },
+    {
+      "title": "Verify-claims colour expectation changed green -> yellow for no-transcript captures",
+      "file": "tests/pipeline/test_webui_pages.py",
+      "line": 319,
+      "evidence": "test_session_page_colors_sidecar_sections_correctly now expects 'Verify claims' yellow. This is a consequence of F-02 surfacing narrative-stage verify ids in the report: the synthetic claims (step texts + 'Windows involved:' line, server.py:116-118) are not covered by the stub narrative, so every no-transcript capture now lists them in report['verify_claims']. The doc already contained those [verify] blockquotes on the base commit (generate_narrative -> ensure_claim_coverage), so this is correct surfacing rather than new noise; noted because it is a changed assertion."
+    }
+  ]
+}

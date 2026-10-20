@@ -1,0 +1,8 @@
+{
+  "subject": "keep verbatim slices as photo narration",
+  "summary": "Fixed the photo-mode regression. My previous attempt forced polish=False in the semantic rescue. That broke two existing tests that expect polished text for steps where the caption failed. I restored polish and added an optional `raw_out` parameter to `_run_semantic_pipeline`. It captures stage-1 aligned slices before polish. `_generate_photo` now sets a captioned step's `narration` to that verbatim slice. Caption-failed steps keep the polished placed text as their step text. I also fixed the semantic-rescue test: the bad `make_narrative_llm_client` monkeypatch is gone. It now has polish rewrite to uppercase and asserts the verbatim slices appear and the uppercase ones do not. Ruff check and format pass. Pytest: 580 passed, 5 skipped with `test_frozen_paths.py` deselected. I haven't re-run that file this round; the 2 expected env failures there reproduced earlier. I haven't verified F-03 end to end beyond these tests.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

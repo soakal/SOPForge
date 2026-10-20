@@ -1,0 +1,9 @@
+{
+  "subject": "pass placed_text through narrative coverage",
+  "summary": "The successful narrative path now passes placed_text into coverage, so claims already placed under a step are no longer re-flagged as [verify]. generate_narrative gained a placed_text kwarg that it forwards to ensure_claim_coverage. In server.py, make_narrative_llm_client() is now called inside the try, so a construction failure also falls back to ensure_claim_coverage('', claims, placed_text) and the finally block tolerates a missing client. I added test_successful_narrative_stage_does_not_reflag_placed_claims. Ruff is clean. tests/pipeline/test_server.py and test_sidecar_report.py pass (77). The full run, before the test_server.py edit below, had 4 failures. Two are the expected test_frozen_paths env failures. The test_server.py one is fixed below. The fourth, tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow (asserts 1 step, got 2), is a capture-side test I did not touch. It looks like a timing flake, but I did not confirm it was failing before my change. I could not run git stash, so I did not check whether it fails on a clean tree. I changed one existing assertion. In test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json, md.count('[verify]') went from 3 to 0. Those timestamped segments are placed verbatim under their steps, so the old count of 3 depended on the placed-text bug the verifiers flagged, and the segment text is still asserted present. Review this change.",
+  "files_changed": [
+    "src/pipeline/narrative.py",
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}
