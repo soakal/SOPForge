@@ -67,6 +67,23 @@ def test_fallback_sequence_and_return_code_handling(ctx, raises, hr, aware, expe
     assert [c[0] for c in calls] == order
 
 
+def test_winapi_missing_v2_still_returns_handles_for_fallbacks(monkeypatch):
+    class _Fn:
+        pass
+
+    class _Lib:
+        def __init__(self, **fns):
+            for k, v in fns.items():
+                setattr(self, k, v)
+
+    user32 = _Lib(MonitorFromPoint=_Fn(), SetProcessDPIAware=lambda: 1)  # no v2 context API
+    shcore = _Lib(GetDpiForMonitor=_Fn(), SetProcessDpiAwareness=lambda _a: 0x80070057)
+    monkeypatch.setattr(dpi.sys, "platform", "win32")
+    monkeypatch.setattr(dpi.ctypes, "windll", _Lib(user32=user32, shcore=shcore), raising=False)
+    assert dpi._winapi() == (user32, shcore)
+    assert dpi.set_process_dpi_awareness() == "system"
+
+
 def test_monitor_scale_from_effective_dpi():
     calls = []
     user32 = _User32(calls)

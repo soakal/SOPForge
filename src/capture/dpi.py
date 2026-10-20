@@ -22,20 +22,35 @@ def _winapi():
         return None, None
     try:
         user32, shcore = ctypes.windll.user32, ctypes.windll.shcore
-        # Default restype is a 32-bit int: would truncate the pointer-sized HMONITOR.
-        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
-        user32.MonitorFromPoint.restype = ctypes.c_void_p
-        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-        user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
-        shcore.GetDpiForMonitor.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_int,
-            ctypes.POINTER(ctypes.c_uint),
-            ctypes.POINTER(ctypes.c_uint),
-        ]
-        return user32, shcore
     except (AttributeError, OSError):
         return None, None
+    # Each function is optional (older Windows lacks some): configure independently
+    # so a missing one never discards the remaining fallbacks.
+    # MonitorFromPoint's default restype is a 32-bit int: would truncate the HMONITOR.
+    sigs = (
+        (user32, "MonitorFromPoint", [wintypes.POINT, wintypes.DWORD], ctypes.c_void_p),
+        (user32, "SetProcessDpiAwarenessContext", [ctypes.c_void_p], wintypes.BOOL),
+        (
+            shcore,
+            "GetDpiForMonitor",
+            [
+                ctypes.c_void_p,
+                ctypes.c_int,
+                ctypes.POINTER(ctypes.c_uint),
+                ctypes.POINTER(ctypes.c_uint),
+            ],
+            None,
+        ),
+    )
+    for lib, name, argtypes, restype in sigs:
+        try:
+            fn = getattr(lib, name)
+            fn.argtypes = argtypes
+            if restype is not None:
+                fn.restype = restype
+        except (AttributeError, OSError):
+            pass
+    return user32, shcore
 
 
 def set_process_dpi_awareness(user32=None, shcore=None):
