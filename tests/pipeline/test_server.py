@@ -1730,6 +1730,54 @@ def test_photo_build_unstructured_transcript_gets_semantic_placement(tmp_path, m
     assert report["transcript_placement"]["mode"] == "semantic-llm"
 
 
+def test_photo_build_unplaced_transcript_is_kept_as_verify_claim(tmp_path, monkeypatch):
+    """One run-on unlabelled block on a multi-step photo build is held
+    unplaced; when the semantic rescue declines (non-JSON reply) its text must
+    still reach the doc as a [verify] claim, not vanish."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    class _DecliningStub:
+        def chat(self, messages, **kwargs):
+            return "not json"
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _DecliningStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    line = b"first open the file then save it"
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        ("transcript_file", ("t.md", line, "text/markdown")),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert md.count("first open the file then save it") == 1
+    assert "[verify]" in md
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "WARNING" in report["transcript"]
+    assert report["verify_claims"]
+
+
 def test_photo_build_caption_beats_placed_narration_and_informs_context(tmp_path, monkeypatch):
     """When a caption succeeds for one image, it wins as that step's text;
     the successful caption is also passed through as that step's own

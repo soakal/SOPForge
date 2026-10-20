@@ -580,6 +580,26 @@ def create_app(
             if gen_title and not manifest.session.title:
                 manifest.session.title = gen_title
 
+        # A transcript that no placement path put under any step (one run-on
+        # unlabelled block and the semantic rescue declined) must not vanish:
+        # route it through the same Stage 2 claim coverage the capture flow
+        # uses, so every claim is narrated or rendered as a [verify]
+        # blockquote.
+        claims, narrative_verify_ids = [], []
+        if matches and not per_step and narration.strip():
+            try:
+                claims = _claims_for_narrative(matches[0], narration)
+            except Exception:  # noqa: BLE001 - a bad transcript must never block Stage 2
+                claims = []
+            if claims:
+                claim_text, narrative_verify_ids = _narrative_with_coverage(
+                    claims, "", load_models_config(resolved_config_path).narrative.passes
+                )
+                if claim_text:
+                    narrative_text = (
+                        f"{narrative_text}\n\n{claim_text}" if narrative_text else claim_text
+                    )
+
         # Photo-mode has no manifest ground truth (element/window names) to
         # round-trip-gate step text against -- a raw narration transcript is
         # placed verbatim, and ASR can transcribe the same out-of-vocabulary
@@ -603,6 +623,12 @@ def create_app(
             step_result["text"] = canonical_text
 
         verify_claims = (placement_meta or {}).get("verify_claims", [])
+        claims_by_id = {c["claim_id"]: c for c in claims}
+        verify_claims = verify_claims + [
+            claims_by_id[cid]
+            for cid in narrative_verify_ids
+            if cid in claims_by_id and cid not in {c["claim_id"] for c in verify_claims}
+        ]
         report = {
             "template_fallback_steps": [],
             "caption_fallback_steps": [r["step_id"] for r in step_results if r["used_fallback"]]
@@ -634,6 +660,7 @@ def create_app(
             report,
             narrative_text=narrative_text,
             polish_override=polish_override,
+            claims=claims,
         )
 
     def _write_all_exports(
