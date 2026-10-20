@@ -1163,6 +1163,43 @@ def test_unstructured_transcript_gets_semantic_placement_and_polish(tmp_path):
     assert set(placement["steps_polished"]) == {"step-001", "step-002", "step-003"}
 
 
+class _DecliningNarrativeStub:
+    """Narrative LLM whose replies are never JSON, so semantic rescue declines."""
+
+    def chat(self, messages, **kwargs):
+        return "sorry, no"
+
+
+def test_unplaced_single_block_transcript_is_not_dumped_on_step_1(tmp_path):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _DecliningNarrativeStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    transcript = "first click save then enter the computer name then click somewhere in chrome"
+    files.append(("transcript_file", ("t.md", transcript.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    step1 = md.split("## Step 1", 1)[1].split("## Step 2", 1)[0]
+    assert "**Narration:**" not in step1
+    assert md.count(transcript) == 1
+    assert md.index(transcript) < md.index("## Step")
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "WARNING" in report["transcript"]
+
+
 def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monkeypatch):
     """Manifest-free mode: POST /ui/build with just images (+ a transcript)
     produces a full SOP -- one step per image, in order, with the transcript

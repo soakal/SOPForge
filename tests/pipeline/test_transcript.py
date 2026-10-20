@@ -71,21 +71,18 @@ def test_paragraph_starting_with_year_is_not_a_label():
     assert per_step["step-002"] == "Second paragraph."
 
 
-def test_single_run_on_line_collapses_to_step_1_with_a_loud_warning():
-    """Regression from a real report: a transcript written as one unbroken
-    line (no blank lines between what should be separate steps' narration,
-    no 'Step N:' labels) parses to exactly one block, which -- correctly,
-    per how placement is documented -- lands entirely on step 1. That's not
-    a bug in the placement logic; the note must say so loudly rather than
-    read like an ordinary 1-block transcript."""
+def test_single_run_on_line_is_held_unplaced_with_a_loud_warning():
+    """A transcript written as one unbroken line (no blank lines, no
+    'Step N:' labels) parses to one block; it must be held unplaced, not
+    invented onto step 1, and the note must say so loudly."""
     content = (
         "open file explorer then open the c drive then goto users then select "
         "the user that is on your system then goto the folder then rename the file"
     )
     per_step, note = align_transcript_to_steps("t.md", content, _manifest())
-    assert per_step == {"step-001": content}
+    assert per_step == {}
     assert "WARNING" in note
-    assert "step 1" in note
+    assert "0 of 3" in note
 
 
 def test_single_line_transcript_on_a_single_step_manifest_is_not_a_warning():
