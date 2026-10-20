@@ -1,0 +1,114 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "PARTIAL",
+      "evidence": "Confirmed branch audit-fixes at f6edb898c38df9914beff05120938b1b6d6352f0; reviewed the requested baseline-to-HEAD diff and log. The finding applied to baseline 48f757c: all four originally identified clients inherited environment proxies. HEAD fixes llm_client.py:56, vision.py:65, upload.py:74 and tray.py:43; server.py:1091 preserves cloud-provider proxy handling. However, upstream also added a fifth client in preflight.py that remains unprotected. The pytest attempt exited 1: 'No installed Python found!' No tests executed.",
+      "file": "src/pipeline/preflight.py",
+      "line": 89,
+      "command": "$env:PYTHONDONTWRITEBYTECODE='1'; py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_llm_client.py tests/pipeline/test_transcript.py tests/pipeline/test_sidecar_report.py tests/pipeline/test_polish.py tests/pipeline/test_manifest_loader.py tests/test_manifest_schema.py tests/test_dpi.py tests/test_verify_models.py tests/pipeline/test_models_config.py::test_loads_committed_config",
+      "gap": "Pass provider-dependent trust_env to the preflight client and cover Ollama proxy isolation there. The acceptance statement that no src httpx.Client construction lacks explicit trust_env is false."
+    },
+    {
+      "id": "F-05",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline: a single unlabelled block was assigned to step 1, with only a warning. HEAD transcript.py:113 returns an empty placement for multi-step manifests and :222 reports '0 of N'. Labelled blocks and single-step manifests bypass this guard. Server semantic rescue remains triggered by WARNING; capture claims and the added photo fallback at server.py:1159 preserve unplaced text. Named regression tests are present; runtime verification was blocked by missing Python.",
+      "file": "src/pipeline/transcript.py",
+      "line": 113,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-02",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline server.py: narrative exceptions assigned None, and narrative verify IDs were discarded. HEAD's shared helper catches factory/generation failures and calls ensure_claim_coverage('', claims, placed_text=placed_text). Server.py:981-990 merges narrative IDs and claim text into the sidecar. The three named failure/accounting tests are present. Runtime verification was blocked by missing Python; the separate downstream coverage regression is listed below.",
+      "file": "src/pipeline/server.py",
+      "line": 1014,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline: validate_claim_coverage received md_narrative_text directly, including None following narrative failure. HEAD passes md_narrative_text or '', and F-02 supplies fallback verify text for unplaced claims. The failing-narrative/polish integration test is present. Runtime verification was blocked by missing Python. The newly named no-claims test is weaker than specified: passing transcript=None still synthesizes claims from the sample steps, so it does not directly exercise claims=[] with narrative=None.",
+      "file": "src/pipeline/server.py",
+      "line": 1381,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "PARTIAL",
+      "evidence": "Applied to baseline: export polish neither reran round_trip_ok nor protected fallback text. HEAD server.py:1324-1352 adds reversion and reporting, and all exports consume the resulting fields. Tests cover missing element names, fallback preservation and photo transcript text. However, the implementation deliberately skips round-trip validation in photo mode, documented in phases/DEVIATIONS.md:3, and disables claim gating for capture jobs without transcripts at server.py:1011. Runtime verification was blocked by missing Python.",
+      "file": "src/pipeline/server.py",
+      "line": 1338,
+      "command": null,
+      "gap": "The capture-flow original defect is fixed, but the plan's unconditional round-trip/claim-loss acceptance is not implemented. Photo mode explicitly bypasses round_trip_ok, and synthesized capture claims do not gate step rewrites. These exceptions need an amended acceptance criterion or equivalent protection; the photo exception is reasonable because its manifest has no actual UI ground truth."
+    },
+    {
+      "id": "F-03",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline: successful photo captions occupied text without retaining transcript narration. HEAD adds narration when caption and placement exist, captures semantic alignment's verbatim slices before narration polish, and restores photo narration after export polish at server.py:1331. Caption failures retain the transcript in text without duplicate narration. Named deterministic, semantic-rescue and export-polish tests are present. Runtime verification was blocked by missing Python.",
+      "file": "src/pipeline/server.py",
+      "line": 1126,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline: photo reports hardcoded template_fallback_steps=[] and exposed no caption failures. HEAD derives caption_fallback_steps from used_fallback only when vision is enabled, preserving the separate template category. Session pages render the category at pages.py:760 with red status; review.py:25 also renders it. Named report/UI tests are present. Runtime verification was blocked by missing Python.",
+      "file": "src/pipeline/server.py",
+      "line": 1226,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "Genuinely moot on baseline 48f757c: upstream had removed steps.use_vision from configuration, generation and the configuration UI, including the stale inert-flag documentation. HEAD retains that removal. Searches found no remaining use_vision or stale 'no runtime effect' language in src, and current docs/config do not advertise that removed step-image capability. The reverted warning implementation and its removed tests are therefore unnecessary.",
+      "file": "src/pipeline/generation.py",
+      "line": null,
+      "command": "git grep -n -E 'qwen3|use_vision|DPI|dpi' 48f757c896cd7159e8937836d408beb1251a4539 -- CLAUDE.md USER_MANUAL.md config/models.toml src/pipeline/config.py src/pipeline/generation.py src/pipeline/webui/pages.py .claude/skills/uia-notes.md",
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "PARTIAL",
+      "evidence": "Not genuinely moot on baseline: upstream aligned CLAUDE.md:68 with config/models.toml:28 and pages.py's qwen3.6:27b default, but USER_MANUAL.md:694 still listed qwen3:32b as the narration default. HEAD preserves that disagreement. scripts/verify_models.py collects configured/suggested tags, uses trust_env=False, and returns 1 for missing tags; injectable-transport tests are present. No live verification was performed, and pytest was blocked by missing Python.",
+      "file": "USER_MANUAL.md",
+      "line": 694,
+      "command": null,
+      "gap": "Align the manual with the intentionally retained qwen3.6:27b default. Also supply a dated verification record or explicitly identify the tag as unverified; adding the checker alone does not establish model availability."
+    },
+    {
+      "id": "F-11",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline: capture had no explicit process DPI initialization or recorded scale. HEAD capture/__init__.py initializes awareness before capture submodule imports; dpi.py:64 implements the specified fallback sequence and :87 computes effective DPI/96. Recorder.py:196 records scale, manifest.py:44 defaults it to 1.0, and the JSON schema permits an optional number. Fake-WinAPI, fresh-process, negative-origin and mixed-scale tests are present. Python was unavailable, so those tests, self-check and ruff acceptance checks remain unverified. The planned uia-notes import-order note was not added.",
+      "file": "src/capture/dpi.py",
+      "line": 64,
+      "command": null,
+      "gap": null
+    }
+  ],
+  "regressions": [
+    {
+      "title": "Capture export polish can remove claims newly counted as covered by narration",
+      "file": "src/pipeline/server.py",
+      "line": 972,
+      "evidence": "The delta counts pre-polish step narration as coverage, suppressing the narrative's verify blockquotes. Later generate_polish_fields still rewrites capture narration; the restoration at :1331 applies only to photo mode. For example, its existing field gate permits 'Open the console and save the file before closing the window.' to become 'Open the console and save the file.' The new step gate checks text, not narration. The final coverage check merely restores the original narrative, which can now lack that claim too. Previously its verify blockquote survived polish. This introduces a path to losing a claim from all exports without a verify flag."
+    },
+    {
+      "title": "Narrative polish rejects valid coverage supplied by step narration",
+      "file": "src/pipeline/server.py",
+      "line": 1381,
+      "evidence": "Generation now accepts placed_text as claim coverage, but validate_claim_coverage still examines only the narrative. When transcript claims remain intact under steps and the narrative paraphrases them, a valid narrative polish is rejected and polish_rejected_claim_coverage reports false missing claims. The final check must use the same coverage scope as generation, evaluated against final exported fields."
+    },
+    {
+      "title": "Unrelated encoding damage in recorder tests",
+      "file": "tests/test_recorder.py",
+      "line": 3,
+      "evidence": "The diff replaces existing em dashes with mojibake ('â€”') in the module docstring, comments and an assertion message. This is unrelated to the DPI fix and degrades source readability."
+    }
+  ]
+}

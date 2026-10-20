@@ -1,0 +1,8 @@
+{
+  "subject": "stop ollama preflight probe using env proxy",
+  "summary": "Fixed the fifth httpx.Client site the verifiers found. src/pipeline/preflight.py (probe_section) now passes trust_env=provider != \"ollama\", so the Ollama probe ignores HTTP(S)_PROXY/ALL_PROXY and cloud providers still honor them. I added test_probe_client_trust_env_follows_provider to tests/pipeline/test_preflight.py. It spies on httpx.Client and expects trust_env False for ollama and True for openai. Results: ruff check src/ passed and ruff format src/ left files unchanged. The full pytest run finished with 718 passed, 5 skipped, 3 deselected and no failures. Caveat: ruff format was not run on the new test file because the Bash call was denied. The format command I ran covered src/ only.",
+  "files_changed": [
+    "src/pipeline/preflight.py",
+    "tests/pipeline/test_preflight.py"
+  ]
+}

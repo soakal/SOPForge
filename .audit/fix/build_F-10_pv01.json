@@ -1,0 +1,7 @@
+{
+  "subject": "document F-10 claim-gate exception",
+  "summary": "The F-10 code was already in place and I left it alone. `_write_all_exports` reverts a polish rewrite when the step used template fallback, when `round_trip_ok` fails, or when a claim the old text covered is lost. It records `report['polish_reverted_steps']`. The verifier's two gaps are both deliberate exceptions: photo mode skips `round_trip_ok`, and capture jobs without a transcript skip the claim gate. The photo exception was already in `phases/DEVIATIONS.md`. I added the missing second exception there. A capture job without a transcript has claims synthesized from the step texts themselves, so gating on them would revert every genuine rephrase. Those jobs are still covered by `round_trip_ok` and the fallback revert. No source change. Ruff is clean. I ran only `tests/pipeline/test_server.py`, which passes (117 tests), and did not run the full pytest suite this time. The `DEVIATIONS.md` edit still needs Brian's sign-off before merge, per the earlier notes.",
+  "files_changed": [
+    "phases/DEVIATIONS.md"
+  ]
+}
