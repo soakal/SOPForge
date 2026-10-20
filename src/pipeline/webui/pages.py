@@ -410,7 +410,7 @@ def _config_row(key, heading, values, extra="", providers=None):
     )
 
 
-def render_config_page(config, keystatus, saved=False):
+def render_config_page(config, keystatus, saved=False, warning=None):
     steps, narr, vis, polish = (
         config["steps"],
         config["narrative"],
@@ -424,6 +424,8 @@ def render_config_page(config, keystatus, saved=False):
         if saved
         else ""
     )
+    if warning:
+        saved_note += f'<p class="warning"><strong>Warning:</strong> {html.escape(warning)}</p>'
     checked = " checked" if vis.get("enabled") else ""
     vision_extra = (
         '<div class="field"><label><input type="checkbox" name="vision_enabled"'

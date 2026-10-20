@@ -79,11 +79,10 @@ class SectionConfig(BaseModel):
     max_concurrency: int = Field(default=1, ge=1)
     # Only meaningful for [steps] (same steps-only handling as
     # max_concurrency above -- never dumped for [narrative]/[polish], see
-    # dump_models_config_toml). Off by default: generate_step_text does not
-    # yet branch on this flag, so it currently has no runtime effect --
-    # it's config plumbing for a later step that will gate screenshot-image
-    # attachment on the per-step generation call. Defaults False so every
-    # existing models.toml (which predates this field) still loads unchanged.
+    # dump_models_config_toml). Off by default: generate_step_text attaches
+    # the step screenshot as an image_url block when true. Defaults False so
+    # every existing models.toml (which predates this field) still loads
+    # unchanged.
     use_vision: bool = False
 
     @model_validator(mode="after")
@@ -91,6 +90,20 @@ class SectionConfig(BaseModel):
         if self.anthropic and self.provider == "ollama":
             self.provider = "anthropic"
         return self
+
+
+TEXT_ONLY_MODEL_PREFIXES = ("qwen3:", "qwen3.6:", "deepseek-r1", "llama3", "mistral", "phi")
+
+
+def vision_model_warning(steps: SectionConfig) -> str | None:
+    """Warn (never reject) when use_vision is on for a known text-only model."""
+    if steps.use_vision and steps.model.lower().startswith(TEXT_ONLY_MODEL_PREFIXES):
+        return (
+            f"[steps] model {steps.model} is a text-only model: use_vision will attach "
+            "screenshots it cannot read. Set a vision-capable model (e.g. qwen2.5vl:7b) "
+            "or turn use_vision off."
+        )
+    return None
 
 
 class PolishConfig(SectionConfig):

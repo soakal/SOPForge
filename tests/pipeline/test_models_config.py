@@ -11,7 +11,21 @@ from pipeline.config import (
     load_models_config,
     resolve_polish_config,
     save_models_config,
+    vision_model_warning,
 )
+
+
+def test_vision_model_warning_for_known_text_only_model():
+    msg = vision_model_warning(SectionConfig(model="qwen3:32b", use_vision=True))
+    assert msg is not None and "text-only" in msg
+
+
+@pytest.mark.parametrize(
+    ("model", "use_vision"),
+    [("qwen2.5vl:7b", True), ("my-custom-vl", True), ("qwen3:32b", False)],
+)
+def test_vision_model_warning_is_none_for_vision_model_custom_tag_or_flag_off(model, use_vision):
+    assert vision_model_warning(SectionConfig(model=model, use_vision=use_vision)) is None
 
 
 def test_loads_committed_config():
@@ -165,7 +179,9 @@ def test_polish_defaults_sanely_when_section_is_absent(tmp_path):
     config = load_models_config(path)
     assert config.polish.enabled is False
     assert config.polish.provider == "ollama"
-    assert config.polish.model  # non-empty; default (gemma3:12b) is confirmed pulled/live on the Ollama host
+    assert (
+        config.polish.model
+    )  # non-empty; default (gemma3:12b) is confirmed pulled/live on the Ollama host
 
 
 def test_polish_parses_explicit_section(tmp_path):

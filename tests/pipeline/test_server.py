@@ -2203,6 +2203,42 @@ def test_config_page_renders_and_saves(tmp_path):
     assert cfg["document"]["doc_no_prefix"] == "SOP"
 
 
+def _post_steps_config(client, **extra):
+    return client.post(
+        "/ui/config",
+        data={
+            "steps_provider": "ollama",
+            "steps_endpoint": "http://x/v1",
+            "steps_model": "qwen3:32b",
+            "narrative_provider": "ollama",
+            "narrative_endpoint": "http://x/v1",
+            "narrative_model": "qwen3:32b",
+            "vision_provider": "ollama",
+            "vision_endpoint": "http://x/v1",
+            "vision_model": "qwen2.5vl:7b",
+            **extra,
+        },
+        follow_redirects=False,
+    )
+
+
+def test_config_save_warns_when_use_vision_set_on_text_only_model(tmp_path):
+    client = _make_client(tmp_path)
+    resp = _post_steps_config(client, steps_use_vision="on")
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "warning=" in location
+    assert "text-only" in client.get(location).text
+    assert client.get("/config").json()["steps"]["use_vision"] is True
+
+
+def test_config_save_without_vision_has_no_warning(tmp_path):
+    client = _make_client(tmp_path)
+    resp = _post_steps_config(client)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/ui/config?saved=1"
+
+
 def test_config_save_preserves_document_and_vision_concurrency_when_form_omits_them(tmp_path):
     """Regression: an earlier version of the save handler rebuilt the config
     purely from named form fields, and never included document.*/

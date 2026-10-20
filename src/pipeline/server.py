@@ -35,7 +35,7 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import (
@@ -66,6 +66,7 @@ from pipeline.config import (
     resolve_polish_config,
     runtime_config_path,
     save_models_config,
+    vision_model_warning,
 )
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
@@ -349,6 +350,8 @@ def create_app(
         # reply doesn't hold up, that step just falls back; nothing here
         # ever retries.
         models_cfg = load_models_config(resolved_config_path)
+        if warning := vision_model_warning(models_cfg.steps):
+            logger.warning(warning)
         llm_client = make_llm_client()
         try:
             step_results, annotated_paths = render_steps_llm_mode(
@@ -1264,10 +1267,12 @@ def create_app(
         return load_models_config(resolved_config_path).model_dump()
 
     @app.get("/ui/config")
-    def ui_config(saved: str | None = None):
+    def ui_config(saved: str | None = None, warning: str | None = None):
         cfg = load_models_config(resolved_config_path)
         return HTMLResponse(
-            render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved))
+            render_config_page(
+                cfg.model_dump(), key_status(cfg), saved=bool(saved), warning=warning
+            )
         )
 
     @app.post("/ui/config")
@@ -1333,7 +1338,10 @@ def create_app(
             raise HTTPException(
                 status_code=500, detail=f"could not save config to {resolved_config_path}: {exc}"
             ) from exc
-        return RedirectResponse("/ui/config?saved=1", status_code=303)
+        url = "/ui/config?saved=1"
+        if warning := vision_model_warning(cfg.steps):
+            url += "&" + urlencode({"warning": warning})
+        return RedirectResponse(url, status_code=303)
 
     @app.get("/version")
     def get_version():
