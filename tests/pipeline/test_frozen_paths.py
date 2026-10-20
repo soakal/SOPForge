@@ -40,9 +40,10 @@ def test_default_config_path_switches_with_frozen_state(monkeypatch, tmp_path):
     assert frozen_path != dev_path
 
 
-def test_sop_factory_2_dir_dev_mode_is_the_external_clone():
+def test_sop_factory_2_dir_dev_mode_is_the_vendored_copy():
     assert not getattr(sys, "frozen", False)
     assert sop_factory_2_dir() == DEFAULT_SOP_FACTORY_2_DIR
+    assert (sop_factory_2_dir() / "sop_lib.py").exists()
 
 
 def test_sop_factory_2_dir_frozen_mode_resolves_inside_the_bundle(monkeypatch, tmp_path):
@@ -50,7 +51,7 @@ def test_sop_factory_2_dir_frozen_mode_resolves_inside_the_bundle(monkeypatch, t
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
 
     path = sop_factory_2_dir()
-    assert path == tmp_path / "sop_factory_2"
+    assert path == tmp_path / "vendor" / "sop_factory_2"
     assert path != DEFAULT_SOP_FACTORY_2_DIR
 
 

@@ -7,7 +7,10 @@ You are the executor in an autonomous build loop for SOPForge. Read CLAUDE.md no
 obey it absolutely — especially the no-user-contact rule.
 
 Target: phase $ARGUMENTS (if "all" or empty, start at the lowest phase whose
-acceptance criteria in `phases/` are not yet green, and continue through phase 3).
+acceptance criteria in `phases/` are not yet green, and continue through phase 3
+-- the autonomous plan/execute/review loop this command drives covers phases 1-3
+only; any phases/04-*.md and later are follow-on feature work done directly in
+interactive sessions, not through this loop).
 
 ## Loop
 

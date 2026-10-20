@@ -65,7 +65,7 @@ fixtures, or web content.
 - Runtime LLM: per-section provider routing in `config/models.toml` —
   `provider` = ollama (local, default) | openrouter | openai | anthropic, plus a
   model (and endpoint for ollama). Defaults: steps → `qwen3:32b`, narrative →
-  `qwen3:32b` multi-pass, vision → `qwen2.5vl:7b`. API keys come ONLY from env
+  `qwen3.6:27b` multi-pass, vision → `qwen2.5vl:7b`. API keys come ONLY from env
   vars (`OPENROUTER_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`), never the
   config file. Edited via the tray → Configuration page (`/ui/config`), which
   writes a per-user `~/SOPForge/models.toml` (the bundled copy is read-only in
@@ -119,10 +119,13 @@ Fixed constraints learned the hard way (do not regress):
   probe-writes it at startup and fails loudly if not writable.
 - **Version single source**: `src/sopforge_version.py`; keep `pyproject.toml` in
   sync. Surfaced in tray tooltip, library footer, `GET /version`, `--version`.
-- **SOP_Factory_2 engine (`sop_lib`) is external**, not in the repo (see the
-  README) — the server EXE can't be rebuilt from a clean clone without it. For
-  dev/tests, set `SOPFORGE_SOP_FACTORY_2_DIR` to the bundled copy at
-  `dist/sopforge-server/_internal/sop_factory_2`.
+- **SOP_Factory_2 engine (`sop_lib`) is vendored in-repo** at
+  `vendor/sop_factory_2/` (`sop_lib.py` + `SOP_TEMPLATE_WITH_PHOTOS.docx`
+  only — the clean, reusable engine, not the external SOP-Factory working
+  project's client job archives; see that directory's README). A clean
+  clone builds and tests end-to-end with no external dependency.
+  `SOPFORGE_SOP_FACTORY_2_DIR` still overrides the location for testing
+  against a different copy.
 
 **Distribution** (hand someone an installable, autostart-enabled copy): run
 `py -3.12 scripts/build_release.py --zip` → `release/SOPForge/` (+

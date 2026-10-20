@@ -24,6 +24,7 @@ from pynput import keyboard
 
 from capture import __version__
 from capture.recorder import Recorder
+from capture.settings import load_settings, save_settings
 from capture.upload import server_url_from_env, upload_session
 
 logger = logging.getLogger(__name__)
@@ -72,12 +73,15 @@ class TrayApp:
         open_browser_fn=webbrowser.open,
         shutdown_fn=_request_server_shutdown,
         notify_fn=None,
+        settings_path=None,
     ):
         self.captures_root = Path(captures_root)
         self.server_url = server_url or server_url_from_env()
         self._upload_fn = upload_fn
         self._open_browser_fn = open_browser_fn
         self._shutdown_fn = shutdown_fn
+        self._settings_path = settings_path
+        self._settings = load_settings(settings_path)
         # Desktop balloon notifications default to the real tray icon's
         # .notify (Windows toast). Injectable so tests can assert on the
         # failure notification without a live icon. Called only from the
@@ -91,6 +95,11 @@ class TrayApp:
             f"SOPForge v{__version__} (idle)",
             menu=pystray.Menu(
                 pystray.MenuItem("Start/Stop recording", self.toggle_recording),
+                pystray.MenuItem(
+                    "Record narration (mic)",
+                    self.toggle_narration,
+                    checked=lambda item: self._settings.record_narration,
+                ),
                 pystray.MenuItem("Open SOPForge library", self.open_library),
                 pystray.MenuItem("Configuration", self.open_config),
                 pystray.MenuItem("Exit", self.exit),
@@ -120,6 +129,18 @@ class TrayApp:
                 "SOPForge",
             )
 
+    def toggle_narration(self):
+        """Flips the "record narration (mic)" preference and persists it --
+        read fresh by the next _start_recording(), not the currently active
+        session (if any). Runs on pystray's menu thread, same constraint as
+        toggle_recording: a raised exception here must never propagate, or
+        it silently breaks the tray menu."""
+        try:
+            self._settings.record_narration = not self._settings.record_narration
+            save_settings(self._settings, self._settings_path)
+        except Exception:  # noqa: BLE001 - the in-memory flag still flips even if persisting fails
+            logger.exception("could not persist narration recording preference")
+
     def _start_recording(self):
         """Caller must hold self._lock. Starts into a local variable first —
         only published to self._recorder once start() has actually
@@ -127,7 +148,7 @@ class TrayApp:
         real hooks installed."""
         if self.is_recording:
             return
-        recorder = Recorder(self.captures_root)
+        recorder = Recorder(self.captures_root, record_narration=self._settings.record_narration)
         recorder.start()
         self._recorder = recorder
         self._icon.icon = RECORDING_ICON

@@ -237,3 +237,15 @@ exit codes `[0, 0, 0, 0]`. AC5 E2E: still passes. Full suite: 241 passed,
 - Steady-state launches (3 repeats): 2.009s, 2.018s, 1.990s (average 2.006s, threshold 5.0s)
 - Clean exit return codes: [0, 0, 0, 0]
 
+## AC3: sopforge-server.exe cold-start timing and clean exit
+
+- First launch after build: 2.464s (one-time AV-scan cost, same mechanism as Phase 1's sopforge.exe — see phases/DEVIATIONS.md)
+- Steady-state launches (3 repeats): 1.789s, 1.772s, 1.782s (average 1.781s, threshold 5.0s)
+- Clean exit return codes: [0, 0, 0, 0]
+
+## AC3: sopforge-server.exe cold-start timing and clean exit
+
+- First launch after build: 2.483s (one-time AV-scan cost, same mechanism as Phase 1's sopforge.exe — see phases/DEVIATIONS.md)
+- Steady-state launches (3 repeats): 1.875s, 1.774s, 1.803s (average 1.817s, threshold 5.0s)
+- Clean exit return codes: [0, 0, 0, 0]
+

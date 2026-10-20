@@ -1,6 +1,6 @@
 """Recorder orchestration integration test: drives events through
 `_process_event` directly (the same slow pipeline the queue-draining worker
-thread calls) rather than injecting real OS-level clicks — this build VM
+thread calls) rather than injecting real OS-level clicks â€” this build VM
 denies synthetic input outright (see .claude/skills/uia-notes.md), so no
 OS-level injection could ever reach the real hooks here regardless of API.
 What *is* real: UIA resolution against a live scratch window, manifest
@@ -95,7 +95,7 @@ def test_scripted_session_produces_ordered_manifest_and_screenshots(
         assert png.stat().st_size > 0
         assert isinstance(step["redactions"], list)
 
-    # Redaction ran exactly once per step, over that step's own screenshot —
+    # Redaction ran exactly once per step, over that step's own screenshot â€”
     # proves the capture-then-redact wiring, independent of whether any
     # pattern happened to match this run's (uniform gray, faked) pixels.
     assert len(redact_calls) == 3
@@ -110,7 +110,7 @@ def test_redaction_result_is_attached_to_its_manifest_step(
     scratch_window, fake_mss, tmp_path, monkeypatch
 ):
     """Deterministic check that whatever redact_screenshot_tagged() returns
-    ends up verbatim on the *correct* step's `redactions` field — would catch
+    ends up verbatim on the *correct* step's `redactions` field â€” would catch
     e.g. a password-heuristic blur mislabeled as reason "pattern", or a
     region silently dropped between redaction and manifest write."""
     fake_result = [{"region": [1, 2, 3, 4], "reason": "password_heuristic"}]
@@ -190,7 +190,6 @@ def test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame(tmp_p
         ),
     )
     monkeypatch.setattr(shots_module.mss, "mss", lambda: _TwoMonitorSct())
-    monkeypatch.setattr(recorder_module, "monitor_scale", lambda x, y: 1.0)
     captured_elements = []
 
     def fake_redact(image_path, element=None, config=None, out_path=None):
@@ -217,6 +216,184 @@ def test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame(tmp_p
     # Redaction must see the SAME translated rect, not the raw global one --
     # otherwise the password blur lands in the wrong place on this monitor.
     assert captured_elements[0]["bounding_rect"] == [80, 100, 180, 130]
+
+
+def _click_event(x=1, y=1, ts=1_700_000_000.0):
+    return {"action": "click", "button": "left", "x": x, "y": y, "ts": ts}
+
+
+def _patch_resolve_at_empty(monkeypatch):
+    monkeypatch.setattr(
+        recorder_module,
+        "resolve_at",
+        lambda x, y: (
+            {
+                "name": "",
+                "control_type": "",
+                "automation_id": "",
+                "framework": "",
+                "bounding_rect": None,
+            },
+            {"title": "", "process": "", "class": ""},
+        ),
+    )
+
+
+class _FakeNarrationRecorder:
+    """Stands in for capture.narration.NarrationRecorder: writes a tiny real
+    file on stop() (proving Recorder actually passes the path through) and
+    lets each test control start()/stop()'s return value independently."""
+
+    def __init__(self, start_result=True, stop_result="wrote"):
+        self.start_result = start_result
+        self.stop_result = stop_result
+        self.start_called = False
+        self.stop_called_with = None
+
+    def start(self):
+        self.start_called = True
+        if isinstance(self.start_result, Exception):
+            raise self.start_result
+        return self.start_result
+
+    def stop(self, out_path):
+        self.stop_called_with = out_path
+        if isinstance(self.stop_result, Exception):
+            raise self.stop_result
+        if self.stop_result == "wrote":
+            Path(out_path).write_bytes(b"RIFF....WAVEfmt ")
+            return str(out_path)
+        return self.stop_result
+
+
+def test_default_no_record_narration_produces_null_narration_wav(tmp_path, fake_mss, monkeypatch):
+    """Regression proof: a Recorder that never opts into narration must
+    behave exactly as it did before this feature existed -- no
+    NarrationRecorder instantiated, narration_wav stays null."""
+    _patch_resolve_at_empty(monkeypatch)
+    recorder = Recorder(tmp_path)
+    assert recorder._narration is None
+    recorder.start()
+    try:
+        recorder._process_event(_click_event())
+    finally:
+        manifest_path = recorder.stop()
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert data["session"]["narration_wav"] is None
+    assert not (recorder.output_dir / "narration.wav").exists()
+
+
+def test_record_narration_enabled_writes_wav_path_to_manifest(tmp_path, fake_mss, monkeypatch):
+    _patch_resolve_at_empty(monkeypatch)
+    fake = _FakeNarrationRecorder(start_result=True, stop_result="wrote")
+    monkeypatch.setattr(recorder_module, "NarrationRecorder", lambda: fake)
+
+    recorder = Recorder(tmp_path, record_narration=True)
+    recorder.start()
+    assert fake.start_called
+    try:
+        recorder._process_event(_click_event())
+    finally:
+        manifest_path = recorder.stop()
+
+    assert fake.stop_called_with == recorder.output_dir / "narration.wav"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert data["session"]["narration_wav"] == "narration.wav"
+    assert (recorder.output_dir / "narration.wav").exists()
+
+
+def test_record_narration_enabled_but_no_mic_stays_null(tmp_path, fake_mss, monkeypatch):
+    _patch_resolve_at_empty(monkeypatch)
+    fake = _FakeNarrationRecorder(start_result=False, stop_result=None)
+    monkeypatch.setattr(recorder_module, "NarrationRecorder", lambda: fake)
+
+    recorder = Recorder(tmp_path, record_narration=True)
+    recorder.start()
+    try:
+        recorder._process_event(_click_event())
+    finally:
+        manifest_path = recorder.stop()
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert data["session"]["narration_wav"] is None
+
+
+def test_record_narration_start_failure_does_not_break_session(tmp_path, fake_mss, monkeypatch):
+    """NarrationRecorder.start() can raise OSError when a mic is present but
+    busy/blocked (see capture/narration.py) -- Recorder.start() must swallow
+    it, not propagate, since narration is an optional add-on to the real
+    capture session."""
+    _patch_resolve_at_empty(monkeypatch)
+    fake = _FakeNarrationRecorder(start_result=OSError("simulated: device busy"))
+    monkeypatch.setattr(recorder_module, "NarrationRecorder", lambda: fake)
+
+    recorder = Recorder(tmp_path, record_narration=True)
+    recorder.start()  # must not raise
+    try:
+        recorder._process_event(_click_event())
+    finally:
+        manifest_path = recorder.stop()  # must not raise either
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(data["steps"]) == 1
+    assert data["session"]["narration_wav"] is None
+
+
+def test_record_narration_stop_failure_does_not_break_session(tmp_path, fake_mss, monkeypatch):
+    _patch_resolve_at_empty(monkeypatch)
+    fake = _FakeNarrationRecorder(start_result=True, stop_result=OSError("simulated: MCI failure"))
+    monkeypatch.setattr(recorder_module, "NarrationRecorder", lambda: fake)
+
+    recorder = Recorder(tmp_path, record_narration=True)
+    recorder.start()
+    try:
+        recorder._process_event(_click_event())
+    finally:
+        manifest_path = recorder.stop()  # must not raise
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert data["session"]["narration_wav"] is None
+
+
+def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, monkeypatch):
+    """`_enqueue_event` is the actual pynput hook callback (wired via
+    InputRecorder(on_event=self._enqueue_event)) â€” it must return almost
+    instantly regardless of how slow resolve_at/screenshot/redaction are,
+    or Windows will silently detach the low-level hook. This is why event
+    ingestion (fast, hook thread) is decoupled from processing (slow, one
+    dedicated worker thread) via a queue instead of processing inline."""
+
+    def slow_resolve_at(x, y):
+        time.sleep(1.0)
+        return {
+            "name": "",
+            "control_type": "",
+            "automation_id": "",
+            "framework": "",
+            "bounding_rect": None,
+        }, {"title": "", "process": "", "class": ""}
+
+    monkeypatch.setattr(recorder_module, "resolve_at", slow_resolve_at)
+
+    recorder = Recorder(tmp_path)
+    recorder.start()
+    try:
+        t0 = time.time()
+        recorder._enqueue_event(
+            {"action": "click", "button": "left", "x": 1, "y": 1, "ts": time.time()}
+        )
+        elapsed = time.time() - t0
+        assert elapsed < 0.2, f"hook callback took {elapsed:.3f}s â€” must be near-instant"
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline and len(recorder._builder.step_ids()) == 0:
+            time.sleep(0.05)
+        assert len(recorder._builder.step_ids()) == 1  # worker thread did process it
+    finally:
+        manifest_path = recorder.stop()
+
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert len(data["steps"]) == 1
 
 
 class _NegativeOriginSct(_TwoMonitorSct):
@@ -273,44 +450,3 @@ def test_mixed_dpi_scale_is_recorded_per_step(tmp_path, monkeypatch):
         tmp_path, monkeypatch, _TwoMonitorSct, [(100, 100), (2500, 400)], [0, 0, 10, 10]
     )
     assert [s["screen"]["scale"] for s in steps] == [1.0, 1.5]
-
-
-def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, monkeypatch):
-    """`_enqueue_event` is the actual pynput hook callback (wired via
-    InputRecorder(on_event=self._enqueue_event)) — it must return almost
-    instantly regardless of how slow resolve_at/screenshot/redaction are,
-    or Windows will silently detach the low-level hook. This is why event
-    ingestion (fast, hook thread) is decoupled from processing (slow, one
-    dedicated worker thread) via a queue instead of processing inline."""
-
-    def slow_resolve_at(x, y):
-        time.sleep(1.0)
-        return {
-            "name": "",
-            "control_type": "",
-            "automation_id": "",
-            "framework": "",
-            "bounding_rect": None,
-        }, {"title": "", "process": "", "class": ""}
-
-    monkeypatch.setattr(recorder_module, "resolve_at", slow_resolve_at)
-
-    recorder = Recorder(tmp_path)
-    recorder.start()
-    try:
-        t0 = time.time()
-        recorder._enqueue_event(
-            {"action": "click", "button": "left", "x": 1, "y": 1, "ts": time.time()}
-        )
-        elapsed = time.time() - t0
-        assert elapsed < 0.2, f"hook callback took {elapsed:.3f}s — must be near-instant"
-
-        deadline = time.time() + 5.0
-        while time.time() < deadline and len(recorder._builder.step_ids()) == 0:
-            time.sleep(0.05)
-        assert len(recorder._builder.step_ids()) == 1  # worker thread did process it
-    finally:
-        manifest_path = recorder.stop()
-
-    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert len(data["steps"]) == 1

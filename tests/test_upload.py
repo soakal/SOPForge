@@ -134,6 +134,67 @@ def test_upload_session_returns_none_when_steps_is_malformed(tmp_path):
     assert result is None
 
 
+def test_upload_session_omits_narration_field_when_wav_missing_from_disk(tmp_path):
+    """sample-manifest.json already declares session.narration_wav ==
+    "narration.wav" with no such file ever written by _write_session --
+    this is the exact case a manifest that predates (or has narration
+    disabled for) this feature produces. Must be byte-identical to the
+    pre-feature behavior: no narration_wav_file field sent, no crash."""
+    output_dir, manifest = _write_session(tmp_path)
+    assert manifest["session"]["narration_wav"] == "narration.wav"
+    assert not (output_dir / "narration.wav").exists()
+    captured = {}
+
+    def handler(request):
+        captured["body"] = request.read()
+        return httpx.Response(200, json={"session_id": "new-id-123"})
+
+    session_id = upload_session(
+        output_dir, server_url="http://fake-server", transport=httpx.MockTransport(handler)
+    )
+
+    assert session_id == "new-id-123"
+    assert b"narration_wav_file" not in captured["body"]
+
+
+def test_upload_session_sends_narration_wav_when_present(tmp_path):
+    output_dir, manifest = _write_session(tmp_path)
+    (output_dir / "narration.wav").write_bytes(b"RIFF....WAVEfmt ")
+
+    captured = {}
+
+    def handler(request):
+        captured["body"] = request.read()
+        return httpx.Response(200, json={"session_id": "new-id-123"})
+
+    session_id = upload_session(
+        output_dir, server_url="http://fake-server", transport=httpx.MockTransport(handler)
+    )
+
+    assert session_id == "new-id-123"
+    assert b'name="narration_wav_file"' in captured["body"]
+    assert b"narration.wav" in captured["body"]
+    assert b"RIFF....WAVEfmt " in captured["body"]
+
+
+def test_upload_session_omits_narration_field_when_no_narration_wav_key(tmp_path):
+    output_dir, manifest = _write_session(tmp_path)
+    manifest["session"]["narration_wav"] = None
+    (output_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    captured = {}
+
+    def handler(request):
+        captured["body"] = request.read()
+        return httpx.Response(200, json={"session_id": "new-id-123"})
+
+    session_id = upload_session(
+        output_dir, server_url="http://fake-server", transport=httpx.MockTransport(handler)
+    )
+
+    assert session_id == "new-id-123"
+    assert b"narration_wav_file" not in captured["body"]
+
+
 def test_server_url_from_env_defaults_to_localhost_8420(monkeypatch):
     monkeypatch.delenv("SOPFORGE_SERVER_URL", raising=False)
     assert server_url_from_env() == "http://127.0.0.1:8420"

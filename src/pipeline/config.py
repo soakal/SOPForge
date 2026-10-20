@@ -77,14 +77,6 @@ class SectionConfig(BaseModel):
     # template fallback it didn't need -- so any speedup from a
     # multi-GPU/parallel-capable Ollama server is opt-in, not assumed.
     max_concurrency: int = Field(default=1, ge=1)
-    # Only meaningful for [steps] (same steps-only handling as
-    # max_concurrency above -- never dumped for [narrative]/[polish], see
-    # dump_models_config_toml). Off by default: generate_step_text does not
-    # yet branch on this flag, so it currently has no runtime effect --
-    # it's config plumbing for a later step that will gate screenshot-image
-    # attachment on the per-step generation call. Defaults False so every
-    # existing models.toml (which predates this field) still loads unchanged.
-    use_vision: bool = False
 
     @model_validator(mode="after")
     def _legacy_anthropic(self):
@@ -149,11 +141,30 @@ class VisionConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # False here, but the shipped config/models.toml sets enabled=true --
+    # deliberate: this is the fallback for any [vision]-less models.toml
+    # from before the feature existed, not the product's actual default.
     enabled: bool = False
     endpoint: str = "http://192.168.200.60:11434/v1"
     model: str = "qwen2.5vl:7b"
     provider: VisionProvider = "ollama"
     max_concurrency: int = Field(default=4, ge=1)
+
+
+class TranscriptionConfig(BaseModel):
+    """Local speech-to-text (faster-whisper, src/pipeline/transcription.py)
+    over an uploaded/recorded narration.wav -- entirely local, no
+    provider/endpoint routing since there's nowhere else for it to go.
+    Off by default: transcription.py's model is untested against real
+    hardware in every deployment, and it must never silently start
+    transcribing audio a user didn't know was being processed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    model_size: str = "base"
+    device: Literal["cpu", "cuda", "auto"] = "cpu"
+    compute_type: str = "int8"
 
 
 class DocumentConfig(BaseModel):
@@ -176,6 +187,7 @@ class ModelsConfig(BaseModel):
     vision: VisionConfig = Field(default_factory=VisionConfig)
     document: DocumentConfig = Field(default_factory=DocumentConfig)
     polish: PolishConfig = Field(default_factory=lambda: PolishConfig(model=_POLISH_DEFAULT_MODEL))
+    transcription: TranscriptionConfig = Field(default_factory=TranscriptionConfig)
 
 
 def provider_endpoint(provider, configured_endpoint):
@@ -247,17 +259,12 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         "# Against an untuned single-slot server, raising this just queues",
         "# requests and risks a queued step's own timeout expiring into a",
         "# template fallback it didn't need. Default 1 (steps) is safe/sequential.",
-        "#",
-        "# use_vision (steps only): attaches each step's own screenshot to its",
-        "# generation call, for a vision-capable steps model. Default false --",
-        "# off keeps the exact plain-text prompt this app always sent.",
         "",
         "[steps]",
         f"provider = {_toml_str(cfg.steps.provider)}",
         f"endpoint = {_toml_str(cfg.steps.endpoint)}",
         f"model = {_toml_str(cfg.steps.model)}",
         f"max_concurrency = {_toml_str(cfg.steps.max_concurrency)}",
-        f"use_vision = {_toml_str(cfg.steps.use_vision)}",
         "",
         "[narrative]",
         f"provider = {_toml_str(cfg.narrative.provider)}",
@@ -289,6 +296,15 @@ def dump_models_config_toml(cfg: ModelsConfig) -> str:
         f"provider = {_toml_str(cfg.polish.provider)}",
         f"endpoint = {_toml_str(cfg.polish.endpoint)}",
         f"model = {_toml_str(cfg.polish.model)}",
+        "",
+        "# Optional local speech-to-text (faster-whisper) over a recorded/",
+        "# uploaded narration.wav. Off by default -- no provider/endpoint since",
+        "# it's local-only. device: cpu / cuda / auto.",
+        "[transcription]",
+        f"enabled = {_toml_str(cfg.transcription.enabled)}",
+        f"model_size = {_toml_str(cfg.transcription.model_size)}",
+        f"device = {_toml_str(cfg.transcription.device)}",
+        f"compute_type = {_toml_str(cfg.transcription.compute_type)}",
         "",
     ]
     return "\n".join(lines)

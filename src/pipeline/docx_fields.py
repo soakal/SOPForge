@@ -1,5 +1,6 @@
-"""Real Word TOC field support, layered on top of the external SOP Factory 2
-engine (`sop_lib.SOPBuilder`, CLAUDE.md: "extend it, do not rewrite it").
+"""Real Word TOC field support, layered on top of the vendored SOP Factory 2
+engine (`sop_lib.SOPBuilder`, vendor/sop_factory_2/, CLAUDE.md: "extend it,
+do not rewrite it").
 
 The engine's own `SOPBuilder.toc()` writes the table of contents as plain
 static paragraphs — no `TOC` field code, so Word can never build page
@@ -7,7 +8,7 @@ numbers or navigation for it, and right-click "Update Field" has nothing to
 act on. `SOPBuilder.heading1()`/`heading2()` likewise never set an outline
 level, so even a real `TOC` field would have nothing to collect.
 
-Rather than touch the external, unversioned engine file, this module drives
+Rather than hand-patch the vendored engine file, this module drives
 `SOPBuilder`'s own public methods for the visible formatting (so the VRSI
 look is untouched) and layers real OOXML field/outline-level plumbing on
 top via `sop.doc`, the `python-docx` Document the engine already exposes.
