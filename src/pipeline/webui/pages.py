@@ -301,7 +301,7 @@ _RECOMMENDED = {
         "anthropic": "claude-haiku-4-5-20251001",
     },
     "narrative": {
-        "ollama": "qwen3:32b",
+        "ollama": "qwen3.6:27b",
         "openrouter": "anthropic/claude-sonnet-5",
         "openai": "gpt-5.5",
         "anthropic": "claude-sonnet-5",
@@ -336,7 +336,7 @@ _MODEL_SUGGESTIONS = {
         ],
     },
     "narrative": {
-        "ollama": ["qwen3:32b", "qwen3.6:27b"],
+        "ollama": ["qwen3.6:27b", "qwen3:32b"],
         "openrouter": ["anthropic/claude-sonnet-5", "openai/gpt-5.5"],
         "openai": ["gpt-5.5", "gpt-5.4"],
         "anthropic": ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"],
@@ -410,7 +410,7 @@ def _config_row(key, heading, values, extra="", providers=None):
     )
 
 
-def render_config_page(config, keystatus, saved=False, warning=None):
+def render_config_page(config, keystatus, saved=False):
     steps, narr, vis, polish = (
         config["steps"],
         config["narrative"],
@@ -424,8 +424,6 @@ def render_config_page(config, keystatus, saved=False, warning=None):
         if saved
         else ""
     )
-    if warning:
-        saved_note += f'<p class="warning"><strong>Warning:</strong> {html.escape(warning)}</p>'
     checked = " checked" if vis.get("enabled") else ""
     vision_extra = (
         '<div class="field"><label><input type="checkbox" name="vision_enabled"'
