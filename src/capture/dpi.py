@@ -21,7 +21,19 @@ def _winapi():
     if sys.platform != "win32":
         return None, None
     try:
-        return ctypes.windll.user32, ctypes.windll.shcore
+        user32, shcore = ctypes.windll.user32, ctypes.windll.shcore
+        # Default restype is a 32-bit int: would truncate the pointer-sized HMONITOR.
+        user32.MonitorFromPoint.argtypes = [wintypes.POINT, wintypes.DWORD]
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+        user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
+        shcore.GetDpiForMonitor.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_int,
+            ctypes.POINTER(ctypes.c_uint),
+            ctypes.POINTER(ctypes.c_uint),
+        ]
+        return user32, shcore
     except (AttributeError, OSError):
         return None, None
 
