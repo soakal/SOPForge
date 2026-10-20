@@ -1682,6 +1682,49 @@ def test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration(
     assert "**Narration:**" not in md
 
 
+def test_photo_build_semantic_rescue_keeps_aligned_slices_verbatim_under_captions(
+    tmp_path, monkeypatch
+):
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda *a, **k: ["Cap one.", "Cap two."])
+
+    def _align(content, manifest, contexts, llm):
+        ids = [s.id for s in manifest.steps]
+        return {ids[0]: "okay open the console", ids[1]: "um then hit save"}, {}
+
+    def _rewrite(per_step, *a, **k):
+        return {k: v.upper() for k, v in per_step.items()}, {}
+
+    monkeypatch.setattr(server_module, "semantic_align", _align)
+    monkeypatch.setattr(server_module, "polish_narration", _rewrite)
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.txt", b"okay open the console um then hit save", "text/plain"),
+        ),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    sid = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, sid)
+    assert _wait_for_terminal_status(client, sid)["status"] == "done"
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "okay open the console" in md
+    assert "um then hit save" in md
+    assert "OKAY OPEN" not in md
+
+
 def test_photo_build_export_polish_keeps_transcript_verbatim(tmp_path, monkeypatch):
     import io
 

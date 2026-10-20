@@ -539,6 +539,7 @@ def create_app(
         # per-step context this synthetic manifest has) instead of window/
         # element metadata, which doesn't exist here.
         placement_meta = None
+        verbatim = dict(per_step)
         if transcript_note and "WARNING" in transcript_note:
             step_contexts = build_step_contexts(
                 manifest,
@@ -548,7 +549,7 @@ def create_app(
                 ],
             )
             per_step, transcript_note, placement_meta = _run_semantic_pipeline(
-                narration, manifest, step_contexts, per_step, transcript_note
+                narration, manifest, step_contexts, per_step, transcript_note, raw_out=verbatim
             )
 
         step_results = []
@@ -560,7 +561,7 @@ def create_app(
                 "used_fallback": caption is None,
             }
             if caption and placed:
-                result["narration"] = placed
+                result["narration"] = verbatim.get(step.id, placed)
             step_results.append(result)
         _assert_1to1_mapping(manifest, step_results)
 
@@ -839,7 +840,9 @@ def create_app(
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
 
-    def _run_semantic_pipeline(content, manifest, step_contexts, per_step, note):
+    def _run_semantic_pipeline(
+        content, manifest, step_contexts, per_step, note, polish=True, raw_out=None
+    ):
         """Shared by the real-capture flow (_apply_transcript) and the photo
         build flow (_generate_photo): when the deterministic placement
         (transcript.py) collapses onto a single step despite there being
@@ -853,7 +856,9 @@ def create_app(
         deterministic result (with its warning); polish_narration failing
         keeps stage 1's verbatim placement. Returns (per_step, note,
         placement_meta) -- placement_meta is None if semantic_align declined
-        or "WARNING" wasn't in `note` to begin with (nothing to try)."""
+        or "WARNING" wasn't in `note` to begin with (nothing to try).
+        polish=False skips stage 2. raw_out, if given, receives stage 1's
+        verbatim slices before any polish (photo mode prints those as-is)."""
         if "WARNING" not in note:
             return per_step, note, None
 
@@ -867,19 +872,23 @@ def create_app(
                 close()
         if aligned:
             per_step, placement_meta = aligned
-            polish_llm = make_narrative_llm_client()
-            try:
-                per_step, polish_meta = polish_narration(
-                    per_step, manifest, step_contexts, polish_llm
-                )
-            finally:
-                close = getattr(polish_llm, "close", None)
-                if callable(close):
-                    close()
-            placement_meta.update(polish_meta)
+            if raw_out is not None:
+                raw_out.clear()
+                raw_out.update(per_step)
+            if polish:
+                polish_llm = make_narrative_llm_client()
+                try:
+                    per_step, polish_meta = polish_narration(
+                        per_step, manifest, step_contexts, polish_llm
+                    )
+                finally:
+                    close = getattr(polish_llm, "close", None)
+                    if callable(close):
+                        close()
+                placement_meta.update(polish_meta)
             note = (
                 f"{len(per_step)} of {len(manifest.steps)} step(s) narrated "
-                "(semantic placement + polish)"
+                f"(semantic placement{' + polish' if polish else ''})"
             )
         return per_step, note, placement_meta
 
