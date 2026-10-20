@@ -661,6 +661,7 @@ def create_app(
             narrative_text=narrative_text,
             polish_override=polish_override,
             claims=claims,
+            verbatim_narration=True,
         )
 
     def _write_all_exports(
@@ -674,6 +675,7 @@ def create_app(
         narrative_text=None,
         polish_override=None,
         claims=(),
+        verbatim_narration=False,
     ):
         """Render every output format + the review report from finished
         step_results and annotated images. Shared by both generation modes.
@@ -729,6 +731,10 @@ def create_app(
             steps_by_id = {s.id: s for s in manifest.steps}
             reverted = []
             for old, new in zip(step_results, md_step_results):
+                # Photo mode: uploaded transcript text is placed verbatim, so
+                # an export polish may not rewrite it.
+                if verbatim_narration and "narration" in old:
+                    new["narration"] = old["narration"]
                 if new["text"] != old["text"] and (
                     old.get("used_fallback")
                     or not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]

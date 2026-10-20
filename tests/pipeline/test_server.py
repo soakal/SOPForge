@@ -1595,6 +1595,47 @@ def test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration(
     assert "**Narration:**" not in md
 
 
+def test_photo_build_export_polish_keeps_transcript_verbatim(tmp_path, monkeypatch):
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(
+        server_module, "caption_images", lambda *a, **k: ["Caption one.", "Caption two."]
+    )
+
+    def _upper_polish(narrative_text, step_results, llm):
+        steps = [
+            {**s, **{k: s[k].upper() for k in ("text", "narration") if s.get(k)}}
+            for s in step_results
+        ]
+        return narrative_text, steps, {"attempted": True}
+
+    client = _polish_enabled_app(tmp_path, monkeypatch, _upper_polish)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.txt", b"1. Open the first screen.\n2. Then the second.", "text/plain"),
+        ),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    sid = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, sid)
+    assert _wait_for_terminal_status(client, sid)["status"] == "done"
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "Open the first screen." in md
+    assert "Then the second." in md
+    assert "OPEN THE FIRST SCREEN." not in md
+
+
 def test_photo_build_report_lists_caption_fallback_steps(tmp_path, monkeypatch):
     client, sid = _photo_build_with_captions(tmp_path, monkeypatch, ["A caption.", None])
     report = client.get(f"/sessions/{sid}/report").json()
