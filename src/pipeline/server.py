@@ -548,13 +548,15 @@ def create_app(
 
         step_results = []
         for step, caption in zip(manifest.steps, captions):
-            step_results.append(
-                {
-                    "step_id": step.id,
-                    "text": caption or per_step.get(step.id) or "(no description provided)",
-                    "used_fallback": caption is None,
-                }
-            )
+            placed = per_step.get(step.id)
+            result = {
+                "step_id": step.id,
+                "text": caption or placed or "(no description provided)",
+                "used_fallback": caption is None,
+            }
+            if caption and placed:
+                result["narration"] = placed
+            step_results.append(result)
         _assert_1to1_mapping(manifest, step_results)
 
         # A title + one-line overview from the narration (best-effort). Fill the

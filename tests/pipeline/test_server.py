@@ -1538,6 +1538,63 @@ def test_build_uses_vision_captions_when_available(tmp_path, monkeypatch):
     assert "vision" in report
 
 
+def _photo_build_with_captions(tmp_path, monkeypatch, captions):
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda *a, **k: list(captions))
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.txt", b"1. Open the first screen.\n2. Then the second.", "text/plain"),
+        ),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+    return client, session_id
+
+
+def test_photo_build_with_vision_on_places_transcript_verbatim_under_each_step(
+    tmp_path, monkeypatch
+):
+    client, sid = _photo_build_with_captions(
+        tmp_path,
+        monkeypatch,
+        ["Vision caption for image 1.", "Vision caption for image 2."],
+    )
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "Vision caption for image 1." in md
+    assert "Vision caption for image 2." in md
+    assert "Open the first screen." in md
+    assert "Then the second." in md
+    assert md.count("**Narration:**") == 2
+    html = client.get(f"/sessions/{sid}/doc.html").text
+    assert "Open the first screen." in html
+    assert "Then the second." in html
+
+
+def test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration(
+    tmp_path, monkeypatch
+):
+    client, sid = _photo_build_with_captions(tmp_path, monkeypatch, [None, None])
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert md.count("Open the first screen.") == 1
+    assert md.count("Then the second.") == 1
+    assert "**Narration:**" not in md
+
+
 def test_photo_build_reports_caption_progress(tmp_path, monkeypatch):
     """Photo-mode's processing page shows a progress bar too, driven by
     caption completions instead of step generations."""
