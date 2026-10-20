@@ -869,6 +869,45 @@ def test_polish_end_to_end_real_prompt_claim_coverage_rejection(tmp_path):
         )
 
 
+def _run_polish_job(tmp_path, narrative_stub, transcript):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: narrative_stub,
+        polish_llm_client_factory=lambda section: _RealPromptParsingPolishStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    if transcript is not None:
+        files.append(("transcript_file", ("t.md", transcript.encode(), "text/markdown")))
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    return client, session_id, _wait_for_terminal_status(client, session_id)
+
+
+def test_polish_enabled_with_failing_narrative_still_writes_the_doc(tmp_path):
+    client, session_id, status = _run_polish_job(
+        tmp_path, _RaisingNarrativeStub(), "first click save then enter the computer name"
+    )
+    assert status["status"] == "done"
+    doc = client.get(f"/sessions/{session_id}/doc.md")
+    assert doc.status_code == 200
+    assert "[verify] (claim-001)" in doc.text
+    assert client.get(f"/sessions/{session_id}/report").status_code == 200
+
+
+def test_polish_enabled_with_no_claims_and_no_narrative_does_not_crash(tmp_path):
+    client, session_id, status = _run_polish_job(tmp_path, _RaisingNarrativeStub(), None)
+    assert status["status"] == "done"
+    assert client.get(f"/sessions/{session_id}/doc.md").status_code == 200
+
+
 def test_review_page_renders_sidecar_report(tmp_path):
     client = _make_client(tmp_path)
     session_id, status = _create_and_wait(client, tmp_path)

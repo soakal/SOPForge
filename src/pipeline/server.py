@@ -696,7 +696,7 @@ def create_app(
             # known-good original narrative_text rather than ship a doc with
             # a silently dropped claim. Step text/narration polish carries no
             # such risk and is kept either way.
-            ok, missing = validate_claim_coverage(md_narrative_text, claims)
+            ok, missing = validate_claim_coverage(md_narrative_text or "", claims)
             if not ok:
                 report["polish_rejected_claim_coverage"] = missing
                 md_narrative_text = narrative_text
