@@ -46,7 +46,9 @@ def _prompt(narration, index, total):
     )
 
 
-def _caption_one(path, narration, index, total, endpoint, model, timeout, transport, api_key):
+def _caption_one(
+    path, narration, index, total, endpoint, model, timeout, transport, api_key, trust_env=False
+):
     """Returns the caption text, or None on any failure -- including a
     degenerate reply (a repetition loop, a leaked chat-template special
     token) treated exactly like an HTTP failure, since the caller's
@@ -59,7 +61,9 @@ def _caption_one(path, narration, index, total, endpoint, model, timeout, transp
         # firewalled endpoint fails fast per image instead of stalling the whole
         # build ~timeout seconds each.
         client_timeout = httpx.Timeout(timeout, connect=5.0)
-        with httpx.Client(transport=transport, timeout=client_timeout) as client:
+        with httpx.Client(
+            transport=transport, timeout=client_timeout, trust_env=trust_env
+        ) as client:
             resp = client.post(
                 f"{endpoint.rstrip('/')}/chat/completions",
                 headers=headers,
@@ -105,6 +109,7 @@ def caption_images(
     max_workers=4,
     transport=None,
     on_progress=None,
+    trust_env=False,
 ):
     """Caption each image, in parallel. Returns a list the same length as
     image_paths; each entry is the caption string or None on failure. Order is
@@ -120,7 +125,7 @@ def caption_images(
     def work(item):
         index, path = item
         return _caption_one(
-            path, narration, index, total, endpoint, model, timeout, transport, api_key
+            path, narration, index, total, endpoint, model, timeout, transport, api_key, trust_env
         )
 
     results = [None] * total

@@ -323,3 +323,24 @@ def test_request_server_shutdown_is_best_effort_when_server_unreachable():
 
     # Nothing is listening on this port -> connection refused, must be swallowed.
     _request_server_shutdown("http://127.0.0.1:59999", timeout=0.5)  # must not raise
+
+
+def test_shutdown_request_client_ignores_proxy_environment(monkeypatch):
+    import httpx
+
+    from capture.tray import _request_server_shutdown
+
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(var, "http://203.0.113.1:3128")
+    recorded, requests = [], []
+    real_client = httpx.Client
+
+    def spy(*args, **kwargs):
+        recorded.append(kwargs.get("trust_env"))
+        transport = httpx.MockTransport(lambda r: requests.append(r) or httpx.Response(200))
+        return real_client(transport=transport, **kwargs)
+
+    monkeypatch.setattr("capture.tray.httpx.Client", spy)
+    _request_server_shutdown("http://127.0.0.1:8420")
+    assert recorded == [False]
+    assert [r.url.path for r in requests] == ["/shutdown"]

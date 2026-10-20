@@ -138,6 +138,24 @@ def test_context_manager_closes_client():
         assert client.chat([{"role": "user", "content": "hi"}]) == "x"
 
 
+def _set_proxy_env(monkeypatch):
+    for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.setenv(var, "http://203.0.113.1:3128")
+
+
+def test_ollama_client_ignores_proxy_environment(monkeypatch):
+    _set_proxy_env(monkeypatch)
+    with LLMClient(SectionConfig(endpoint="http://127.0.0.1:11434/v1", model="m")) as client:
+        assert client._client._mounts == {}
+
+
+def test_cloud_provider_client_still_honors_proxy_environment(monkeypatch):
+    _set_proxy_env(monkeypatch)
+    config = SectionConfig(endpoint="http://x/v1", model="m", provider="openai")
+    with LLMClient(config) as client:
+        assert client._client._mounts
+
+
 def _ollama_reachable(url, timeout=2.0):
     parsed = urlparse(url)
     host = parsed.hostname

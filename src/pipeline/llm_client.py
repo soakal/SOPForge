@@ -50,6 +50,10 @@ class LLMClient:
             base_url=endpoint.rstrip("/"),
             transport=transport,
             timeout=httpx.Timeout(timeout, connect=connect_timeout),
+            # ollama is LAN/local-only and must never be redirected by
+            # HTTP(S)_PROXY/ALL_PROXY; cloud providers keep httpx's default so
+            # a corporate proxy still works for them.
+            trust_env=self.provider != "ollama",
         )
 
     def _api_key(self):

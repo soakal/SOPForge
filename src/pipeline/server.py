@@ -498,6 +498,7 @@ def create_app(
                 api_key=provider_api_key(vision_cfg.provider),
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
                 max_workers=vision_cfg.max_concurrency,
+                trust_env=vision_cfg.provider != "ollama",
             )
             vision_note = (
                 f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "

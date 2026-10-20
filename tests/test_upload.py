@@ -142,3 +142,18 @@ def test_server_url_from_env_defaults_to_localhost_8420(monkeypatch):
 def test_server_url_from_env_respects_override(monkeypatch):
     monkeypatch.setenv("SOPFORGE_SERVER_URL", "http://example:9000")
     assert server_url_from_env() == "http://example:9000"
+
+
+def test_upload_client_ignores_proxy_environment(tmp_path, monkeypatch):
+    output_dir, _ = _write_session(tmp_path)
+    recorded = []
+    real_client = httpx.Client
+
+    def spy(*args, **kwargs):
+        recorded.append(kwargs.get("trust_env"))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("capture.upload.httpx.Client", spy)
+    transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"session_id": "x"}))
+    upload_session(output_dir, server_url="http://fake-server", transport=transport)
+    assert recorded == [False]
