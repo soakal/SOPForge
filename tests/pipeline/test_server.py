@@ -1351,10 +1351,10 @@ def test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json(
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
     assert "This SOP walks through configuring the deployment console end to end." in md
-    # None of the fixed reply's words match the segments' text, so
-    # claim-coverage gating must have flagged all three -- one [verify]
-    # blockquote per segment, quoting that segment's actual text.
-    assert md.count("[verify]") == 3
+    # The timestamped segments are placed verbatim under their steps, so the
+    # narrative stage's coverage gate counts them as covered (placed_text)
+    # and adds no duplicate [verify] blockquote for any of them.
+    assert md.count("[verify]") == 0
     for text in segment_texts:
         assert text in md
     # The regression: raw JSON transcript syntax must never leak into the
@@ -1522,6 +1522,15 @@ def test_narrative_stage_verify_ids_reach_the_sidecar_report(tmp_path):
     assert md.count("[verify]") == 1
     assert report["verify_claims"][0]["claim_id"] == "claim-001"
     assert report["verify_claims"][0]["text"] == _RUN_ON
+
+
+def test_successful_narrative_stage_does_not_reflag_placed_claims(tmp_path):
+    transcript = (
+        "First, open the console.\n\nThen enter the computer name.\n\nFinally, check the downloads."
+    )
+    md, report = _run_narrative_job(tmp_path, _ParaphraseNarrativeStub(), transcript)
+    assert "[verify]" not in md
+    assert report["verify_claims"] == []
 
 
 def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monkeypatch):

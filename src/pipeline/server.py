@@ -454,12 +454,14 @@ def create_app(
         stage fails, every claim not already placed verbatim under a step
         (`placed_text`) still comes out as a [verify] blockquote rather than
         being silently dropped."""
-        narrative_llm = make_narrative_llm_client()
+        narrative_llm = None
         try:
+            narrative_llm = make_narrative_llm_client()
             text, _covered, verify_ids = generate_narrative(
                 claims,
                 narrative_llm,
                 passes=passes,
+                placed_text=placed_text,
             )
         except Exception as exc:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
             logger.warning("narrative stage failed (%s); emitting unplaced claims as [verify]", exc)
