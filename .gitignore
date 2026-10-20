@@ -14,3 +14,7 @@ STOP
 ESCALATION.md
 .pytest_cache/
 .ruff_cache/
+
+# raw agent transcripts from .audit loops (public repo)
+.audit/**/*.log
+.audit/*.log
