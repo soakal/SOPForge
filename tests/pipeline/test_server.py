@@ -1595,6 +1595,30 @@ def test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration(
     assert "**Narration:**" not in md
 
 
+def test_photo_build_report_lists_caption_fallback_steps(tmp_path, monkeypatch):
+    client, sid = _photo_build_with_captions(tmp_path, monkeypatch, ["A caption.", None])
+    report = client.get(f"/sessions/{sid}/report").json()
+    assert report["caption_fallback_steps"] == ["step-002"]
+    assert report["template_fallback_steps"] == []
+
+
+def test_photo_build_report_caption_fallback_empty_when_vision_disabled(tmp_path, monkeypatch):
+    import pipeline.config as config_module
+    import pipeline.server as server_module
+
+    original_load = config_module.load_models_config
+
+    def loaded_with_vision_disabled(*a, **k):
+        loaded = original_load(*a, **k)
+        loaded.vision.enabled = False
+        return loaded
+
+    monkeypatch.setattr(server_module, "load_models_config", loaded_with_vision_disabled)
+    client, sid = _photo_build_with_captions(tmp_path, monkeypatch, [None, None])
+    report = client.get(f"/sessions/{sid}/report").json()
+    assert report["caption_fallback_steps"] == []
+
+
 def test_photo_build_reports_caption_progress(tmp_path, monkeypatch):
     """Photo-mode's processing page shows a progress bar too, driven by
     caption completions instead of step generations."""

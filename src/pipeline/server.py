@@ -602,6 +602,9 @@ def create_app(
         verify_claims = (placement_meta or {}).get("verify_claims", [])
         report = {
             "template_fallback_steps": [],
+            "caption_fallback_steps": [r["step_id"] for r in step_results if r["used_fallback"]]
+            if vision_cfg.enabled
+            else [],
             "verify_claims": [
                 {"claim_id": c["claim_id"], "text": c.get("text")} for c in verify_claims
             ],

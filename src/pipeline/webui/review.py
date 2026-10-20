@@ -22,6 +22,7 @@ def render_review_page(report):
     body = "".join(
         [
             _list_section("Template-fallback steps", report.get("template_fallback_steps", [])),
+            _list_section("Caption-fallback steps", report.get("caption_fallback_steps", [])),
             _list_section("Verify claims", verify_items),
             _list_section("Empty-metadata steps", report.get("empty_metadata_steps", [])),
         ]

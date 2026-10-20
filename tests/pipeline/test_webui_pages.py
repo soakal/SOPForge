@@ -323,6 +323,20 @@ def test_session_page_colors_sidecar_sections_correctly(tmp_path):
     assert title_to_status["Empty-metadata steps"] == "yellow"
 
 
+def test_session_page_renders_caption_fallback_section():
+    from pipeline.webui.pages import render_session_page
+    from pipeline.webui.review import render_review_page
+
+    report = {"caption_fallback_steps": ["step-002"]}
+    page = render_session_page("sid", "T", "2026-01-01", report, {})
+    assert "Caption-fallback steps" in page
+    assert "step-002" in page
+    assert re.search(r'data-status="red"[^<]*<h2>Caption-fallback steps</h2>', page)
+    review = render_review_page(report)
+    assert "Caption-fallback steps" in review
+    assert "step-002" in review
+
+
 def test_session_page_has_rerender_form(tmp_path):
     client = _make_client(tmp_path)
     session_id = _create_and_wait(client, tmp_path)
