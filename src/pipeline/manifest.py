@@ -41,6 +41,7 @@ class Screen(BaseModel):
     x: int
     y: int
     monitor: int
+    scale: float = 1.0
 
 
 class Window(BaseModel):

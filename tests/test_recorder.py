@@ -190,6 +190,7 @@ def test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame(tmp_p
         ),
     )
     monkeypatch.setattr(shots_module.mss, "mss", lambda: _TwoMonitorSct())
+    monkeypatch.setattr(recorder_module, "monitor_scale", lambda x, y: 1.0)
     captured_elements = []
 
     def fake_redact(image_path, element=None, config=None, out_path=None):
@@ -211,11 +212,67 @@ def test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame(tmp_p
 
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     step = data["steps"][0]
-    assert step["screen"] == {"x": 580, "y": 400, "monitor": 2}
+    assert step["screen"] == {"x": 580, "y": 400, "monitor": 2, "scale": 1.0}
     assert step["element"]["bounding_rect"] == [80, 100, 180, 130]
     # Redaction must see the SAME translated rect, not the raw global one --
     # otherwise the password blur lands in the wrong place on this monitor.
     assert captured_elements[0]["bounding_rect"] == [80, 100, 180, 130]
+
+
+class _NegativeOriginSct(_TwoMonitorSct):
+    monitors = [
+        {"left": -1920, "top": 0, "width": 3840, "height": 1080},
+        {"left": 0, "top": 0, "width": 1920, "height": 1080},
+        {"left": -1920, "top": 0, "width": 1920, "height": 1080},
+    ]
+
+
+def _run_clicks(tmp_path, monkeypatch, sct_cls, points, rect):
+    monkeypatch.setattr(
+        recorder_module,
+        "resolve_at",
+        lambda x, y: (
+            {
+                "name": "n",
+                "control_type": "Edit",
+                "automation_id": "a",
+                "framework": "Win32",
+                "bounding_rect": rect,
+            },
+            {"title": "W", "process": "w.exe", "class": "win32"},
+        ),
+    )
+    monkeypatch.setattr(shots_module.mss, "mss", lambda: sct_cls())
+    monkeypatch.setattr(recorder_module, "_redact_screenshot_tagged", lambda *a, **k: [])
+    recorder = Recorder(tmp_path)
+    recorder.start()
+    try:
+        for i, (x, y) in enumerate(points):
+            recorder._process_event(
+                {"action": "click", "button": "left", "x": x, "y": y, "ts": 1_700_000_000.0 + i}
+            )
+    finally:
+        manifest_path = recorder.stop()
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(SCHEMA).validate(data)
+    return data["steps"]
+
+
+def test_negative_origin_monitor_translates_to_local_frame(tmp_path, monkeypatch):
+    steps = _run_clicks(
+        tmp_path, monkeypatch, _NegativeOriginSct, [(-100, 50)], [-200, 10, -100, 40]
+    )
+    assert steps[0]["screen"]["x"] == 1820
+    assert steps[0]["screen"]["y"] == 50
+    assert steps[0]["element"]["bounding_rect"] == [1720, 10, 1820, 40]
+
+
+def test_mixed_dpi_scale_is_recorded_per_step(tmp_path, monkeypatch):
+    monkeypatch.setattr(recorder_module, "monitor_scale", lambda x, y: 1.5 if x >= 1920 else 1.0)
+    steps = _run_clicks(
+        tmp_path, monkeypatch, _TwoMonitorSct, [(100, 100), (2500, 400)], [0, 0, 10, 10]
+    )
+    assert [s["screen"]["scale"] for s in steps] == [1.0, 1.5]
 
 
 def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, monkeypatch):

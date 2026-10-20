@@ -32,6 +32,17 @@ def test_wrong_type_is_invalid():
         validate(bad)
 
 
+def test_screen_scale_is_optional_number():
+    ok = copy.deepcopy(SAMPLE)
+    ok["steps"][0]["screen"].pop("scale", None)
+    validate(ok)
+    ok["steps"][0]["screen"]["scale"] = 1.5
+    validate(ok)
+    ok["steps"][0]["screen"]["scale"] = "1.5"
+    with pytest.raises(jsonschema.ValidationError):
+        validate(ok)
+
+
 def test_invalid_enum_is_invalid():
     bad = copy.deepcopy(SAMPLE)
     bad["steps"][0]["window"]["class"] = "not-a-real-class"

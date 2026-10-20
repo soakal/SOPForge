@@ -9,6 +9,7 @@ import threading
 import uuid
 from pathlib import Path
 
+from capture.dpi import monitor_scale
 from capture.hooks import InputRecorder
 from capture.manifest import ManifestBuilder
 from capture.redact import OcrUnavailableError, blur_regions, is_password_field, load_config
@@ -157,7 +158,12 @@ class Recorder:
             kwargs = {
                 "ts_utc": _utc_iso(event["ts"]),
                 "action": event["action"],
-                "screen": {"x": screen_x, "y": screen_y, "monitor": monitor_idx},
+                "screen": {
+                    "x": screen_x,
+                    "y": screen_y,
+                    "monitor": monitor_idx,
+                    "scale": monitor_scale(x, y),
+                },
                 "screenshot": filename,
                 "screenshot_placeholder": is_placeholder,
                 "window": window,
