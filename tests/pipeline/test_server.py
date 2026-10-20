@@ -322,6 +322,22 @@ def test_polish_rewrite_that_drops_the_element_name_is_reverted(tmp_path, monkey
     assert report["polish_reverted_steps"] == expected
 
 
+def test_polish_rephrase_is_kept_without_a_transcript(tmp_path, monkeypatch):
+    """No transcript -> the claims are the step texts themselves; a genuine
+    rephrase (here: dropping the trailing period) must not be reverted."""
+    client = _polish_enabled_app(
+        tmp_path,
+        monkeypatch,
+        _fake_polish(lambda step: step["text"].rstrip(".") + " now"),
+        llm_factory=_round_trip_passing_stub_factory,
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "polish_reverted_steps" not in report
+    assert " now" in client.get(f"/sessions/{session_id}/doc.md").text
+
+
 def test_polish_never_rewrites_template_fallback_steps(tmp_path, monkeypatch):
     manifest = load_manifest(FIXTURES / "sample-manifest.json")
     client = _polish_enabled_app(
@@ -1911,8 +1927,11 @@ def test_photo_build_unplaced_transcript_is_kept_as_verify_claim(tmp_path, monke
 
     monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
 
+    narrative_calls = []
+
     class _DecliningStub:
         def chat(self, messages, **kwargs):
+            narrative_calls.append(messages)
             return "not json"
 
     cfg = tmp_path / "models.toml"
@@ -1947,6 +1966,9 @@ def test_photo_build_unplaced_transcript_is_kept_as_verify_claim(tmp_path, monke
     report = client.get(f"/sessions/{session_id}/report").json()
     assert "WARNING" in report["transcript"]
     assert report["verify_claims"]
+    # Photo mode must not run the [narrative] LLM (held finding F-01).
+    # (the semantic-placement rescue shares this client; only it may call.)
+    assert [m for m in narrative_calls if "raw narration transcript" not in m[0]["content"]] == []
 
 
 def test_photo_build_caption_beats_placed_narration_and_informs_context(tmp_path, monkeypatch):

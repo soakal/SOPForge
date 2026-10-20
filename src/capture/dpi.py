@@ -20,9 +20,17 @@ def _winapi():
     """(user32, shcore) from ctypes.windll; (None, None) off-Windows or on failure."""
     if sys.platform != "win32":
         return None, None
+    # Load each DLL independently: a missing shcore must not discard user32.
+    user32 = shcore = None
     try:
-        user32, shcore = ctypes.windll.user32, ctypes.windll.shcore
+        user32 = ctypes.windll.user32
     except (AttributeError, OSError):
+        pass
+    try:
+        shcore = ctypes.windll.shcore
+    except (AttributeError, OSError):
+        pass
+    if user32 is None and shcore is None:
         return None, None
     # Each function is optional (older Windows lacks some): configure independently
     # so a missing one never discards the remaining fallbacks.

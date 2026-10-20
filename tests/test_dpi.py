@@ -84,6 +84,25 @@ def test_winapi_missing_v2_still_returns_handles_for_fallbacks(monkeypatch):
     assert dpi.set_process_dpi_awareness() == "system"
 
 
+def test_winapi_missing_shcore_still_returns_user32(monkeypatch):
+    class _Lib:
+        def __init__(self, **fns):
+            for k, v in fns.items():
+                setattr(self, k, v)
+
+    class _NoShcore:
+        user32 = _Lib(SetProcessDPIAware=lambda: 1)
+
+        def __getattr__(self, name):
+            raise OSError(name)
+
+    monkeypatch.setattr(dpi.sys, "platform", "win32")
+    monkeypatch.setattr(dpi.ctypes, "windll", _NoShcore(), raising=False)
+    user32, shcore = dpi._winapi()
+    assert user32 is _NoShcore.user32 and shcore is None
+    assert dpi.set_process_dpi_awareness() == "system"
+
+
 def test_monitor_scale_from_effective_dpi():
     calls = []
     user32 = _User32(calls)

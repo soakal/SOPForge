@@ -1,5 +1,15 @@
 # Deviations
 
+## audit-fixes F-10: photo-mode polish skips round_trip_ok
+
+PLAN F-10 acceptance #1 said the polish step gate applies to both build modes.
+In photo mode (`_write_all_exports(verbatim_narration=True)`) the step
+`round_trip_ok` check is skipped: the synthetic manifest has no real
+action/element/window (every step is a bare click), so a descriptive vision
+caption could never round-trip. The claim-coverage gate and the verbatim
+transcript-narration protection still apply. Pinned by
+`test_photo_polish_keeps_descriptive_vision_caption_rewrite`.
+
 ## UIPI
 
 **Acceptance criterion 6** (phases/01-capture.md): "Hotkey start/stop works

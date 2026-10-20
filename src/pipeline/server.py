@@ -447,6 +447,9 @@ def create_app(
             narrative_text=narrative_text,
             polish_override=polish_override,
             claims=claims,
+            # Without a transcript the claims ARE the step texts, so gating
+            # step rewrites on them would revert every genuine rephrase.
+            gate_steps_on_claims=transcript_path is not None,
         )
 
     def _narrative_with_coverage(claims, placed_text, passes):
@@ -596,9 +599,10 @@ def create_app(
                 # Plain line split needs no parsing/LLM, so the text still lands.
                 claims = _narration_to_claims(narration)
             if claims:
-                claim_text, narrative_verify_ids = _narrative_with_coverage(
-                    claims, "", load_models_config(resolved_config_path).narrative.passes
-                )
+                # Deterministic only: no [narrative] LLM in photo mode (wiring
+                # generate_narrative here is held finding F-01).
+                claim_text, _covered, narrative_verify_ids = ensure_claim_coverage("", claims)
+                claim_text = claim_text.strip()
                 if claim_text:
                     narrative_text = (
                         f"{narrative_text}\n\n{claim_text}" if narrative_text else claim_text
@@ -680,6 +684,7 @@ def create_app(
         polish_override=None,
         claims=(),
         verbatim_narration=False,
+        gate_steps_on_claims=True,
     ):
         """Render every output format + the review report from finished
         step_results and annotated images. Shared by both generation modes.
@@ -747,9 +752,12 @@ def create_app(
                         not verbatim_narration
                         and not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]
                     )
-                    or any(
-                        _claim_covered(c, old["text"]) and not _claim_covered(c, new["text"])
-                        for c in claims
+                    or (
+                        gate_steps_on_claims
+                        and any(
+                            _claim_covered(c, old["text"]) and not _claim_covered(c, new["text"])
+                            for c in claims
+                        )
                     )
                 ):
                     new["text"] = old["text"]
