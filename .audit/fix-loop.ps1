@@ -7,17 +7,16 @@
 #           Sonnet; <=2 fix iterations. Then commit .audit/ and push the branch.
 # Resume with -Phase build|verify|push, or -ResumePlanRound N (reuses plan_r(N-1) + review_rN, then revises).
 #Requires -Version 7
-param([ValidateSet('plan','build','verify','push')][string]$Phase = 'plan', [int]$PlanRounds = 3, [int]$VerifyIters = 2, [int]$ResumePlanRound = 0)
+param([ValidateSet('plan','build','verify','push')][string]$Phase = 'plan', [int]$PlanRounds = 3, [int]$VerifyIters = 2, [int]$ResumePlanRound = 0,
+      [string]$DiffBase = '', [string]$RunTag = '')   # -DiffBase/-RunTag: re-verify after porting onto a newer main
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent; $A = $PSScriptRoot; $F = "$A/fix"
 Set-Location $root
 New-Item -ItemType Directory -Force $F | Out-Null
 $sha = (Get-Content "$A/BASE_SHA" -Raw).Trim()
-$env:SOPFORGE_SOP_FACTORY_2_DIR = "$root/dist/sopforge-server/_internal/sop_factory_2"
-# Pre-existing at BASE_SHA: these two assert the hardcoded C:/Users/Brian dev path and fail whenever
-# the contract-required SOPFORGE_SOP_FACTORY_2_DIR override is set (verified 2026-10-20).
-$deselect = @('tests/pipeline/test_frozen_paths.py::test_sop_factory_2_dir_dev_mode_is_the_external_clone',
-              'tests/pipeline/test_frozen_paths.py::test_sop_factory_2_dir_frozen_mode_resolves_inside_the_bundle')
+# sop_lib is vendored upstream (vendor/sop_factory_2), so the full suite runs with no env override
+# and nothing deselected (re-verified 2026-10-20 after merging origin/main).
+$deselect = @()
 $trailer = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`nClaude-Session: https://claude.ai/code/session_01K58sSieResXwzjWUB3WBGs"
 
 function Rules($cmds) { $cmds | ForEach-Object { "Bash($_`:*)"; "PowerShell($_`:*)" } }
@@ -131,8 +130,7 @@ You are the SOPForge executor (Sonnet) on branch audit-fixes. Implement exactly 
 touch unrelated code, do not commit (the harness commits on green). Follow the CLAUDE.md contract
 (pipeline invariants; never weaken a test or acceptance criterion to pass). Write the tests named in
 the task. Before finishing run: py -3.12 -m ruff check src/ ; py -3.12 -m ruff format src/ ;
-py -3.12 -m pytest -x -q. Two pre-existing env failures in tests/pipeline/test_frozen_paths.py are
-expected; ignore only those.
+py -3.12 -m pytest -x -q.
 
 TASK $id
 $task$retry
@@ -145,7 +143,7 @@ $task$retry
         }
         $gateOut = if ($g.ok) { 'No files were changed.' } else { $g.out }
     }
-    git checkout -q -- . ; git clean -fdq -- src tests config
+    git checkout -q -- . ':!.audit' ; git clean -fdq -- src tests config   # never roll back .audit/ (this script lives there)
     "$id ($tag): FAILED gate twice`n$gateOut`n" | Add-Content "$F/BUILD_FAILURES.md"
     Write-Host "$id FAILED"; $false
 }
@@ -160,19 +158,30 @@ if ($Phase -eq 'build') {
 
 # ---------------- verify ----------------
 if ($Phase -eq 'verify') {
+    $vb = if ($DiffBase) { $DiffBase } else { $sha }
+    $ported = if ($DiffBase) { @"
+
+CONTEXT: the audit ran on $sha (v1.6.1), but main had moved on. The fixes were then ported onto main
+$DiffBase (v1.8.x) by a merge commit; review only `git diff $DiffBase..HEAD` (the audit-fixes delta on
+top of current main). For each item ALSO confirm the original finding actually applied to $DiffBase; if
+upstream already fixed it or made it moot, give LANDED and say so in evidence. F-06 was intentionally
+reverted (upstream removed steps.use_vision) and F-07's narrative-default switch was intentionally dropped
+(upstream deliberately chose qwen3.6:27b; scripts/verify_models.py kept): judge each LANDED only if the
+finding is genuinely moot on $DiffBase and docs and config agree.
+"@ } else { '' }
     for ($it = 0; $it -le $VerifyIters; $it++) {
         Assert-Clean
         $vp = @"
 {WHO}. $ro
 Verify that the fixes in the agreed plan .audit/fix/PLAN.json actually landed on branch audit-fixes.
-Inspect: git diff $sha..HEAD ; git log $sha..HEAD ; the tests named in each item (run them if you can:
+Inspect: git diff $vb..HEAD ; git log $vb..HEAD ; the tests named in each item (run them if you can:
 py -3.12 -m pytest -q <test>). For EVERY plan item give LANDED (all acceptance statements hold and the
 original finding in .audit/CONSENSUS.md is fixed), PARTIAL or NOT_LANDED, with evidence (file + line
 from the new code, or command output) and, unless LANDED, the exact remaining gap. Then list any
-regressions the diff introduced (broken invariant, weakened test, unrelated change). Return only JSON.
+regressions the diff introduced (broken invariant, weakened test, unrelated change). Return only JSON.$ported
 "@
-        $fv = Ask-Claude fable $vp.Replace('{WHO}', 'You are Fable') "$F/verify.schema.json" "$F/verify_fable_$it.json" $readOnly
-        $av = Ask-Codex $vp.Replace('{WHO}', 'You are Astra') "$F/verify.schema.json" "$F/verify_astra_$it.json"
+        $fv = Ask-Claude fable $vp.Replace('{WHO}', 'You are Fable') "$F/verify.schema.json" "$F/verify_fable_$RunTag$it.json" $readOnly
+        $av = Ask-Codex $vp.Replace('{WHO}', 'You are Astra') "$F/verify.schema.json" "$F/verify_astra_$RunTag$it.json"
         Assert-Clean
         $plan = (Load "$F/PLAN.json").items
         $open = foreach ($i in $plan) {
@@ -181,7 +190,7 @@ regressions the diff introduced (broken invariant, weakened test, unrelated chan
             if ($vs.Count -lt 2 -or $bad) { [pscustomobject]@{ item = $i; bad = $bad } }
         }
         $regs = @($fv.regressions) + @($av.regressions) | Where-Object { $_ }
-        $md = @("# Fix verification (Fable + Astra), iteration $it", "", "Branch ``audit-fixes`` vs ``$sha``.", "", "| Item | Fable | Astra |", "|---|---|---|")
+        $md = @("# Fix verification (Fable + Astra), iteration $it", "", "Branch ``audit-fixes`` vs ``$vb``.", "", "| Item | Fable | Astra |", "|---|---|---|")
         foreach ($i in $plan) { $md += "| $($i.id) | $(($fv.items | ? id -eq $i.id).verdict) | $(($av.items | ? id -eq $i.id).verdict) |" }
         $md += "", "## Open gaps", ""
         foreach ($o in $open) { foreach ($b in $o.bad) { $md += "- **$($o.item.id)** $($b.verdict): $($b.gap) ($($b.evidence))" } }
@@ -191,11 +200,11 @@ regressions the diff introduced (broken invariant, weakened test, unrelated chan
         if ($it -eq $VerifyIters) { Write-Host "verify: open items remain after $VerifyIters fix iterations"; break }
         foreach ($o in $open) {
             $fb = ($o.bad | ForEach-Object { "- $($_.verdict): $($_.gap) [evidence: $($_.evidence)]" }) -join "`n"
-            Build $o.item.id "$($o.item | ConvertTo-Json -Depth 10)`n`nVerifiers say this has not fully landed:`n$fb" "v$it" | Out-Null
+            Build $o.item.id "$($o.item | ConvertTo-Json -Depth 10)`n`nVerifiers say this has not fully landed:`n$fb" "${RunTag}v$it" | Out-Null
         }
         if ($regs) {
             $rt = ($regs | ForEach-Object { "- $($_.title) $($_.file):$($_.line): $($_.evidence)" }) -join "`n"
-            Build 'regressions' "Fix these regressions reported by the verifiers, without undoing the planned fixes:`n$rt" "v$it" | Out-Null
+            Build 'regressions' "Fix these regressions reported by the verifiers, without undoing the planned fixes:`n$rt" "${RunTag}v$it" | Out-Null
         }
     }
     $Phase = 'push'
