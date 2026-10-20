@@ -691,7 +691,7 @@ Recommended models per provider are shown on the page. Sensible defaults:
 | Task | ollama | openrouter | openai | anthropic |
 |---|---|---|---|---|
 | Steps | `qwen3:32b` | `anthropic/claude-haiku-4.5` | `gpt-5.4-mini` | `claude-haiku-4-5-20251001` |
-| Narration | `qwen3:32b` | `anthropic/claude-sonnet-5` | `gpt-5.5` | `claude-sonnet-5` |
+| Narration | `qwen3.6:27b` | `anthropic/claude-sonnet-5` | `gpt-5.5` | `claude-sonnet-5` |
 | Vision | `qwen2.5vl:7b` | `anthropic/claude-sonnet-5` | `gpt-4o` | — |
 
 The model box's suggestion dropdown offers more than just the recommended
