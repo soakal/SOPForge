@@ -49,7 +49,11 @@ from PIL import Image
 
 from pipeline import __version__
 from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
-from pipeline.claim_coverage import ensure_claim_coverage, validate_claim_coverage
+from pipeline.claim_coverage import (
+    _claim_covered,
+    ensure_claim_coverage,
+    validate_claim_coverage,
+)
 from pipeline.claims import extract_claims
 from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
@@ -77,6 +81,7 @@ from pipeline.narration_polish import polish_narration
 from pipeline.narrative import generate_narrative
 from pipeline.polish import generate_polish_fields
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
+from pipeline.roundtrip import round_trip_ok
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
@@ -682,6 +687,25 @@ def create_app(
                 close = getattr(polish_llm, "close", None)
                 if callable(close):
                     close()
+            # Step text is manifest-derived: a template-fallback step keeps
+            # its verbatim template text; an LLM-phrased step keeps a polish
+            # rewrite only if it still round-trips against the manifest and
+            # doesn't lose a claim the pre-polish text carried.
+            steps_by_id = {s.id: s for s in manifest.steps}
+            reverted = []
+            for old, new in zip(step_results, md_step_results):
+                if new["text"] != old["text"] and (
+                    old.get("used_fallback")
+                    or not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]
+                    or any(
+                        _claim_covered(c, old["text"]) and not _claim_covered(c, new["text"])
+                        for c in claims
+                    )
+                ):
+                    new["text"] = old["text"]
+                    reverted.append(old["step_id"])
+            if reverted:
+                report["polish_reverted_steps"] = reverted
             # Safety net for invariant L4 (CLAUDE.md): generate_polish_fields's
             # own per-field gate (_field_gate) only rejects a rewrite that
             # ADDS unsupported content -- it has no way to know a claim's

@@ -235,6 +235,157 @@ def test_get_doc_md_and_html(tmp_path):
     assert html_resp.text.startswith("<!doctype html>")
 
 
+_STEP_PROMPT_RE = re.compile(
+    r"to (click|enter a value into) '(.*?)' in the (?:'(.*?)' window|current window) --"
+)
+
+
+class _RoundTripPassingStub:
+    """Parses the real generation._build_prompt text and replies with a step
+    phrasing that passes round_trip_ok, so steps are LLM-phrased
+    (used_fallback False) rather than template fallback."""
+
+    def chat(self, messages, **kwargs):
+        verb, target, window = _STEP_PROMPT_RE.search(messages[0]["content"]).groups()
+        window = window or "current"
+        if verb == "click":
+            return f"Click {target} in the {window} window."
+        return f"Enter a value into {target} in the {window} window."
+
+
+def _round_trip_passing_stub_factory():
+    return _RoundTripPassingStub()
+
+
+def _polish_enabled_app(tmp_path, monkeypatch, fake, narrative_factory=None, llm_factory=None):
+    """create_app with [polish].enabled and generate_polish_fields faked."""
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "generate_polish_fields", fake)
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+    return TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=llm_factory or stub_llm_client_factory,
+            narrative_llm_client_factory=narrative_factory or stub_llm_client_factory,
+            polish_llm_client_factory=lambda section: object(),
+            config_path=cfg,
+        )
+    )
+
+
+def _fake_polish(step_text_fn):
+    """A generate_polish_fields fake applying step_text_fn(step_result) to
+    every step's text and uppercasing the narrative."""
+
+    def _fake(narrative_text, step_results, llm):
+        polished = []
+        for step in step_results:
+            new_step = dict(step)
+            new_step["text"] = step_text_fn(step)
+            polished.append(new_step)
+        meta = {"attempted": True, "fields_polished": [], "fields_kept_verbatim": {}}
+        return (narrative_text.upper() if narrative_text else narrative_text), polished, meta
+
+    return _fake
+
+
+def test_polish_rewrite_that_drops_the_element_name_is_reverted(tmp_path, monkeypatch):
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    names = {s.id: s.element.name for s in manifest.steps}
+    originals = {}
+
+    def _drop_element_name(step):
+        originals[step["step_id"]] = step["text"]
+        name = names[step["step_id"]]
+        return re.sub(re.escape(name) + " ", "", step["text"]) if name else step["text"]
+
+    client = _polish_enabled_app(
+        tmp_path,
+        monkeypatch,
+        _fake_polish(_drop_element_name),
+        llm_factory=_round_trip_passing_stub_factory,
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    for text in originals.values():
+        assert text in md
+    expected = [sid for sid, name in names.items() if name]
+    assert expected, "sanity: fixture must have named elements"
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["polish_reverted_steps"] == expected
+
+
+def test_polish_never_rewrites_template_fallback_steps(tmp_path, monkeypatch):
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    client = _polish_enabled_app(
+        tmp_path,
+        monkeypatch,
+        _fake_polish(lambda step: step["text"].upper()),
+        narrative_factory=lambda: _VerbatimNarrativeStub(),
+    )
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files.append(("transcript_file", ("narration.md", _E2E_TRANSCRIPT.encode(), "text/markdown")))
+    session_id = client.post(
+        "/sessions", data={"manifest_json": manifest_json}, files=files
+    ).json()["session_id"]
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    for step in manifest.steps:
+        text = render_step_template(step)
+        assert text in md
+        assert text.upper() not in md
+    for line in _E2E_TRANSCRIPT.split("\n\n"):
+        assert line in md  # narration stays verbatim
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["polish_reverted_steps"] == [s.id for s in manifest.steps]
+    assert "FIRST, OPEN THE CONSOLE." in md  # narrative polish still applied
+
+
+def test_photo_polish_rewrite_that_loses_the_transcript_claim_is_reverted(tmp_path, monkeypatch):
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    def _rewrite_step_1(step):
+        return "Open screen one." if step["step_id"] == "step-001" else step["text"]
+
+    client = _polish_enabled_app(tmp_path, monkeypatch, _fake_polish(_rewrite_step_1))
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.md", b"1. Open the first screen.\n2. Then the second.", "text/markdown"),
+        ),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "Photo Polish"}, files=files, follow_redirects=False
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Open the first screen." in md
+    assert "Open screen one." not in md
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["polish_reverted_steps"] == ["step-001"]
+
+
 def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     """[polish].enabled=true routes narrative_text and every step's
     "text"/present "narration" through generate_polish_fields (polish.py)
@@ -283,7 +434,7 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=stub_llm_client_factory,
         polish_llm_client_factory=lambda section: object(),
         config_path=cfg,
@@ -584,7 +735,7 @@ def test_polish_rejected_when_it_drops_claim_coverage(tmp_path, monkeypatch):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
         polish_llm_client_factory=lambda section: object(),
         config_path=cfg,
@@ -710,7 +861,7 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
         polish_llm_client_factory=lambda section: stub,
         config_path=cfg,
@@ -815,7 +966,7 @@ def test_polish_end_to_end_real_prompt_claim_coverage_rejection(tmp_path):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
         polish_llm_client_factory=lambda section: stub,
         config_path=cfg,
