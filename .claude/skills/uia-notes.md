@@ -144,3 +144,14 @@ state from this session's earlier iterative debugging rather than a real bug;
 worth a closer look if it recurs). If this threshold ever flakes in CI,
 increase `--clicks` first (more samples per app dampens the per-miss swing)
 before assuming a regression.
+
+**DPI awareness must be set before pynput is imported (audit F-11):**
+`capture/__init__.py` calls `capture.dpi.set_process_dpi_awareness()` at package
+import, before `capture.__main__` imports `capture.tray` (which imports pynput).
+pynput's hook setup and any earlier window/DC call lock the process into the
+default DPI mode, after which screen and UIA coordinates disagree on scaled
+monitors. Order tried: `SetProcessDpiAwarenessContext(-4)` (per-monitor v2) →
+shcore `SetProcessDpiAwareness(2)` (`E_ACCESSDENIED` = already set, accepted) →
+`SetProcessDPIAware()`. Once set, pywinauto's own later `SetProcessDPIAware()`
+is a no-op. Each step records `screen.scale` = monitor effective DPI / 96
+(1.0 fallback), so mixed-DPI multi-monitor captures can be mapped back.
