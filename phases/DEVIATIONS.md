@@ -1,19 +1,12 @@
 # Deviations
 
-## audit-fixes F-10: photo-mode polish skips round_trip_ok
+## audit-fixes F-10: no-transcript step-text claim gate
 
-PLAN F-10 acceptance #1 said the polish step gate applies to both build modes.
-In photo mode (`_write_all_exports(verbatim_narration=True)`) the step
-`round_trip_ok` check is skipped: the synthetic manifest has no real
-action/element/window (every step is a bare click), so a descriptive vision
-caption could never round-trip. The claim-coverage gate and the verbatim
-transcript-narration protection still apply. Pinned by
-`test_photo_polish_keeps_descriptive_vision_caption_rewrite`.
-
-Likewise the step-text claim gate (`gate_steps_on_claims`) is off for capture
+The step-text claim gate (`gate_steps_on_claims`) is off for capture
 jobs without a transcript: their claims are synthesized from the step texts
 themselves, so gating on them would revert every genuine rephrase. Those jobs
-are still protected by `round_trip_ok` and the template-fallback revert.
+are still protected by `round_trip_ok` and the template-fallback revert; those
+rewrites are now covered by A-01's anchored forms.
 
 ## UIPI
 

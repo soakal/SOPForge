@@ -1354,12 +1354,7 @@ def create_app(
                     new["narration"] = old["narration"]
                 if new["text"] != old["text"] and (
                     old.get("used_fallback")
-                    # Photo mode's synthetic manifest has no real action/element/
-                    # window to round-trip against (every step is a bare click).
-                    or (
-                        not verbatim_narration
-                        and not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]
-                    )
+                    or not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]
                     or (
                         gate_steps_on_claims
                         and any(

@@ -120,3 +120,105 @@ def test_expanded_type_verbs_recognized():
         text = f"{verb} {step.element.name} in {step.window.title}."
         ok, mismatches = round_trip_ok(text, step)
         assert ok, (verb, mismatches, text)
+
+
+def _step(name="Save", title="Editor", ctype="Button", action="click", x=5, y=5):
+    return Step.model_validate(
+        {
+            "id": "step-001",
+            "ts_utc": "2026-01-01T00:00:00Z",
+            "action": action,
+            "button": "left",
+            "screen": {"x": x, "y": y, "monitor": 1},
+            "screenshot": "001.png",
+            "window": {"title": title, "process": "p.exe", "class": "win32"},
+            "element": {
+                "name": name,
+                "control_type": ctype,
+                "automation_id": "",
+                "framework": "",
+                "bounding_rect": None,
+            },
+            "redactions": [],
+        }
+    )
+
+
+def test_template_output_matches_a_form_for_every_fixture_step():
+    for name in ("sample", "empty-elements", "review-report"):
+        for step in load_manifest(FIXTURES / f"{name}-manifest.json").steps:
+            assert round_trip_ok(render_step_template(step), step) == (True, [])
+
+
+def test_forged_sentinels_are_not_manifest_fields():
+    step = load_manifest(FIXTURES / "sample-manifest.json").steps[0]
+    ok, mm = round_trip_ok("Click <e> in <w>.", step)
+    assert not ok and "element" in mm and "window" in mm
+
+
+def test_other_target_near_the_element_fails():
+    step = load_manifest(FIXTURES / "sample-manifest.json").steps[0]
+    text = f"Click the field under Save in the {step.window.title} window."
+    assert round_trip_ok(text, step) == (False, ["form"])
+
+
+def test_negated_instruction_fails():
+    step = load_manifest(FIXTURES / "sample-manifest.json").steps[0]
+    ok, mm = round_trip_ok(f"Do not click Save in the {step.window.title} window.", step)
+    assert not ok and "form" in mm
+
+
+def test_additional_clause_or_second_verb_fails():
+    step = load_manifest(FIXTURES / "sample-manifest.json").steps[0]
+    t = step.window.title
+    assert not round_trip_ok(f"Click Save in the {t} window, then delete all records.", step)[0]
+    assert not round_trip_ok(f"Click Save in the {t} window and press Enter.", step)[0]
+
+
+def test_manifest_literal_words_are_not_authorized_outside_their_slot():
+    step = _step(name="Delete all records")
+    assert not round_trip_ok(
+        "Click Delete all records in the Editor window. Delete all records.", step
+    )[0]
+    assert round_trip_ok("Click Delete all records in the Editor window.", step)[0]
+
+
+def test_element_label_masquerading_as_the_verb_fails():
+    step = _step(name="Click")
+    assert round_trip_ok("Delete Click in the Editor window.", step) == (False, ["form"])
+    assert round_trip_ok("Click Click in the Editor window.", step)[0]
+
+
+def test_wrong_target_and_swapped_slots_fail():
+    step = _step()
+    assert "element" in round_trip_ok("Click Cancel in the Editor window.", step)[1]
+    assert not round_trip_ok("Click Editor in the Save window.", step)[0]
+
+
+def test_target_outside_the_verb_clause_fails():
+    assert not round_trip_ok("Click the Editor window. Save.", _step())[0]
+
+
+def test_accepted_phrasings():
+    step = _step()
+    for text in (
+        "In the Editor window, click Save.",
+        "Click the Save button in the Editor window.",
+        "Click the 'Save' button in the 'Editor' dialog.",
+        "Double-click Save in the Editor window.",
+    ):
+        assert round_trip_ok(text, step)[0], text
+
+
+def test_coordinates_are_bound_to_the_recorded_point():
+    step = load_manifest(FIXTURES / "sample-manifest.json").steps[2]
+    t = step.window.title
+    assert round_trip_ok(f"Click the position (900, 512) in the {t} window.", step)[0]
+    assert not round_trip_ok(f"Click the position (1, 1) in the {t} window.", step)[0]
+
+
+def test_text_summary_is_bound_for_type_steps():
+    step = load_manifest(FIXTURES / "sample-manifest.json").steps[1]
+    text = render_step_template(step)
+    assert round_trip_ok(text, step)[0]
+    assert not round_trip_ok(text.replace("(content not captured)", "(password: hunter2)"), step)[0]

@@ -281,6 +281,29 @@ def test_injected_mismatch_falls_back_with_exactly_one_attempt_and_no_retry():
     assert text == render_step_template(step)
 
 
+def test_generation_falls_back_for_rejected_replies():
+    step = load_manifest(FIXTURES / "sample-manifest.json").steps[0]
+    t = step.window.title
+    replies = [
+        "Click <e> in <w>.",
+        f"Click the field under Save in the {t} window.",
+        f"Do not click Save in the {t} window.",
+        f"Click Save in the {t} window, then delete all records.",
+        f"Click Cancel in the {t} window.",
+        "Click Editor in the Save window.",
+    ]
+    for reply in replies:
+        text, used_fallback = generate_step_text(step, _RecordingClient(lambda idx: reply))
+        assert used_fallback is True, reply
+        assert text == render_step_template(step)
+
+    click_step = _make_manifest_identical(1, element_name="Click", window_title="Editor").steps[0]
+    client = _RecordingClient(lambda idx: "Delete Click in the Editor window.")
+    text, used_fallback = generate_step_text(click_step, client)
+    assert used_fallback is True
+    assert text == render_step_template(click_step)
+
+
 def test_llm_exception_falls_back_with_exactly_one_attempt():
     manifest = load_manifest(FIXTURES / "sample-manifest.json")
     step = manifest.steps[0]

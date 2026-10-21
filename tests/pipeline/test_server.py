@@ -390,18 +390,48 @@ def test_polish_rewrite_that_drops_the_element_name_is_reverted(tmp_path, monkey
 
 def test_polish_rephrase_is_kept_without_a_transcript(tmp_path, monkeypatch):
     """No transcript -> the claims are the step texts themselves; a genuine
-    rephrase (here: dropping the trailing period) must not be reverted."""
+    rephrase (here: inserting "the") must not be reverted."""
     client = _polish_enabled_app(
         tmp_path,
         monkeypatch,
-        _fake_polish(lambda step: step["text"].rstrip(".") + " now"),
+        _fake_polish(lambda step: step["text"].replace("Click ", "Click the ", 1)),
         llm_factory=_round_trip_passing_stub_factory,
     )
     session_id, status = _create_and_wait(client, tmp_path)
     assert status["status"] == "done"
     report = client.get(f"/sessions/{session_id}/report").json()
     assert "polish_reverted_steps" not in report
-    assert " now" in client.get(f"/sessions/{session_id}/doc.md").text
+    assert (
+        "Click the Save in the SmartDeploy Console window."
+        in client.get(f"/sessions/{session_id}/doc.md").text
+    )
+
+
+def test_step_polish_rewrite_outside_the_forms_is_reverted(tmp_path, monkeypatch):
+    rewrites = {
+        "step-001": "Click the field under Save in the SmartDeploy Console window.",
+        "step-003": "Click <e> in <w>.",
+    }
+    originals = {}
+
+    def _rewrite(step):
+        originals[step["step_id"]] = step["text"]
+        return rewrites.get(step["step_id"], step["text"])
+
+    client = _polish_enabled_app(
+        tmp_path,
+        monkeypatch,
+        _fake_polish(_rewrite),
+        llm_factory=_round_trip_passing_stub_factory,
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert set(rewrites) <= set(report["polish_reverted_steps"])
+    for sid, bad in rewrites.items():
+        assert originals[sid] in md
+        assert bad not in md
 
 
 def test_polish_never_rewrites_template_fallback_steps(tmp_path, monkeypatch):
@@ -474,7 +504,7 @@ def _photo_png(color):
     return buf.getvalue()
 
 
-def test_photo_polish_keeps_descriptive_vision_caption_rewrite(tmp_path, monkeypatch):
+def test_photo_polish_caption_rewrite_is_reverted_by_the_step_gate(tmp_path, monkeypatch):
     import pipeline.server as server_module
 
     monkeypatch.setattr(
@@ -510,9 +540,10 @@ def test_photo_polish_keeps_descriptive_vision_caption_rewrite(tmp_path, monkeyp
     assert _wait_for_terminal_status(client, session_id)["status"] == "done"
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
-    assert "The Settings dialog appears on screen." in md
+    assert "The Settings dialog is shown." in md
+    assert "The Settings dialog appears on screen." not in md
     report = client.get(f"/sessions/{session_id}/report").json()
-    assert "polish_reverted_steps" not in report
+    assert report["polish_reverted_steps"] == ["step-001"]
 
 
 def test_photo_single_block_transcript_survives_claim_extraction_failure(tmp_path, monkeypatch):
