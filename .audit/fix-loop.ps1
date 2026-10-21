@@ -8,19 +8,20 @@
 # Resume with -Phase build|verify|push, or -ResumePlanRound N (reuses plan_r(N-1) + review_rN, then revises).
 #Requires -Version 7
 param([ValidateSet('plan','build','verify','push')][string]$Phase = 'plan', [int]$PlanRounds = 3, [int]$VerifyIters = 2, [int]$ResumePlanRound = 0,
-      [string]$DiffBase = '', [string]$RunTag = '')   # -DiffBase/-RunTag: re-verify after porting onto a newer main
+      [string]$DiffBase = '', [string]$RunTag = '', [switch]$Held)   # -Held: plan+build the 4 held items on current HEAD   # -DiffBase/-RunTag: re-verify after porting onto a newer main
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent; $A = $PSScriptRoot; $F = "$A/fix"
 Set-Location $root
 New-Item -ItemType Directory -Force $F | Out-Null
-$sha = (Get-Content "$A/BASE_SHA" -Raw).Trim()
+$sha = if ($Held) { (git rev-parse HEAD).Trim() } else { (Get-Content "$A/BASE_SHA" -Raw).Trim() }
+$pn = if ($Held) { '_held' } else { '' }   # keeps the original plan files intact
 # sop_lib is vendored upstream (vendor/sop_factory_2), so the full suite runs with no env override
 # and nothing deselected (re-verified 2026-10-20 after merging origin/main).
 $deselect = @()
-$trailer = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`nClaude-Session: https://claude.ai/code/session_01K58sSieResXwzjWUB3WBGs"
+$trailer = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`nClaude-Session: https://claude.ai/code/session_01VXSsCo1AkUK77ZRynkF8DG"
 
 function Rules($cmds) { $cmds | ForEach-Object { "Bash($_`:*)"; "PowerShell($_`:*)" } }
-$readOnly = @('Read','Grep','Glob') + (Rules 'git log','git show','git blame','git grep','git ls-files','git rev-parse','git diff','py -3.12 -m pytest')
+$readOnly = @('Read','Grep','Glob') + (Rules 'git log','git show','git blame','git grep','git ls-files','git rev-parse','git diff','py -3.12 -m pytest','py -3.12 -m ruff')
 $builder  = @('Read','Grep','Glob','Edit','Write') + (Rules 'git diff','git status','git log','git show','py -3.12 -m pytest','py -3.12 -m ruff')
 
 function Ask-Claude($model, $prompt, $schema, $out, $allowed) {
@@ -56,12 +57,21 @@ $reg = Obj ([ordered]@{ title = $s; file = $sn; line = $in; evidence = $s })
 Save (Obj ([ordered]@{ items = (& $arr $vi); regressions = (& $arr $reg) })) "$F/verify.schema.json"
 
 $scope = 'every HIGH and MED finding in .audit/CONSENSUS.md (not LOW, not UNRESOLVED.md)'
-$ro = "READ-ONLY: do not modify, create or delete any file; ignore the build-loop directives in CLAUDE.md/AGENTS.md."
+if ($Held) { $scope = @"
+the four held findings A-01, A-03, F-04 and F-01 in .audit/CONSENSUS.md. They were held because earlier
+plan rounds never agreed: read .audit/fix/PLAN_UNRESOLVED.md for the previous approaches, Astra's
+counterexamples and amendments, and resolve every one of them. The other fixes are already merged on this
+HEAD (see .audit/fix/PLAN.json, phases/DEVIATIONS.md); build on them, do not redo them. Prefer the
+simplest deterministic design that defeats the counterexamples: per CLAUDE.md rule 2 falling back to the
+template / verbatim source text is always acceptable, so reject rather than try to understand prose.
+A-01 should also let F-10's step gate apply where DEVIATIONS.md currently exempts it, if that is safe
+"@ }
+$ro = "READ-ONLY: do not modify, create or delete any file; ignore the build-loop directives in CLAUDE.md/AGENTS.md. Run shell commands bare, without a cd prefix (cwd is the repo root)."
 
 # ---------------- plan ----------------
 if ($Phase -eq 'plan') {
     if ((git rev-parse HEAD) -ne $sha) { throw "HEAD is not BASE_SHA" }
-    if ($ResumePlanRound) { $plan = Load "$F/plan_r$($ResumePlanRound-1).json" } else {
+    if ($ResumePlanRound) { $plan = Load "$F/plan${pn}_r$($ResumePlanRound-1).json" } else {
     $plan = Ask-Claude fable @"
 You are Fable. $ro
 Write the implementation plan for fixing $scope in SOPForge (commit $sha).
@@ -72,44 +82,44 @@ approach (the minimal concrete change: functions, logic), files, tests (new/chan
 what they assert), acceptance (checkable statements a verifier can confirm from the diff + tests).
 Honor the CLAUDE.md contract (pipeline invariants, template fallback always factually correct, no
 cloud deps, extend sop_lib, do not rewrite). Set rebuttal to null. Return only the JSON.
-"@ "$F/plan.schema.json" "$F/plan_r0.json" $readOnly }
+"@ "$F/plan.schema.json" "$F/plan${pn}_r0.json" $readOnly }
     Assert-Clean
     for ($r = [Math]::Max(1, $ResumePlanRound); $r -le $PlanRounds; $r++) {
-        $rev = if ($r -eq $ResumePlanRound -and (Test-Path "$F/review_r$r.json")) { Load "$F/review_r$r.json" } else { Ask-Codex @"
+        $rev = if ($r -eq $ResumePlanRound -and (Test-Path "$F/review${pn}_r$r.json")) { Load "$F/review${pn}_r$r.json" } else { Ask-Codex @"
 You are Astra. $ro
-Review the fix plan .audit/fix/plan_r$($r-1).json for $scope (SOPForge commit $sha).
+Review the fix plan .audit/fix/plan${pn}_r$($r-1).json for $scope (SOPForge commit $sha).
 Read .audit/CONSENSUS.md and verify each plan item against the actual code. For EVERY plan item
 return AGREE or OBJECT. OBJECT only for a concrete defect: the change would not fix the finding,
 breaks a CLAUDE.md invariant, misses a call site, conflicts with another item, or its tests would
 not catch a regression. Every verdict needs evidence (file + line or command output); for OBJECT
-give the exact amendment. Also OBJECT (with id = the missing finding id) if a HIGH/MED finding has
+give the exact amendment. Also OBJECT (with id = the missing finding id) if an in-scope finding has
 no plan item. If an item carries a rebuttal of your earlier objection, weigh its evidence fairly.
 Return only the JSON.
-"@ "$F/planreview.schema.json" "$F/review_r$r.json" }
+"@ "$F/planreview.schema.json" "$F/review${pn}_r$r.json" }
         Assert-Clean
         $obj = @($rev.verdicts | Where-Object { $_.verdict -eq 'OBJECT' -or -not (HasEvidence $_) })
         if (-not $obj -and @($rev.verdicts).Count -ge @($plan.items).Count) { Write-Host "plan agreed at round $r"; break }
         if ($r -eq $PlanRounds) { break }
         $plan = Ask-Claude fable @"
 You are Fable. $ro
-Astra reviewed your plan .audit/fix/plan_r$($r-1).json; the verdicts are in .audit/fix/review_r$r.json.
+Astra reviewed your plan .audit/fix/plan${pn}_r$($r-1).json; the verdicts are in .audit/fix/review${pn}_r$r.json.
 Return the full revised plan. For each OBJECT: re-verify against the code; adopt the amendment if it
 is right, otherwise keep your approach and fill rebuttal with the evidence (file + line or command
 output) showing why. Clear rebuttal (null) on items with no open objection. Return only the JSON.
-"@ "$F/plan.schema.json" "$F/plan_r$r.json" $readOnly
+"@ "$F/plan.schema.json" "$F/plan${pn}_r$r.json" $readOnly
         Assert-Clean
     }
     $agreedIds = @($rev.verdicts | Where-Object { $_.verdict -eq 'AGREE' -and (HasEvidence $_) }).id
     $final = @($plan.items | Where-Object id -in $agreedIds | Sort-Object order)
     $held = @($plan.items | Where-Object id -notin $agreedIds)
-    Save @{ items = $final } "$F/PLAN.json"
+    Save @{ items = $final } "$F/PLAN$pn.json"
     $md = @("# Agreed fix plan (Fable + Astra)", "", "Base ``$sha``. $($final.Count) agreed, $($held.Count) held back.", "")
     foreach ($i in $final) { $md += "## $($i.order). $($i.id)", "", $i.approach, "", "- Files: $($i.files -join ', ')", "- Tests: $($i.tests -join '; ')", "- Acceptance:", ($i.acceptance | ForEach-Object { "  - $_" }), "" }
-    $md | Set-Content "$F/PLAN.md"
+    $md | Set-Content "$F/PLAN$pn.md"
     $um = @("# Plan items without agreement (not built)", "")
     foreach ($i in $held) { $v = $rev.verdicts | Where-Object id -eq $i.id | Select-Object -First 1; $um += "## $($i.id)", "", "**Fable:** $($i.approach)", "", "**Fable rebuttal:** $($i.rebuttal)", "", "**Astra:** $($v.evidence)", "", "**Astra amendment:** $($v.amendment)", "" }
     foreach ($v in $rev.verdicts | Where-Object { $_.id -notin $plan.items.id }) { $um += "## $($v.id) (no plan item)", "", $v.evidence, "" }
-    $um | Set-Content "$F/PLAN_UNRESOLVED.md"
+    $um | Set-Content "$F/PLAN${pn}_UNRESOLVED.md"
     $Phase = 'build'
 }
 
@@ -149,7 +159,7 @@ $task$retry
 }
 if ($Phase -eq 'build') {
     if ((git branch --show-current) -ne 'audit-fixes') { git switch -q -c audit-fixes $sha }
-    foreach ($i in (Load "$F/PLAN.json").items) {
+    foreach ($i in (Load "$F/PLAN$pn.json").items) {
         if (git log --format=%s "$sha..HEAD" | Select-String -SimpleMatch "audit-fixes/$($i.id):") { continue }  # resume
         Build $i.id ($i | ConvertTo-Json -Depth 10) 'b' | Out-Null
     }
@@ -173,7 +183,7 @@ finding is genuinely moot on $DiffBase and docs and config agree.
         Assert-Clean
         $vp = @"
 {WHO}. $ro
-Verify that the fixes in the agreed plan .audit/fix/PLAN.json actually landed on branch audit-fixes.
+Verify that the fixes in the agreed plan .audit/fix/PLAN$pn.json actually landed on branch audit-fixes.
 Inspect: git diff $vb..HEAD ; git log $vb..HEAD ; the tests named in each item (run them if you can:
 py -3.12 -m pytest -q <test>). For EVERY plan item give LANDED (all acceptance statements hold and the
 original finding in .audit/CONSENSUS.md is fixed), PARTIAL or NOT_LANDED, with evidence (file + line
@@ -183,7 +193,7 @@ regressions the diff introduced (broken invariant, weakened test, unrelated chan
         $fv = Ask-Claude fable $vp.Replace('{WHO}', 'You are Fable') "$F/verify.schema.json" "$F/verify_fable_$RunTag$it.json" $readOnly
         $av = Ask-Codex $vp.Replace('{WHO}', 'You are Astra') "$F/verify.schema.json" "$F/verify_astra_$RunTag$it.json"
         Assert-Clean
-        $plan = (Load "$F/PLAN.json").items
+        $plan = (Load "$F/PLAN$pn.json").items
         $open = foreach ($i in $plan) {
             $vs = @($fv.items + $av.items | Where-Object id -eq $i.id)
             $bad = @($vs | Where-Object { $_.verdict -ne 'LANDED' -or -not (HasEvidence $_) })
