@@ -24,12 +24,12 @@
             "type": "string"
           },
           "verdict": {
+            "type": "string",
             "enum": [
               "LANDED",
               "PARTIAL",
               "NOT_LANDED"
-            ],
-            "type": "string"
+            ]
           },
           "evidence": {
             "type": "string"

@@ -1,0 +1,10 @@
+{
+  "subject": "ground narrative in verbatim claims (A-03, partial)",
+  "summary": "Implemented narrative_unsupported/verify_lines, claim-embedding prompts, generate_narrative rejection path, and the post-polish grounding check in server._write_all_exports. Added the 12 narrative_multipass tests (pass) and the echo stub with updated real-capture tests. INCOMPLETE: Bash/PowerShell were denied mid-run, so ruff was not re-run, test_polish_pass_applied_to_doc_md_when_enabled still fails (undiagnosed; its fake was changed to leave the narrative unchanged), and the new test_server tests (repeat claim, verify-line tamper cases i-v, synthetic append) are not written. test_recorder GUI test fails independently (notepad++ process assertion).",
+  "files_changed": [
+    "src/pipeline/narrative.py",
+    "src/pipeline/server.py",
+    "tests/pipeline/test_narrative_multipass.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "subject": "anchor round-trip check to enumerated forms",
+  "summary": "round_trip_ok now requires the whole step text to match one of two anchored sentence forms built from the step's own escaped manifest literals (element name, window title, control type, text summary, click coordinates). It keeps the action/element/window presence checks and adds 'form'. server.py no longer exempts photo builds from the step gate. DEVIATIONS.md was updated and the specified tests were added or changed. Ruff is clean and the full suite gives 742 passed, 8 skipped, but only with tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow deselected. That test failed once in the full run (a real mouse click was picked up; 2 steps instead of 1) and passes on its own. One deviation from the approach: the empty-name target form accepts an optional determiner before its article, so a polish rephrase like 'Click the the position (...)' still passes. Check that this loosening is acceptable.",
+  "files_changed": [
+    "src/pipeline/roundtrip.py",
+    "src/pipeline/server.py",
+    "phases/DEVIATIONS.md",
+    "tests/pipeline/test_roundtrip.py",
+    "tests/pipeline/test_step_generation.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "items": [
+    {
+      "id": "A-01",
+      "verdict": "NOT_LANDED",
+      "evidence": "`git diff --stat f8f3976..HEAD -- src/pipeline/roundtrip.py src/pipeline/polish.py phases/DEVIATIONS.md` is empty; `git log f8f3976..HEAD` shows one commit (a43036d, A-03 only). src/pipeline/roundtrip.py:33-43 is still the verb-presence + substring check (`step.element.name.lower() not in text.lower()`), no anchored forms, no 'form' diagnostic. server.py:1360-1361 still reads `not verbatim_narration and not round_trip_ok(...)` (the F-10 photo-mode exemption the plan removes). phases/DEVIATIONS.md:3-11 still has the 'photo-mode polish skips round_trip_ok' paragraph and its test reference. None of the 12 new test_roundtrip tests, test_generation_falls_back_for_rejected_replies, or the three test_server tests exist (rg finds no 'form' mismatch, no test_step_polish_rewrite_outside_the_forms_is_reverted). .audit/fix/build_A-01_b2.json claims a green gate but the work was never committed; working tree has no src changes (git status shows only .audit files).",
+      "file": "src/pipeline/roundtrip.py",
+      "line": 37,
+      "command": "git diff --stat f8f3976b411c8dc3b327f629946f2eca98f086f0..HEAD -- src/pipeline/roundtrip.py",
+      "gap": "Entire item: implement the anchored two-form matcher in round_trip_ok with the 'form' diagnostic; drop `not verbatim_narration and` before round_trip_ok in server.py:1360; delete the F-10 photo-skip paragraph in phases/DEVIATIONS.md; add all 12 test_roundtrip tests, the generation-fallback test and the three test_server tests. Consensus A-01 probes ('Do not click Save…', '…, then delete all records.') still pass the gate because only substring/verb presence is checked."
+    },
+    {
+      "id": "F-04",
+      "verdict": "NOT_LANDED",
+      "evidence": "src/pipeline/narration_polish.py and tests/pipeline/test_narration_polish.py still exist; `rg polish_narration src tests` returns server.py:87 import, test_server.py:1786 monkeypatch, and the whole test_narration_polish.py. server.py:142-160 `_claims_for_narrative(transcript_path, fallback_text)` still takes a path and dispatches on .json; no `_placed_corpus` exists (rg: no match). server.py:1273/1287/1347/1360 still carry `verbatim_narration`; server.py:1346-1354 is still the conditional narration-restore branch. server.py:979-985 still merges placement_meta 'verify_claims'. polish.py unchanged since base. None of the planned test_server/test_polish tests exist (test_polish_end_to_end_real_prompt_happy_path still asserts a ':narration' field id, test_server.py ~1044). .audit/fix/build_F-04_b2.json self-reports INCOMPLETE with 8 failing tests; the loop rolled it back.",
+      "file": "src/pipeline/server.py",
+      "line": 142,
+      "command": "rg -n polish_narration src tests",
+      "gap": "Entire item: rewrite _claims_for_narrative to take placed strings / unpack (blocks, labelled) from _parse_text_blocks; add _placed_corpus; delete narration_polish.py + its tests and the stage-2 polish in _run_semantic_pipeline; drop ':narration' from polish.py _build_field_items; make narration restore unconditional and remove verbatim_narration; flip/add the listed tests. Note: the narrower consensus mitigation (placed narration counted as coverage) already exists at base, server.py:972, but no plan acceptance statement holds."
+    },
+    {
+      "id": "A-03",
+      "verdict": "PARTIAL",
+      "evidence": "Landed in a43036d: narrative.py:24-26 `verify_lines`; narrative.py:31-72 `narrative_unsupported(text, claims, allow_verify_lines=False)` with exact-blockquote/seen-id verify-line rule (37-46), pos-ordered consume-at-most-once matching (55-68), connective-only skipping (69-72), `# ponytail:` ceiling comment (29-30); narrative.py:121-126 generate_narrative blanks the text on any reason and falls through to ensure_claim_coverage; narrative.py:79-103 draft/critique/revise prompts all embed the claim bullets. server.py:1411-1420 post-polish gate runs after the coverage net (1406-1410), compares ordered verify_lines first ('verify lines changed'), then narrative_unsupported(..., allow_verify_lines=True), records report['polish_rejected_narrative'] and reverts. All 12 planned test_narrative_multipass tests exist (test_narrative_multipass.py:91-182) and pass; _NarrativeGeneratingStub is the echo stub (test_server.py:1344-1352). `py -3.12 -m pytest -q tests/pipeline/test_narrative_multipass.py tests/pipeline/test_server.py …` → 210 passed; full suite 729 passed, 8 skipped; ruff check/format clean.",
+      "file": "src/pipeline/server.py",
+      "line": 1411,
+      "command": "py -3.12 -m pytest -q -p no:cacheprovider  # 729 passed, 8 skipped",
+      "gap": "The three planned server-level tests are missing: test_polish_cannot_repeat_a_claim, test_polish_cannot_alter_or_mint_verify_lines (cases i-v), test_polish_cannot_append_an_instruction_to_a_synthetic_narrative (`rg polish_rejected_narrative tests` → no match). The post-polish gate at server.py:1411-1420 therefore has zero test coverage, and the acceptance 'rejected at generation AND post-polish' is only demonstrated at generation level. The synthetic-narrative case also depends on F-04 (not landed): with no transcript, claims still come from synthetic_narration via _claims_for_narrative, so the 'Windows involved' line is a claim and the echo-stub-based synthetic test as specified cannot be written as planned."
+    },
+    {
+      "id": "F-01",
+      "verdict": "NOT_LANDED",
+      "evidence": "server.py:1143-1148 `_generate_photo` still gets narrative_text from generate_title_and_overview on the [steps] client (make_llm_client); server.py:1166-1176 still gates claims on `matches and not per_step` and uses deterministic ensure_claim_coverage with the comment 'wiring generate_narrative here is held finding F-01'; `_narration_to_claims` still defined (server.py:129) and called (server.py:1172). No _parse_json_segments-before-canonicalize ordering, no narration_text recompute, no _narrative_with_coverage call in the photo path (rg: only capture-path call at server.py:973). None of the eight planned test_server tests exist (test_photo_build_json_transcript_is_canonicalized_by_text_value_not_by_key, …_malformed_json_transcript…, …_runs_the_narrative_stage…, etc.). .audit/fix/build_F-01_b2.json says the work passed except a recorder hook test under -x; the loop rolled it back and nothing is in HEAD or the working tree.",
+      "file": "src/pipeline/server.py",
+      "line": 1146,
+      "command": "git diff f8f3976b411c8dc3b327f629946f2eca98f086f0..HEAD -- src/pipeline/server.py",
+      "gap": "Entire item: reorder _generate_photo (parse .json first, canonicalize title/texts/captions before placement, recompute narration_text, reserialize segments), run _narrative_with_coverage on make_narrative_llm_client with models_cfg.narrative.passes, delete _narration_to_claims, pass claims to _write_all_exports for every photo build, and add the eight tests plus the flipped assertion in test_photo_build_unplaced_transcript_is_kept_as_verify_claim. Consensus F-01 (photo builds ship an ungated [steps]-model overview) is unfixed."
+    }
+  ],
+  "regressions": [
+    {
+      "title": "test_polish_pass_applied_to_doc_md_when_enabled no longer exercises narrative polish propagation",
+      "file": "tests/pipeline/test_server.py",
+      "line": 576,
+      "evidence": "The fake polish now returns narrative_text unchanged (`polished_narrative = narrative_text`, line 576-579) and the assertions at 612, 655 were changed from `narrative_text.upper() in md/bundle_md` to the identity check `narrative_text in md`. The test's docstring still claims it proves the polished narrative reaches doc.html, single.html, the md bundle, docx and pdf; after this change a revert of the md_narrative_text wiring in any exporter would go undetected. A grounded rewrite (e.g. prefixing 'First, ' to the narrative, which narrative_unsupported accepts) would have kept the proof. Also the html 'original absent' assertions at 628-630 and 640 were narrowed to the `>text<` step-body element because the ungrounded stub narrative is now blanked and every synthetic claim (= step text) is rendered as a [verify] blockquote; render.py:166 does emit `<p>{text}</p>`, so the narrowed form is still meaningful, but it only holds because A-03 rejects the stub narrative whole."
+    },
+    {
+      "title": "A-03 implementation commit is mislabelled and squashed under a test-fix message",
+      "file": null,
+      "line": null,
+      "evidence": "`git log f8f3976..HEAD` shows a single commit a43036d 'audit-fixes/A-03: fix polish test for verify-blockquote step text' whose body says 'No production code changed', yet it carries +102/-? in src/pipeline/narrative.py and the server.py post-polish gate. The CLAUDE.md commit discipline (one commit per completed task with an imperative summary of the task) is not met, and the history misstates what changed; bisecting A-03 later will land on a commit that denies containing it."
+    }
+  ]
+}

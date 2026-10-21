@@ -1,0 +1,7 @@
+{
+  "subject": "fix polish test for verify-blockquote step text",
+  "summary": "The failing test was test_polish_pass_applied_to_doc_md_when_enabled. Synthetic claims are the step texts, and the stub narrative is ungrounded, so the original step text now correctly appears in [verify] blockquotes. The raw-substring \"original not in html\" assertions therefore failed. I narrowed them to match the step body element exactly (\">text<\"), so they still prove the polished text replaced the original in the step body. No production code changed. ruff check and ruff format are clean. Full pytest gives 732 passed, 5 skipped. An earlier full run stopped on tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow, a timing test that passes alone and in the rerun, so I treated it as load flakiness.",
+  "files_changed": [
+    "tests/pipeline/test_server.py"
+  ]
+}

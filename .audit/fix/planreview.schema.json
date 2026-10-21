@@ -23,11 +23,11 @@
             "type": "string"
           },
           "verdict": {
+            "type": "string",
             "enum": [
               "AGREE",
               "OBJECT"
-            ],
-            "type": "string"
+            ]
           },
           "evidence": {
             "type": "string"

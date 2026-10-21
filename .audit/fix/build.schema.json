@@ -8,9 +8,9 @@
   ],
   "properties": {
     "subject": {
-      "type": "string",
+      "description": "imperative commit subject, e.g. \"keep claims on narrative failure\"",
       "maxLength": 60,
-      "description": "imperative commit subject, e.g. \"keep claims on narrative failure\""
+      "type": "string"
     },
     "summary": {
       "type": "string"

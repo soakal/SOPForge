@@ -1,0 +1,40 @@
+{
+  "verdicts": [
+    {
+      "id": "A-01",
+      "verdict": "OBJECT",
+      "evidence": "The anchored forms address the earlier safety counterexamples, and server.py:1355-1371 supports applying the gate to photo rewrites while retaining the original caption on rejection. However, the prescribed diagnostics conflict with the required regression: plan_held_r2.json:6 retains the verb-presence check anywhere in the text, while line 22 requires 'action' for 'Delete Click in the Editor window.' with element='Click'. roundtrip.py:15-19 recognizes that label as a click verb, so the specified implementation returns ['form'], not an 'action' mismatch.",
+      "file": ".audit/fix/plan_held_r2.json",
+      "line": 22,
+      "command": null,
+      "amendment": "Keep the simpler anchored validator and change this regression to require ok=False and mismatches=['form']. Add the same input to the generation-fallback regression, asserting the exact template output. This preserves rejection of an element label masquerading as the action without introducing masking again."
+    },
+    {
+      "id": "F-04",
+      "verdict": "AGREE",
+      "evidence": "transcript.py:87-100 returns the documented (blocks, labelled) pair, and :160-191 places parsed timed segments into step strings. Building claims from those actual strings removes the current extraction/placement mismatch at server.py:967-974. Removing semantic narration polish at :1705-1714 and narration fields from export polish closes both rewriting paths. Unconditional claims=claims preserves synthetic-narrative grounding at the existing export call (:1008), resolving the earlier objection. The planned tests cover labelled, semantic, JSON, unplaced and no-transcript cases.",
+      "file": "src/pipeline/server.py",
+      "line": 967,
+      "command": null,
+      "amendment": null
+    },
+    {
+      "id": "A-03",
+      "verdict": "OBJECT",
+      "evidence": "The increasing claim index fixes repeated body quotations and rejects the earlier reversal, polarity and conditional counterexamples. However, plan_held_r2.json:83 consumes each exact known verify line independently before matching the body, without tracking consumed verify IDs. Two identical render_verify_blockquote(c) lines therefore both pass. It also permits polish to append a new exact verify line for an already covered known claim. claim_coverage.py:33-34 renders both identically, and server.py:1406-1410 checks coverage rather than duplication or provenance. This contradicts the promised rejection of duplicated/fabricated lines at plan line 116; the listed tests omit these cases.",
+      "file": ".audit/fix/plan_held_r2.json",
+      "line": 83,
+      "command": null,
+      "amendment": "Track verify claim IDs separately and reject repeated IDs. At the post-polish boundary, require the ordered verify-line list to equal the original narrative's verify-line list; reject additions, removals, alterations and duplicates before validating the remaining body. Add validator and export regressions for duplicate exact known lines and an appended exact known line absent from the original. Keep body consumption independent so the explicitly permitted body-plus-existing-verify case remains supported."
+    },
+    {
+      "id": "F-01",
+      "verdict": "OBJECT",
+      "evidence": "Parsing JSON before canonicalization resolves the earlier key-corruption counterexample, and moving canonicalization before narrative generation avoids rewriting verify quotes. But plan_held_r2.json:124 computes narration_text before canonicalization, updates texts and narration afterward, then passes the stale narration_text as the unplaced-claims fallback in step (6). For the planned failed-rescue 'Hilsshier' example, per_step is empty, so F-04's helper extracts the original spelling instead of canonical 'Hilschier'. The regression promised by this item therefore fails. consistency.py:283-293 returns replacement strings; it cannot update the previously joined narration_text.",
+      "file": ".audit/fix/plan_held_r2.json",
+      "line": 124,
+      "command": null,
+      "amendment": "Immediately after assigning the canonicalized texts, recompute narration_text = '\\n'.join(texts). Use that canonical plain-text value for the claims fallback and its nonempty guard, while retaining the serialized canonical narration for JSON placement. Keep the failed-narrative/unplaced/canonicalization regression and explicitly assert that the narrative prompt, verify quote and report all contain only the canonical spelling."
+    }
+  ]
+}

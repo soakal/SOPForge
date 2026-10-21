@@ -1,0 +1,7 @@
+{
+  "subject": "F-04: place claims verbatim, drop polish (partial)",
+  "summary": "PARTIAL, NOT READY TO COMMIT. server.py is refactored: _claims_for_narrative(placed_texts, content), _placed_corpus, _generate claims from placed strings, polish stage removed from _run_semantic_pipeline, verbatim_narration removed, unconditional narration restore, photo flow plumbing cleaned. Bash/PowerShell were denied, so narration_polish.py and its test were NOT deleted, polish.py was NOT edited, tests were NOT written/updated, and ruff/pytest were NOT run. server.py still imports nothing from narration_polish, but the stale files remain.",
+  "files_changed": [
+    "src/pipeline/server.py"
+  ]
+}

@@ -13,7 +13,11 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent; $A = $PSScriptRoot; $F = "$A/fix"
 Set-Location $root
 New-Item -ItemType Directory -Force $F | Out-Null
-$sha = if ($Held) { (git rev-parse HEAD).Trim() } else { (Get-Content "$A/BASE_SHA" -Raw).Trim() }
+$sha = (Get-Content "$A/BASE_SHA" -Raw).Trim()
+if ($Held) {   # pinned on the first -Held run so a resumed run doesn't rebuild committed items
+    if (-not (Test-Path "$F/HELD_BASE")) { (git rev-parse HEAD).Trim() | Set-Content "$F/HELD_BASE" }
+    $sha = (Get-Content "$F/HELD_BASE" -Raw).Trim()
+}
 $pn = if ($Held) { '_held' } else { '' }   # keeps the original plan files intact
 # sop_lib is vendored upstream (vendor/sop_factory_2), so the full suite runs with no env override
 # and nothing deselected (re-verified 2026-10-20 after merging origin/main).
@@ -24,17 +28,35 @@ function Rules($cmds) { $cmds | ForEach-Object { "Bash($_`:*)"; "PowerShell($_`:
 $readOnly = @('Read','Grep','Glob') + (Rules 'git log','git show','git blame','git grep','git ls-files','git rev-parse','git diff','py -3.12 -m pytest','py -3.12 -m ruff')
 $builder  = @('Read','Grep','Glob','Edit','Write') + (Rules 'git diff','git status','git log','git show','py -3.12 -m pytest','py -3.12 -m ruff')
 
+# Usage limit hit? Sleep until the reset time it names (+3 min) and return $true so the caller retries.
+function Wait-Limit($text) {
+    if ($text -notmatch 'usage.limit|session limit|rate.limit|hit your') { return $false }
+    $wake = (Get-Date).AddMinutes(30)   # fallback when no reset time is printed
+    if ($text -match '(?:resets|try again at)\s+(\d{1,2})(?::(\d{2}))?\s*([ap]m)') {
+        $h = [int]$Matches[1] % 12 + $(if ($Matches[3] -eq 'pm') { 12 } else { 0 })
+        $t = (Get-Date).Date.AddHours($h).AddMinutes([int]$Matches[2])
+        if ($t -le (Get-Date)) { $t = $t.AddDays(1) }
+        $wake = $t
+    }
+    $wake = $wake.AddMinutes(3)
+    Write-Host "usage limit: sleeping until $($wake.ToString('HH:mm'))"
+    Start-Sleep -Seconds ([Math]::Max(60, ($wake - (Get-Date)).TotalSeconds))
+    $true
+}
 function Ask-Claude($model, $prompt, $schema, $out, $allowed) {
     $deny = if ('Edit' -in $allowed) { @() } else { @('--disallowedTools','Write','Edit','NotebookEdit') }
-    $raw = $prompt | claude -p --model $model --output-format json --no-session-persistence `
-        --json-schema (Get-Content $schema -Raw) --permission-mode dontAsk --allowedTools $allowed @deny
-    $res = $raw | ConvertFrom-Json
+    do {
+        $raw = $prompt | claude -p --model $model --output-format json --no-session-persistence `
+            --json-schema (Get-Content $schema -Raw) --permission-mode dontAsk --allowedTools $allowed @deny
+        $res = $raw | ConvertFrom-Json
+    } while ($res.is_error -and (Wait-Limit "$($res.api_error) $($res.result)"))
     if ($res.is_error -or -not $res.structured_output) { $raw | Set-Content "$out.err"; throw "$model failed: $out.err" }
     $res.structured_output | ConvertTo-Json -Depth 20 | Set-Content $out
     $res.structured_output
 }
 function Ask-Codex($prompt, $schema, $out) {
-    $prompt | codex exec -m gpt-6-astra -s read-only -C $root --output-schema $schema -o $out - *> "$out.log"
+    do { $prompt | codex exec -m gpt-6-astra -s read-only -C $root --output-schema $schema -o $out - *> "$out.log" }
+    while ($LASTEXITCODE -and (Wait-Limit (Get-Content "$out.log" -Tail 30 -Raw)))
     if ($LASTEXITCODE) { throw "astra failed (exit $LASTEXITCODE): $out.log" }
     Get-Content $out -Raw | ConvertFrom-Json
 }
@@ -70,7 +92,7 @@ $ro = "READ-ONLY: do not modify, create or delete any file; ignore the build-loo
 
 # ---------------- plan ----------------
 if ($Phase -eq 'plan') {
-    if ((git rev-parse HEAD) -ne $sha) { throw "HEAD is not BASE_SHA" }
+    if (-not $Held -and (git rev-parse HEAD) -ne $sha) { throw "HEAD is not BASE_SHA" }
     if ($ResumePlanRound) { $plan = Load "$F/plan${pn}_r$($ResumePlanRound-1).json" } else {
     $plan = Ask-Claude fable @"
 You are Fable. $ro
@@ -110,14 +132,14 @@ output) showing why. Clear rebuttal (null) on items with no open objection. Retu
         Assert-Clean
     }
     $agreedIds = @($rev.verdicts | Where-Object { $_.verdict -eq 'AGREE' -and (HasEvidence $_) }).id
-    $final = @($plan.items | Where-Object id -in $agreedIds | Sort-Object order)
-    $held = @($plan.items | Where-Object id -notin $agreedIds)
+    $final = @($plan.items | Where-Object { $_.id -in $agreedIds } | Sort-Object order)
+    $heldItems = @($plan.items | Where-Object { $_.id -notin $agreedIds })
     Save @{ items = $final } "$F/PLAN$pn.json"
-    $md = @("# Agreed fix plan (Fable + Astra)", "", "Base ``$sha``. $($final.Count) agreed, $($held.Count) held back.", "")
+    $md = @("# Agreed fix plan (Fable + Astra)", "", "Base ``$sha``. $($final.Count) agreed, $($heldItems.Count) held back.", "")
     foreach ($i in $final) { $md += "## $($i.order). $($i.id)", "", $i.approach, "", "- Files: $($i.files -join ', ')", "- Tests: $($i.tests -join '; ')", "- Acceptance:", ($i.acceptance | ForEach-Object { "  - $_" }), "" }
     $md | Set-Content "$F/PLAN$pn.md"
     $um = @("# Plan items without agreement (not built)", "")
-    foreach ($i in $held) { $v = $rev.verdicts | Where-Object id -eq $i.id | Select-Object -First 1; $um += "## $($i.id)", "", "**Fable:** $($i.approach)", "", "**Fable rebuttal:** $($i.rebuttal)", "", "**Astra:** $($v.evidence)", "", "**Astra amendment:** $($v.amendment)", "" }
+    foreach ($i in $heldItems) { $v = $rev.verdicts | Where-Object id -eq $i.id | Select-Object -First 1; $um += "## $($i.id)", "", "**Fable:** $($i.approach)", "", "**Fable rebuttal:** $($i.rebuttal)", "", "**Astra:** $($v.evidence)", "", "**Astra amendment:** $($v.amendment)", "" }
     foreach ($v in $rev.verdicts | Where-Object { $_.id -notin $plan.items.id }) { $um += "## $($v.id) (no plan item)", "", $v.evidence, "" }
     $um | Set-Content "$F/PLAN${pn}_UNRESOLVED.md"
     $Phase = 'build'

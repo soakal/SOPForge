@@ -1,0 +1,9 @@
+{
+  "subject": "drop narration polish; claims are placed strings",
+  "summary": "INCOMPLETE: the gate is not green. Shell access was denied mid-run, so I couldn't rerun the gate or look at the failures that remain. The last full run had 5 failures: 3 photo-build tests in tests/pipeline/test_server.py (expectations still to be changed to verbatim slices, and one polish_narration monkeypatch to drop), plus test_webui_pages.py::test_session_page_colors_sidecar_sections_correctly and test_tray.py::test_open_library_swallows_browser_errors, which may be unrelated or flaky. Ruff check and format were clean on that run. Done this round: polish.py no longer submits or resolves ':narration' fields. test_polish.py updated (never_includes_narration, ..._but_not_narration, deleted the reverts-only-rejected-narration test, dropped the 'step-001:narration' key from the LLM-exception test). test_server.py: the polish e2e tests now expect verbatim narration and no ':narration' field, and the unstructured-transcript test was renamed to ..._gets_semantic_placement with verbatim-slice expectations.",
+  "files_changed": [
+    "src/pipeline/polish.py",
+    "tests/pipeline/test_polish.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

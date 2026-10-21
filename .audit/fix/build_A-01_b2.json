@@ -1,0 +1,5 @@
+{
+  "subject": "report recorder test flake blocking gate",
+  "summary": "No code changes this round. The A-01 work from the previous attempt is intact and its pipeline tests pass. The only gate failure was tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow, which recorded 2 steps instead of 1. The second step was a real click at (331,968) captured by the live pynput hook during the test, so it looks like host mouse interference and is unrelated to the pipeline changes. It failed again on a solo re-run, so I couldn't tell flake from deterministic. Bash and PowerShell were then denied in don't-ask mode, so I could not re-run ruff/pytest or isolate the test. The fix needs a test-only change to the recorder test (outside A-01's file list) or a re-run on an idle desktop.",
+  "files_changed": []
+}

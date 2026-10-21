@@ -1,0 +1,5 @@
+{
+  "subject": "F-01 gate blocked by recorder input flake",
+  "summary": "No changes made this turn. The only gate failure is tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow. It uses real pynput hooks and picks up live keyboard input on the host (an extra 'type' step), so it fails with 2 steps instead of 1. It reproduces when tests/test_recorder.py is run alone and is unrelated to the F-01 changes in server.py / test_server.py. Fixing it means editing a capture test or src/capture (out of scope; loosening the assertion would weaken a test), so it needs either a rerun on an idle machine or a separate task to make that test hermetic. ruff was clean and 678 other tests passed.",
+  "files_changed": []
+}
