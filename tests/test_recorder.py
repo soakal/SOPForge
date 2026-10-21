@@ -1,6 +1,6 @@
 """Recorder orchestration integration test: drives events through
 `_process_event` directly (the same slow pipeline the queue-draining worker
-thread calls) rather than injecting real OS-level clicks â€” this build VM
+thread calls) rather than injecting real OS-level clicks — this build VM
 denies synthetic input outright (see .claude/skills/uia-notes.md), so no
 OS-level injection could ever reach the real hooks here regardless of API.
 What *is* real: UIA resolution against a live scratch window, manifest
@@ -95,7 +95,7 @@ def test_scripted_session_produces_ordered_manifest_and_screenshots(
         assert png.stat().st_size > 0
         assert isinstance(step["redactions"], list)
 
-    # Redaction ran exactly once per step, over that step's own screenshot â€”
+    # Redaction ran exactly once per step, over that step's own screenshot —
     # proves the capture-then-redact wiring, independent of whether any
     # pattern happened to match this run's (uniform gray, faked) pixels.
     assert len(redact_calls) == 3
@@ -110,7 +110,7 @@ def test_redaction_result_is_attached_to_its_manifest_step(
     scratch_window, fake_mss, tmp_path, monkeypatch
 ):
     """Deterministic check that whatever redact_screenshot_tagged() returns
-    ends up verbatim on the *correct* step's `redactions` field â€” would catch
+    ends up verbatim on the *correct* step's `redactions` field — would catch
     e.g. a password-heuristic blur mislabeled as reason "pattern", or a
     region silently dropped between redaction and manifest write."""
     fake_result = [{"region": [1, 2, 3, 4], "reason": "password_heuristic"}]
@@ -358,7 +358,7 @@ def test_record_narration_stop_failure_does_not_break_session(tmp_path, fake_mss
 
 def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, monkeypatch):
     """`_enqueue_event` is the actual pynput hook callback (wired via
-    InputRecorder(on_event=self._enqueue_event)) â€” it must return almost
+    InputRecorder(on_event=self._enqueue_event)) — it must return almost
     instantly regardless of how slow resolve_at/screenshot/redaction are,
     or Windows will silently detach the low-level hook. This is why event
     ingestion (fast, hook thread) is decoupled from processing (slow, one
@@ -384,7 +384,7 @@ def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, 
             {"action": "click", "button": "left", "x": 1, "y": 1, "ts": time.time()}
         )
         elapsed = time.time() - t0
-        assert elapsed < 0.2, f"hook callback took {elapsed:.3f}s â€” must be near-instant"
+        assert elapsed < 0.2, f"hook callback took {elapsed:.3f}s — must be near-instant"
 
         deadline = time.time() + 5.0
         while time.time() < deadline and len(recorder._builder.step_ids()) == 0:

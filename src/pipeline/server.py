@@ -1111,7 +1111,12 @@ def create_app(
                 ],
             )
             per_step, transcript_note, placement_meta = _run_semantic_pipeline(
-                narration, manifest, step_contexts, per_step, transcript_note, raw_out=verbatim
+                narration,
+                manifest,
+                step_contexts,
+                per_step,
+                transcript_note,
+                raw_out=verbatim,
             )
 
         step_results = []
@@ -1214,7 +1219,14 @@ def create_app(
         # polish-restore below.
         manually_edited = _apply_manual_edits(session_dir, step_results)
 
-        verify_claims = (placement_meta or {}).get("verify_claims", [])
+        # Captioned steps render the raw transcript slice verbatim, so a
+        # polish-dropped clause shown there needs no [verify].
+        placed_text = "\n".join(r.get("narration") or "" for r in step_results)
+        verify_claims = [
+            c
+            for c in (placement_meta or {}).get("verify_claims", [])
+            if not _claim_covered(c, placed_text)
+        ]
         claims_by_id = {c["claim_id"]: c for c in claims}
         verify_claims = verify_claims + [
             claims_by_id[cid]
@@ -1328,7 +1340,14 @@ def create_app(
             for old, new in zip(step_results, md_step_results):
                 # Photo mode: uploaded transcript text is placed verbatim, so
                 # an export polish may not rewrite it.
-                if verbatim_narration and "narration" in old:
+                if "narration" in old and (
+                    verbatim_narration
+                    or any(
+                        _claim_covered(c, old["narration"])
+                        and not _claim_covered(c, new.get("narration") or "")
+                        for c in claims
+                    )
+                ):
                     new["narration"] = old["narration"]
                 if new["text"] != old["text"] and (
                     old.get("used_fallback")
@@ -1378,7 +1397,11 @@ def create_app(
             # known-good original narrative_text rather than ship a doc with
             # a silently dropped claim. Step text/narration polish carries no
             # such risk and is kept either way.
-            ok, missing = validate_claim_coverage(md_narrative_text or "", claims)
+            # Claims covered only by transcript placed under a step (placed_text)
+            # are not the narrative's to keep; the narration restore above
+            # guards them.
+            owned = [c for c in claims if validate_claim_coverage(narrative_text or "", [c])[0]]
+            ok, missing = validate_claim_coverage(md_narrative_text or "", owned)
             if not ok:
                 report["polish_rejected_claim_coverage"] = missing
                 md_narrative_text = narrative_text

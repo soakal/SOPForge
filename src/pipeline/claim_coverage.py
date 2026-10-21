@@ -75,14 +75,14 @@ def ensure_claim_coverage(narrative_text, claims, placed_text=""):
     return final_text, covered, verify_ids
 
 
-def validate_claim_coverage(final_text, claims):
+def validate_claim_coverage(final_text, claims, placed_text=""):
     """Returns (ok, missing_claim_ids). ok is True iff every claim's id
     appears in final_text either via content coverage or a [verify]
     blockquote. This is the safety-net check for a doc that may have
     bypassed ensure_claim_coverage entirely and dropped a claim."""
     missing = []
     for claim in claims:
-        covered = _claim_covered(claim, final_text)
+        covered = _claim_covered(claim, final_text) or _claim_covered(claim, placed_text)
         flagged = _verify_marker(claim["claim_id"]) in final_text
         if not covered and not flagged:
             missing.append(claim["claim_id"])
