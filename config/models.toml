@@ -22,14 +22,13 @@ endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen3:32b"
 max_concurrency = 1
 
-# NOTE (2026-10-20): qwen3.6:27b is UNVERIFIED -- there is no pull/test record
-# for it in this repo and the Ollama host was unreachable when audited. Run
-# `py -3.12 scripts/verify_models.py` (or `ollama list` on the host) to confirm
-# the tag is installed; if it isn't, set this to qwen3:32b (used by [steps]).
+# NOTE (2026-10-20): qwen3.6:27b is an UNVERIFIED tag with no pull record --
+# only switch to it after `ollama list` (or `py -3.12 scripts/verify_models.py`)
+# confirms it is installed. Default stays qwen3:32b (already used by [steps]).
 [narrative]
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
-model = "qwen3.6:27b"
+model = "qwen3:32b"
 passes = 3
 
 [vision]

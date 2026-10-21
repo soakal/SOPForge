@@ -2657,7 +2657,7 @@ def test_config_page_model_datalists(tmp_path):
 
     for key, default_model in (
         ("steps", "qwen3:32b"),
-        ("narrative", "qwen3.6:27b"),
+        ("narrative", "qwen3:32b"),
         ("vision", "qwen2.5vl:7b"),
         ("polish", "gemma3:12b"),
     ):
