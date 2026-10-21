@@ -20,6 +20,13 @@ def test_loads_sample_manifest():
     assert [s.id for s in manifest.steps] == ["step-001", "step-002", "step-003"]
 
 
+def test_screen_scale_defaults_to_one_for_manifests_without_it():
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    raw = json.loads((FIXTURES / "sample-manifest.json").read_text(encoding="utf-8"))
+    assert all("scale" not in s["screen"] for s in raw["steps"])
+    assert all(s.screen.scale == 1.0 for s in manifest.steps)
+
+
 def test_loads_empty_elements_manifest():
     manifest = load_manifest(FIXTURES / "empty-elements-manifest.json")
     assert all(s.element.bounding_rect is None for s in manifest.steps)
