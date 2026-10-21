@@ -190,6 +190,7 @@ def test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame(tmp_p
         ),
     )
     monkeypatch.setattr(shots_module.mss, "mss", lambda: _TwoMonitorSct())
+    monkeypatch.setattr(recorder_module, "monitor_scale", lambda x, y: 1.0)
     captured_elements = []
 
     def fake_redact(image_path, element=None, config=None, out_path=None):
