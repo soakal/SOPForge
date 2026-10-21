@@ -1,0 +1,7 @@
+{
+  "subject": "add Screen.scale default test for F-11",
+  "summary": "Partly done. I added the missing Screen.scale default test, but the uia-notes.md import-order note was blocked and I couldn't run the gates. The test is `test_screen_scale_defaults_to_one_for_manifests_without_it` in tests/pipeline/test_manifest_loader.py. It checks that sample-manifest.json has no screen.scale and that every loaded step gets Screen.scale == 1.0. The Edit on `.claude/skills/uia-notes.md` was denied (don't-ask mode), and so was Bash. I did not work around either denial. The test has not been run. ruff check, ruff format, pytest and `py -3.12 -m capture --self-check` were not run, because Bash was denied. Still needed from you: append a \"DPI awareness must be set before hook imports (F-11)\" section to the end of `.claude/skills/uia-notes.md`. It should cover these points: (1) `capture/__init__.py` calls `set_process_dpi_awareness()` before `capture.tray` imports pynput. (2) The ladder is SetProcessDpiAwarenessContext(-4), then shcore SetProcessDpiAwareness(2) where S_OK or E_ACCESSDENIED counts as success, then SetProcessDPIAware(). (3) It must run before the hook, mss and pywinauto imports, so everything shares one physical-pixel frame and pywinauto's later SetProcessDPIAware call does nothing. (4) Leave sopforge.spec runtime_hooks empty. (5) Each step records screen.scale as the monitor's effective DPI divided by 96. Then run the gates.",
+  "files_changed": [
+    "tests/pipeline/test_manifest_loader.py"
+  ]
+}

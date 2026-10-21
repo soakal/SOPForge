@@ -1,0 +1,95 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "LANDED",
+      "evidence": "Applied to main 48f757c: local HTTP clients inherited environment proxies. HEAD 102b0af on audit-fixes disables inheritance in llm_client.py:56, vision.py:65, upload.py:74, tray.py:43 and upstream-added preflight.py:93. server.py:1091 preserves cloud-provider proxy behavior. LLM proxy and shutdown tests passed. Across two read-only test runs, 72 tests passed; file-writing integration tests were inspected but not run.",
+      "file": "src/pipeline/llm_client.py",
+      "line": 56,
+      "command": "python -B -m pytest -q -p no:cacheprovider --capture=sys",
+      "gap": null
+    },
+    {
+      "id": "F-05",
+      "verdict": "LANDED",
+      "evidence": "Applied to main: its splitter still assigned a single unlabelled block to step 1. The new guard returns an empty placement; the warning reports zero placed steps. Capture retains semantic rescue and photo mode preserves declined placements as verify claims at server.py:1166–1180. All transcript unit tests passed; added server integration tests were inspected.",
+      "file": "src/pipeline/transcript.py",
+      "line": 113,
+      "command": "python -B -m pytest -q -p no:cacheprovider --capture=sys tests/pipeline/test_transcript.py",
+      "gap": null
+    },
+    {
+      "id": "F-02",
+      "verdict": "LANDED",
+      "evidence": "Applied to main: narrative exceptions discarded text and narrative verify IDs were ignored. The helper now catches client construction/generation failures and invokes ensure_claim_coverage with placed_text. server.py:982–988 merges narrative verify IDs and claim text into the sidecar. Coverage and unchanged sidecar tests passed. The three named server tests exist and assert fallback text and report accounting; their filesystem writes prevented execution under READ-ONLY.",
+      "file": "src/pipeline/server.py",
+      "line": 1014,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "Applied to main: validate_claim_coverage received potentially None narrative text. Both coverage checks now normalize None to an empty string, and F-02 supplies failure fallback text. The failing-narrative integration test asserts completed generation and exported verify content. Caveat: the newly named no-claims test actually synthesizes claims from fixture steps, so it does not exercise its advertised empty-claims case. Integration tests were inspected, not executed.",
+      "file": "src/pipeline/server.py",
+      "line": 1407,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "PARTIAL",
+      "evidence": "Applied to main: export polish had no subsequent step round-trip or fallback protection. HEAD adds fallback restoration, capture round-trip validation, conditional claim preservation and polish_reverted_steps reporting; every exporter receives the guarded results. Tests cover dropped element names and fallback restoration. However, phases/DEVIATIONS.md documents exceptions to the agreed gate.",
+      "file": "src/pipeline/server.py",
+      "line": 1354,
+      "command": null,
+      "gap": "The acceptance requirement for an unconditional post-polish round-trip/claim gate does not hold: photo jobs skip round_trip_ok, and capture jobs without a transcript disable step claim checks at line 1011. These are deliberate deviations, not upstream fixes making the entire finding moot. Integration tests were not run because they write files."
+    },
+    {
+      "id": "F-03",
+      "verdict": "LANDED",
+      "evidence": "Applied to main: successful captions displaced transcript text without adding narration. Captioned steps now retain deterministic or semantic-alignment verbatim slices as narration; failed captions use transcript text without duplicate narration. Export polish restores photo narration at server.py:1344–1353. Added deterministic, semantic-rescue and export-polish tests verify these paths; inspected without running their filesystem writes.",
+      "file": "src/pipeline/server.py",
+      "line": 1134,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "Applied to main: photo reports omitted failed captions. caption_fallback_steps now derives from failed captions only when vision is enabled, while template_fallback_steps remains empty. Both review.py:25 and pages.py:761 render the category. The rendering test passed; photo integration tests cover one failed caption and disabled vision.",
+      "file": "src/pipeline/server.py",
+      "line": 1241,
+      "command": "python -B -m pytest -q -p no:cacheprovider --capture=sys tests/pipeline/test_webui_pages.py::test_session_page_renders_caption_fallback_section",
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "Moot on main 48f757c: upstream had removed steps.use_vision, its screenshot attachment path and the stale inert-flag documentation. git grep found no use_vision or 'no runtime effect' occurrences in baseline src, config, CLAUDE.md or USER_MANUAL.md. HEAD preserves that removal; the reverted warning implementation is unnecessary.",
+      "file": "src/pipeline/config.py",
+      "line": null,
+      "command": "git grep -n -e use_vision -e 'no runtime effect' 48f757c896cd7159e8937836d408beb1251a4539 -- src config CLAUDE.md USER_MANUAL.md",
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "PARTIAL",
+      "evidence": "Not wholly moot on main: config and CLAUDE.md already selected qwen3.6:27b, but USER_MANUAL.md still recommended qwen3:32b and tag verification remained absent. HEAD corrects the manual; config, page recommendations and tests now agree. scripts/verify_models.py checks configured/suggested tags and both helper tests passed. config/models.toml:25 explicitly records qwen3.6:27b as UNVERIFIED.",
+      "file": "config/models.toml",
+      "line": 25,
+      "command": "python -B -m pytest -q -p no:cacheprovider --capture=sys tests/test_verify_models.py tests/pipeline/test_models_config.py::test_loads_committed_config",
+      "gap": "Your condition for accepting the dropped default switch is not met: the original finding was still partly applicable to main. Documentation agreement is fixed, but no actual installed-tag/pull verification establishes the retained narrative default; mocked verifier tests do not provide that evidence."
+    },
+    {
+      "id": "F-11",
+      "verdict": "LANDED",
+      "evidence": "Applied to main: capture package initialization declared no DPI awareness and recorder screen objects lacked scale. HEAD initializes awareness before hook imports, implements the fallback sequence and monitor DPI lookup, records scale, and accepts old manifests. DPI unit, schema and manifest-loader tests passed. A fresh Python 3.12.10 process confirmed awareness=2 before pynput/mss/pywinauto/comtypes imports. Ruff check passed and all 54 source files passed format check. Recorder integration/self-check were inspected but not run because they write files; the py launcher itself reported 'No installed Python found!'.",
+      "file": "src/capture/dpi.py",
+      "line": 60,
+      "command": "ruff check --no-cache src/; ruff format --check --no-cache src/",
+      "gap": null
+    }
+  ],
+  "regressions": []
+}

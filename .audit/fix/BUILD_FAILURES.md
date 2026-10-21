@@ -83,3 +83,168 @@ FAILED tests/pipeline/test_server.py::test_polish_end_to_end_real_prompt_claim_c
 !!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
 1 failed, 302 passed, 2 skipped, 3 deselected in 55.77s
 
+F-06 (p2v0): FAILED gate twice
+No files were changed.
+
+F-10 (p2v1): FAILED gate twice
+All checks passed!
+54 files already formatted
+........................................................................ [  9%]
+.....................................................................ss. [ 19%]
+........................................................................ [ 29%]
+........................................................................ [ 39%]
+........................................................................ [ 49%]
+........................................................................ [ 59%]
+........................................................................ [ 69%]
+........................................ss.............................. [ 79%]
+....................................................................s... [ 89%]
+........F
+================================== FAILURES ===================================
+______ test_hook_callback_returns_instantly_even_when_processing_is_slow ______
+
+tmp_path = WindowsPath('C:/Users/briank/AppData/Local/Temp/pytest-of-briank/pytest-216/test_hook_callback_returns_ins0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x0000022510273350>
+
+    def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, monkeypatch):
+        """`_enqueue_event` is the actual pynput hook callback (wired via
+        InputRecorder(on_event=self._enqueue_event)) — it must return almost
+        instantly regardless of how slow resolve_at/screenshot/redaction are,
+        or Windows will silently detach the low-level hook. This is why event
+        ingestion (fast, hook thread) is decoupled from processing (slow, one
+        dedicated worker thread) via a queue instead of processing inline."""
+    
+        def slow_resolve_at(x, y):
+            time.sleep(1.0)
+            return {
+                "name": "",
+                "control_type": "",
+                "automation_id": "",
+                "framework": "",
+                "bounding_rect": None,
+            }, {"title": "", "process": "", "class": ""}
+    
+        monkeypatch.setattr(recorder_module, "resolve_at", slow_resolve_at)
+    
+        recorder = Recorder(tmp_path)
+        recorder.start()
+        try:
+            t0 = time.time()
+            recorder._enqueue_event(
+                {"action": "click", "button": "left", "x": 1, "y": 1, "ts": time.time()}
+            )
+            elapsed = time.time() - t0
+            assert elapsed < 0.2, f"hook callback took {elapsed:.3f}s — must be near-instant"
+    
+            deadline = time.time() + 5.0
+            while time.time() < deadline and len(recorder._builder.step_ids()) == 0:
+                time.sleep(0.05)
+            assert len(recorder._builder.step_ids()) == 1  # worker thread did process it
+        finally:
+            manifest_path = recorder.stop()
+    
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+>       assert len(data["steps"]) == 1
+E       AssertionError: assert 2 == 1
+E        +  where 2 = len([{'id': 'step-001', 'ts_utc': '2026-10-21T14:01:38.522Z', 'action': 'click', 'screen': {'x': 1, 'y': 1, 'monitor': 1, ...tc': '2026-10-21T14:01:39.474Z', 'action': 'click', 'screen': {'x': 906, 'y': 1167, 'monitor': 1, 'scale': 1.25}, ...}])
+
+tests\test_recorder.py:397: AssertionError
+============================== warnings summary ===============================
+tests/test_hooks_shots.py::test_capture_against_real_gdi_never_raises
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+  C:\Users\briank\Documents\AI\SOP & Labeling\SOPForge\src\capture\shots.py:29: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+    with mss.mss() as sct:
+
+tests/test_hooks_shots.py::test_capture_against_real_gdi_never_raises
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+  C:\Users\briank\Documents\AI\SOP & Labeling\SOPForge\src\capture\shots.py:55: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+    with mss.mss() as sct:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 651 passed, 5 skipped, 3 deselected, 6 warnings in 197.74s (0:03:17)
+
+F-11 (p2v1): FAILED gate twice
+All checks passed!
+54 files already formatted
+........................................................................ [  9%]
+.....................................................................ss. [ 19%]
+........................................................................ [ 29%]
+........................................................................ [ 39%]
+........................................................................ [ 49%]
+........................................................................ [ 59%]
+........................................................................ [ 69%]
+........................................ss.............................. [ 79%]
+....................................................................s... [ 89%]
+........F
+================================== FAILURES ===================================
+______ test_hook_callback_returns_instantly_even_when_processing_is_slow ______
+
+tmp_path = WindowsPath('C:/Users/briank/AppData/Local/Temp/pytest-of-briank/pytest-224/test_hook_callback_returns_ins0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000002D6413314F0>
+
+    def test_hook_callback_returns_instantly_even_when_processing_is_slow(tmp_path, monkeypatch):
+        """`_enqueue_event` is the actual pynput hook callback (wired via
+        InputRecorder(on_event=self._enqueue_event)) — it must return almost
+        instantly regardless of how slow resolve_at/screenshot/redaction are,
+        or Windows will silently detach the low-level hook. This is why event
+        ingestion (fast, hook thread) is decoupled from processing (slow, one
+        dedicated worker thread) via a queue instead of processing inline."""
+    
+        def slow_resolve_at(x, y):
+            time.sleep(1.0)
+            return {
+                "name": "",
+                "control_type": "",
+                "automation_id": "",
+                "framework": "",
+                "bounding_rect": None,
+            }, {"title": "", "process": "", "class": ""}
+    
+        monkeypatch.setattr(recorder_module, "resolve_at", slow_resolve_at)
+    
+        recorder = Recorder(tmp_path)
+        recorder.start()
+        try:
+            t0 = time.time()
+            recorder._enqueue_event(
+                {"action": "click", "button": "left", "x": 1, "y": 1, "ts": time.time()}
+            )
+            elapsed = time.time() - t0
+            assert elapsed < 0.2, f"hook callback took {elapsed:.3f}s — must be near-instant"
+    
+            deadline = time.time() + 5.0
+            while time.time() < deadline and len(recorder._builder.step_ids()) == 0:
+                time.sleep(0.05)
+            assert len(recorder._builder.step_ids()) == 1  # worker thread did process it
+        finally:
+            manifest_path = recorder.stop()
+    
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+>       assert len(data["steps"]) == 1
+E       AssertionError: assert 2 == 1
+E        +  where 2 = len([{'id': 'step-001', 'ts_utc': '2026-10-21T14:23:23.875Z', 'action': 'click', 'screen': {'x': 1, 'y': 1, 'monitor': 1, ...utc': '2026-10-21T14:23:24.173Z', 'action': 'click', 'screen': {'x': 567, 'y': 198, 'monitor': 1, 'scale': 1.25}, ...}])
+
+tests\test_recorder.py:400: AssertionError
+============================== warnings summary ===============================
+tests/test_hooks_shots.py::test_capture_against_real_gdi_never_raises
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+  C:\Users\briank\Documents\AI\SOP & Labeling\SOPForge\src\capture\shots.py:29: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+    with mss.mss() as sct:
+
+tests/test_hooks_shots.py::test_capture_against_real_gdi_never_raises
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+  C:\Users\briank\Documents\AI\SOP & Labeling\SOPForge\src\capture\shots.py:55: DeprecationWarning: mss.mss is deprecated and will be removed in a future release; use mss.MSS instead
+    with mss.mss() as sct:
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ===========================
+FAILED tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!
+1 failed, 651 passed, 5 skipped, 3 deselected, 6 warnings in 197.74s (0:03:17)
+

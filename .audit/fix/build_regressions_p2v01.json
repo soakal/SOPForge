@@ -1,0 +1,10 @@
+{
+  "subject": "count placed text in post-polish coverage",
+  "summary": "Added placed_text to validate_claim_coverage and used polished step narration in the post-polish check. Narration polish is reverted when it drops a claim the original covered. Photo semantic rescue no longer runs polish_narration. Fixed 5 mojibake em-dashes in tests/test_recorder.py and added a unit test for placed_text coverage. Not verified: Bash and PowerShell were denied, so ruff and pytest were not run.",
+  "files_changed": [
+    "src/pipeline/claim_coverage.py",
+    "src/pipeline/server.py",
+    "tests/test_recorder.py",
+    "tests/pipeline/test_claim_coverage.py"
+  ]
+}

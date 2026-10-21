@@ -1,0 +1,102 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline 48f757c: all five HTTP client sites, including preflight, inherited environment proxies. HEAD bc29a80 disables inheritance for Ollama and capture traffic while preserving it for cloud providers: llm_client.py:56, vision.py:65, server.py:1091, preflight.py:93, upload.py:74 and tray.py:43. Named regression tests exist. Test execution was unavailable: the attempted cache-disabled pytest command exited 1 with 'No installed Python found!'; no tests are claimed passing in this review.",
+      "file": "src/pipeline/llm_client.py",
+      "line": 56,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider --capture=sys tests/test_dpi.py tests/test_verify_models.py tests/pipeline/test_transcript.py tests/pipeline/test_claim_coverage.py tests/pipeline/test_sidecar_report.py tests/pipeline/test_llm_client.py",
+      "gap": null
+    },
+    {
+      "id": "F-05",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline: _place_text_blocks assigned the sole unlabelled block to step 1. HEAD returns {} for multiple steps and records the explicit '0 of N' WARNING at transcript.py:219. Semantic rescue remains wired; capture coverage and photo fallback at server.py:1164 preserve unplaced text. Named tests exist, including unchanged single-step and labelled-block cases. Runtime verification unavailable because Python 3.12 is not installed.",
+      "file": "src/pipeline/transcript.py",
+      "line": 113,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-02",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline server.py:974, which discarded narrative failures and ignored returned verify IDs. HEAD's helper catches narrative creation/generation failures and calls ensure_claim_coverage with placed_text; server.py:983-990 merges verify IDs and claim text into the sidecar. All three named regression tests exist at test_server.py:1585, 1593 and 1602. Runtime verification unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 1030,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline server.py:1285: validate_claim_coverage received potentially None narrative text. HEAD guards both coverage calls with 'or \"\"'. Named failing-narrative and empty-claims tests exist at test_server.py:1205 and 1216. Runtime verification unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 1404,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "PARTIAL",
+      "evidence": "Applied to baseline: export polish had no post-polish round-trip or fallback protection. HEAD restores fallback text, rejects capture rewrites that fail round_trip_ok, protects narration, and reports reverted IDs. Named tests exist. However, phases/DEVIATIONS.md explicitly documents exceptions to the agreed gate. Runtime verification unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 1352,
+      "command": null,
+      "gap": "Acceptance requires the post-polish gate to reject lost claims and failed round trips across both build modes. HEAD bypasses round_trip_ok for photo mode and disables the step-text claim gate for capture sessions without transcripts (server.py:1011). These documented exceptions may be reasonable, but they do not satisfy every acceptance statement in PLAN.json."
+    },
+    {
+      "id": "F-03",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline server.py:1095: captions displaced transcript text without a narration field. HEAD attaches verbatim transcript slices when captions succeed, preserves raw semantic-placement slices, and restores photo narration after export polish at server.py:1341. Caption failures avoid duplicate narration. Named tests plus semantic-rescue/export-polish regressions exist. Runtime verification unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 1129,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline server.py:1168: photo reports omitted failed captions. HEAD derives caption_fallback_steps from used_fallback only when vision is enabled; template_fallback_steps remains empty. Session and review pages render the category at pages.py:761 and review.py:25. Named tests exist. Runtime verification unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 1238,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "Genuinely moot on baseline 48f757c: git grep found no use_vision or stale inert-flag wording in production source, config, USER_MANUAL.md or CLAUDE.md. Upstream removed the flag and image-attachment path; HEAD retains generate_step_text(step, llm_client). Docs and config expose no steps.use_vision option. The intentionally reverted warning implementation and its tests are therefore unnecessary.",
+      "file": "src/pipeline/generation.py",
+      "line": 94,
+      "command": "git grep -n -E 'use_vision|does not yet branch|no runtime effect' 48f757c896cd7159e8937836d408beb1251a4539 -- src config USER_MANUAL.md CLAUDE.md",
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "PARTIAL",
+      "evidence": "Not wholly moot on baseline: config, UI and CLAUDE.md selected qwen3.6:27b, but USER_MANUAL.md:694 still said qwen3:32b. HEAD fixes that manual entry and adds verify_models.py with injectable-transport tests, but commit cd62007 reintroduces qwen3:32b in config/UI/tests. Both manuals now say qwen3.6:27b. No live tag verification was performed; Python execution is unavailable.",
+      "file": "config/models.toml",
+      "line": 31,
+      "command": "git log --oneline 48f757c896cd7159e8937836d408beb1251a4539..HEAD",
+      "gap": "Restore agreement between config/UI/tests and CLAUDE.md:68 plus USER_MANUAL.md:694, respecting the instructed upstream qwen3.6:27b choice. The original documentation mismatch was not genuinely moot, and the supposedly dropped default switch is present again."
+    },
+    {
+      "id": "F-11",
+      "verdict": "LANDED",
+      "evidence": "Applied to baseline: capture source had no DPI-awareness initialization or per-step scale. HEAD initializes awareness in capture/__init__.py:7 before capture dependencies, configures pointer-safe WinAPI signatures, implements fallback return-code handling and effective-DPI/96 lookup, and records scale at recorder.py:196. Schema and loader accept optional scale. All named DPI, negative-origin, mixed-DPI and schema tests exist. Fresh-process awareness, self-check and lint execution remain unverified because Python 3.12 is unavailable.",
+      "file": "src/capture/dpi.py",
+      "line": 63,
+      "command": null,
+      "gap": null
+    }
+  ],
+  "regressions": [
+    {
+      "title": "Upstream narrative default reversed and documentation agreement broken",
+      "file": "config/models.toml",
+      "line": 31,
+      "evidence": "The reviewed delta changes the upstream qwen3.6:27b default to qwen3:32b, with corresponding UI and test changes, despite the instruction that this switch was intentionally dropped. CLAUDE.md:68 and USER_MANUAL.md:694 both document qwen3.6:27b. Updating tests to expect the reversed default does not detect this disagreement."
+    }
+  ]
+}

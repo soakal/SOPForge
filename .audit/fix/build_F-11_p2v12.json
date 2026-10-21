@@ -1,0 +1,7 @@
+{
+  "subject": "tolerate live-hook steps in narration test",
+  "summary": "Gate is green: ruff check and format pass, and pytest gives 720 passed, 5 skipped. The failure was a test flake, not a code bug. `Recorder.start()` runs the real pynput hook, so live input on the dev host added a stray 'type' step at 960,600 to `test_record_narration_start_failure_does_not_break_session`. That test now counts only the injected click at (1,1) instead of asserting `len(steps) == 1`. It still checks that the click is recorded once and that `narration_wav` is None. One item is NOT done. The Edit tool was denied in don't-ask mode, so I did not add the DPI import-order note to `.claude/skills/uia-notes.md` (the verifiers' PARTIAL finding). I did not try to work around the denial. The note should go in just before the \"Environment limitation: GDI screen capture (BitBlt)\" heading. It should say that `capture/__init__.py` calls `dpi.set_process_dpi_awareness()` before `capture.tray` imports pynput, so hooks, mss screenshots and UIA rects share one physical-pixel frame and pywinauto's later `SetProcessDPIAware()` is a no-op. It should also say that `screen.scale` is effective DPI / 96. Someone needs to grant write access to that file or add the note by hand.",
+  "files_changed": [
+    "tests/test_recorder.py"
+  ]
+}

@@ -1,0 +1,5 @@
+{
+  "subject": "note DPI import order in uia-notes",
+  "summary": "Not completed. The one remaining gap was the DPI import-order note in .claude/skills/uia-notes.md. Both attempts to write it were denied (a Bash append, then an Edit), so the file is unchanged. I did not try another route around the denial. The note was ready: a \"DPI awareness / import order (F-11)\" section explaining that capture/__init__.py calls set_process_dpi_awareness() before capture.tray imports pynput, so pywinauto's later SetProcessDPIAware is a no-op, and that steps record screen.scale. I also could not run ruff check, ruff format or pytest, because Bash was denied. Granting write permission for that file and Bash would let this finish. No other code was changed.",
+  "files_changed": []
+}

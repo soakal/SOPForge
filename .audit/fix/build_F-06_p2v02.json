@@ -1,0 +1,5 @@
+{
+  "subject": "F-06 moot: use_vision already removed upstream",
+  "summary": "No code changes. F-06 is moot: upstream (48f757c) removed steps.use_vision entirely (phases/DEVIATIONS.md 'Vision-in-step-text: dropped'), so there is no flag to warn about and the stale 'does not yet branch' sentence is already gone. Re-ran the gate on the unchanged tree: ruff check passes, ruff format --check passes (54 files formatted), pytest 718 passed / 5 skipped / 3 deselected. Previous gate failure was not reproducible. Adding vision_model_warning or the use_vision tests would reintroduce a dropped feature, so I did not.",
+  "files_changed": []
+}

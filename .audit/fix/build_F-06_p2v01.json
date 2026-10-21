@@ -1,0 +1,5 @@
+{
+  "subject": "F-06 moot: use_vision already removed",
+  "summary": "No code change. A grep of src/ for use_vision, TEXT_ONLY, \"does not yet branch\" and \"no runtime effect\" finds nothing. Upstream removed steps.use_vision before the port, as recorded in phases/DEVIATIONS.md (\"Vision-in-step-text: dropped, not adopted\"). The stale sentence is gone, and there is no flag left to warn about. Adding vision_model_warning and the four named tests would reintroduce a feature that was deliberately dropped, so I didn't add them. I did not run ruff or pytest, since nothing changed.",
+  "files_changed": []
+}

@@ -1,0 +1,10 @@
+{
+  "subject": "revert narrative default to qwen3.6:27b",
+  "summary": "Reverted cd62007's narrative default switch so config, UI and tests agree with CLAUDE.md:68 and USER_MANUAL.md:694 (qwen3.6:27b). The dated UNVERIFIED note (reworded) and scripts/verify_models.py with its tests are kept. Ruff check and format are clean. The first full pytest run stopped on a timing test in tests/test_recorder.py, which passed when re-run alone; with that test deselected the rest passed (719 passed, 5 skipped). I did not get a single full-suite pass. qwen3.6:27b was not checked against a live Ollama host.",
+  "files_changed": [
+    "config/models.toml",
+    "src/pipeline/webui/pages.py",
+    "tests/pipeline/test_models_config.py",
+    "tests/pipeline/test_server.py"
+  ]
+}
