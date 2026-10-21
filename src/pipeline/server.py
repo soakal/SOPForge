@@ -1116,6 +1116,9 @@ def create_app(
                 step_contexts,
                 per_step,
                 transcript_note,
+                # Captioned steps print the verbatim slice, so polish only
+                # matters when some step has no caption to fall back on.
+                polish=any(c is None for c in captions),
                 raw_out=verbatim,
             )
 
