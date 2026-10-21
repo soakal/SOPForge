@@ -573,7 +573,10 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     def _fake_generate_polish_fields(narrative_text, step_results, llm):
         captured["narrative_text"] = narrative_text
         captured["step_results"] = step_results
-        polished_narrative = narrative_text.upper() if narrative_text else narrative_text
+        # The narrative is passed through unchanged: uppercasing it would
+        # alter its [verify] lines, which the polish grounding check
+        # (narrative_unsupported / verify_lines) now correctly rejects.
+        polished_narrative = narrative_text
         polished_steps = []
         for step in step_results:
             new_step = dict(step)
@@ -606,7 +609,7 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
     if captured["narrative_text"]:
-        assert captured["narrative_text"].upper() in md
+        assert captured["narrative_text"] in md
     assert captured["step_results"], "sanity: expected at least one step"
     for step in captured["step_results"]:
         assert step["text"].upper() in md
@@ -622,7 +625,9 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     html_doc = client.get(f"/sessions/{session_id}/doc.html").text
     for step in captured["step_results"]:
         assert _html.escape(step["text"].upper()) in html_doc
-        assert _html.escape(step["text"]) not in html_doc
+        # ">...<" = the step body element; the original text may still sit in a
+        # [verify] blockquote (synthetic claims are the step texts).
+        assert f">{_html.escape(step['text'])}<" not in html_doc
 
     # doc.single.html (render_single_file_html, export_html.py) now renders
     # from the same polished md_step_results/md_narrative_text as doc.html
@@ -632,7 +637,7 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     single_html = client.get(f"/sessions/{session_id}/doc.single.html").text
     for step in captured["step_results"]:
         assert _html.escape(step["text"].upper()) in single_html
-        assert _html.escape(step["text"]) not in single_html
+        assert f">{_html.escape(step['text'])}<" not in single_html
 
     # export.md.zip's <slug>.md (export_markdown_bundle, export_md.py) now
     # renders from the same polished fields as doc.md/doc.html this cycle --
@@ -647,7 +652,7 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
         # this comparison isn't a platform-dependent CRLF/LF mismatch.
         bundle_md = zf.read(md_name).decode("utf-8").replace("\r\n", "\n")
     if captured["narrative_text"]:
-        assert captured["narrative_text"].upper() in bundle_md
+        assert captured["narrative_text"] in bundle_md
     for step in captured["step_results"]:
         assert step["text"].upper() in bundle_md
         if step.get("narration"):
@@ -1338,15 +1343,13 @@ def test_upload_with_transcript_places_narration_under_each_step(tmp_path):
 
 class _NarrativeGeneratingStub:
     """Stands in for the [narrative]-section LLM used by generate_narrative
-    (task-09): a fixed reply regardless of prompt is enough to prove the
-    real-capture _generate path now actually calls it (previously dead code
-    -- see server.py's _generate), since none of the transcript's own claim
-    text appears in it, forcing every claim into claim-coverage's [verify]
-    fallback -- a second, independent signal (besides the reply text itself
-    landing in the doc) that generate_narrative really ran end to end."""
+    (task-09): echoes the '- ' bullet lines of whichever prompt it receives,
+    joined with spaces -- grounded by construction (the claims verbatim, in
+    order), so it survives narrative_unsupported for any pass count."""
 
     def chat(self, messages, **kwargs):
-        return "This SOP walks through configuring the deployment console end to end."
+        lines = messages[-1]["content"].splitlines()
+        return " ".join(ln[2:] for ln in lines if ln.startswith("- "))
 
 
 def test_real_capture_session_gets_a_narrative_from_transcript_claims(tmp_path):
@@ -1380,13 +1383,13 @@ def test_real_capture_session_gets_a_narrative_from_transcript_claims(tmp_path):
     assert status["status"] == "done"
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
-    assert "This SOP walks through configuring the deployment console end to end." in md
-    # None of the fixed reply's words match the transcript lines it was fed
-    # as claims, so claim-coverage gating must have flagged all three.
-    assert md.count("[verify]") == 3
+    # The echo stub quotes every claim verbatim, so the narrative lands
+    # before the first step and no claim needs a [verify] flag.
+    assert md.index("First, open the console.") < md.index("## Step")
+    assert md.count("[verify]") == 0
 
     html_doc = client.get(f"/sessions/{session_id}/doc.html").text
-    assert "This SOP walks through configuring the deployment console end to end." in html_doc
+    assert "First, open the console." in html_doc
 
 
 def test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json(tmp_path):
@@ -1432,7 +1435,6 @@ def test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json(
     assert status["status"] == "done"
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
-    assert "This SOP walks through configuring the deployment console end to end." in md
     # The timestamped segments are placed verbatim under their steps, so the
     # narrative stage's coverage gate counts them as covered (placed_text)
     # and adds no duplicate [verify] blockquote for any of them.

@@ -85,7 +85,7 @@ from pipeline.library import upsert_entry
 from pipeline.llm_client import LLMClient
 from pipeline.manifest import load_manifest, manifest_to_schema_dict, select_manifest_steps
 from pipeline.narration_polish import polish_narration
-from pipeline.narrative import generate_narrative
+from pipeline.narrative import generate_narrative, narrative_unsupported, verify_lines
 from pipeline.polish import generate_polish_fields
 from pipeline.preflight import probe_section
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
@@ -1408,6 +1408,16 @@ def create_app(
             if not ok:
                 report["polish_rejected_claim_coverage"] = missing
                 md_narrative_text = narrative_text
+            if claims and md_narrative_text and md_narrative_text != narrative_text:
+                if verify_lines(md_narrative_text) != verify_lines(narrative_text):
+                    reason = "verify lines changed"
+                else:
+                    reason = narrative_unsupported(
+                        md_narrative_text, claims, allow_verify_lines=True
+                    )
+                if reason:
+                    report["polish_rejected_narrative"] = reason
+                    md_narrative_text = narrative_text
 
         md = render_markdown(
             manifest,
