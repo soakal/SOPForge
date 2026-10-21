@@ -1,3 +1,18 @@
+# Audit fix pass: status (2026-10-21, 11:00 EDT)
+
+**DONE: `audit-fixes` merged into `main` (`711c4be`) and pushed.** Re-verify run `p2` finished
+(2 fix rounds). Gate on main: ruff clean, 720 passed / 5 skipped (3 opt-in ui/exe deselected).
+`test_hook_callback_returns_instantly...` flakes under full-suite load (0.2 s wall-clock bound,
+pre-existing Phase 1 test; F-11's `monitor_scale` runs on the worker thread, not the hook).
+
+Still open (all need Brian, nothing more to build without a decision):
+- F-10 PARTIAL (both): the two deliberate exceptions in `phases/DEVIATIONS.md` need sign-off; A-01 closes the rest.
+- F-07 PARTIAL (Astra): `qwen3.6:27b` tag unverified until Ollama on .60 is up (`py -3.12 scripts/verify_models.py`).
+- F-06: last fix attempt failed the gate and was rolled back; both verifiers rate it LANDED.
+- Low-severity notes in `fix/verify_fable_p22.json` regressions (F-04-adjacent, mixed-caption photo narration wording).
+- Held A-01/A-03/F-01/F-04 (`fix/PLAN_UNRESOLVED.md`); EXE rebuild + sign + reinstall needs OK.
+
+---
 # Audit fix pass: status (2026-10-20, 16:30 EDT)
 
 ## Where it stands
