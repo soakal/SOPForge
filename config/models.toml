@@ -22,13 +22,14 @@ endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen3:32b"
 max_concurrency = 1
 
-# NOTE (2026-10-20): qwen3.6:27b is an UNVERIFIED tag with no pull record --
-# only switch to it after `ollama list` (or `py -3.12 scripts/verify_models.py`)
-# confirms it is installed. Default stays qwen3:32b (already used by [steps]).
+# NOTE (2026-10-20): qwen3.6:27b (the documented default in CLAUDE.md and
+# USER_MANUAL.md) is an UNVERIFIED tag with no pull record in this repo --
+# confirm it is installed with `ollama list` or
+# `py -3.12 scripts/verify_models.py` before relying on it.
 [narrative]
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
-model = "qwen3:32b"
+model = "qwen3.6:27b"
 passes = 3
 
 [vision]
