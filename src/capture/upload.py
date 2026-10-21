@@ -71,7 +71,7 @@ def upload_session(output_dir, server_url=None, timeout=10.0, transport=None):
                 opened.append(fh)
                 files.append(("narration_wav_file", (narration_wav, fh, "audio/wav")))
 
-        with httpx.Client(transport=transport, timeout=timeout) as client:
+        with httpx.Client(transport=transport, timeout=timeout, trust_env=False) as client:
             resp = client.post(
                 f"{server_url}/sessions",
                 data={"manifest_json": manifest_json, "stage": "1"},

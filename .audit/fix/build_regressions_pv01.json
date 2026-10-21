@@ -1,0 +1,11 @@
+{
+  "subject": "fix regressions: coverage scope, mojibake",
+  "summary": "Code edits are done, but I could not run ruff, ruff format or pytest. Bash and PowerShell were both denied in don't-ask mode, so none of the edits are verified. Run `py -3.12 -m ruff check src/ ; py -3.12 -m ruff format src/ ; py -3.12 -m pytest -x -q` before committing. The new line in `server.py` that builds `final_placed` is the likeliest place for a ruff format change.\n\n- **Mojibake:** I replaced the five 'â€”' sequences in `tests/test_recorder.py` (lines 3, 98, 113, 360, 386) with '—' using targeted edits.\n- **Preflight proxy:** `src/pipeline/preflight.py` already has `trust_env=provider != \"ollama\"` from commit eea92cf, so I made no change.\n- **Narrative polish rejection:** `validate_claim_coverage` in `claim_coverage.py` now takes `placed_text=\"\"`. It counts a claim as covered if it appears in either the narrative or the placed text, the same scope `ensure_claim_coverage` uses. The final check in `_write_all_exports` (`server.py`) now passes the narration of the polished steps as `placed_text`. A valid paraphrased narrative is no longer rejected when the steps still carry the claims verbatim.\n- **Polish dropping claims:** In the per-step polish loop in `_write_all_exports`, if a polish rewrite of a step's narration loses a claim the pre-polish narration covered, the original narration is restored. The restoration covers capture mode as well as photo mode. This closes the path where a claim could vanish from every export without a `[verify]` flag.\n- **F-04 note:** I added a note under F-04 in `.audit/fix/PLAN_UNRESOLVED.md`. It records that the F-02 `placed_text` extension already implements the remedy and flipped the `[verify]` count from 3 to 0.\n- **Test:** I added `test_validate_claim_coverage_counts_placed_text` in `tests/pipeline/test_claim_coverage.py`. I did not add a test for the narration-restoration branch.",
+  "files_changed": [
+    "tests/test_recorder.py",
+    "src/pipeline/claim_coverage.py",
+    "src/pipeline/server.py",
+    "tests/pipeline/test_claim_coverage.py",
+    ".audit/fix/PLAN_UNRESOLVED.md"
+  ]
+}

@@ -108,6 +108,10 @@ def _place_text_blocks(manifest, blocks, labelled):
     step_ids = manifest.step_ids()
     if not step_ids:
         return {}
+    # A single unlabelled run-on block on a multi-step manifest has nothing to
+    # split on; hold it unplaced rather than inventing it onto step 1.
+    if not labelled and len(blocks) == 1 and len(step_ids) > 1:
+        return {}
     per_step = {}
 
     def add(idx, text):
@@ -215,11 +219,12 @@ def align_transcript_to_steps(filename, content, manifest):
         # loudly rather than let it look like a normal 1-block transcript.
         if not labelled and len(blocks) == 1 and len(manifest.steps) > 1:
             note += (
-                " -- WARNING: the whole transcript landed on step 1 because it has "
-                "no blank lines between different steps' narration and no 'Step N:' "
-                "labels for the splitter to use. Add either (blank lines between "
-                "each step's narration, or a 'Step N:' label per block) and "
-                "re-upload to distribute it across the steps it actually describes."
+                " -- WARNING: the transcript was NOT placed under any step "
+                f"(0 of {len(manifest.steps)}) because it has no blank lines between "
+                "different steps' narration and no 'Step N:' labels for the splitter "
+                "to use; it is kept as narrative claims flagged for review instead. "
+                "Add either blank lines between each step's narration, or a 'Step N:' "
+                "label per block, and re-upload."
             )
     elif ext == "json":
         segments = _parse_json_segments(content)

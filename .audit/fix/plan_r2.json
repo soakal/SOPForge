@@ -1,0 +1,384 @@
+{
+  "items": [
+    {
+      "id": "A-01",
+      "order": 1,
+      "approach": "roundtrip.py: build a MASKED copy of the text once: _mask_manifest_literals(text, step) blanks the FIRST case-insensitive occurrence (re.sub(re.escape(lit), lambda m: ' '*len(m.group()), text, count=1, flags=I)) of each non-empty manifest literal, longest first: window.title, element.name, text_summary (type steps). The element/window presence checks (lines 37-41) stay on the raw text. Every other rule runs on the masked text: (1) the action-verb check (lines 33-35) MOVES to the masked text, so the recorded action must occur outside the manifest literals -- 'Delete Click in the Editor window.' for element 'Click' now fails 'action' (Astra's counterexample; today the element name satisfies it). (2) _NEGATION = \\b(do not|don't|dont|never|avoid|must not|mustn't|should not|shouldn't|without|not|no)\\b (IGNORECASE) -> 'negation'. (3) more than one match of _CLICK_VERBS|_TYPE_VERBS (union, both lists regardless of step.action) -> 'extra_action'. (4) Token support (Astra's 'affirmative single-instruction structure' in deterministic form): every token [a-z0-9]+ of the lowercased masked text must be in ALLOWED = _STRUCTURAL (fixed set: the a an in on at to into of from with within inside under for by this that it its your you current here somewhere; window dialog screen page button field box textbox checkbox menu item tab link icon option list dropdown panel pane toolbar bar row cell column header label control element position area section form input value text entry) | the two verb lists | tokens of the step's own strings (window.title, window.process, element.name, element.control_type, text_summary) | all-digit tokens; any other token -> 'unsupported:<token>'. After the manifest literals and the recorded action are consumed, nothing may remain that is not template/structural vocabulary -- 'then encrypt all files' (encrypt, files), 'then delete all records' (delete, records), 'to open the file dialog' (file, plus a second verb) all fall back to the template, and no verb list has to be exhaustive, so plan r1's inflected-destructive list is dropped. Return (len(mismatches)==0, mismatches). generation.py unchanged: one LLM call per step, render_step_template on any mismatch (markdown emphasis is already stripped before the gate, generation.py:96). `# ponytail:` comment names the ceiling: any phrasing that adds a non-structural word ('carefully') yields the always-correct template, which CLAUDE.md rule 2 (the LLM only phrases) allows.",
+      "files": [
+        "src/pipeline/roundtrip.py",
+        "tests/pipeline/test_roundtrip.py",
+        "tests/pipeline/test_step_generation.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_roundtrip.py::test_negated_instruction_fails -- element 'Save', window 'Editor'; 'Do not click Save in the Editor window.' -> ok False, 'negation' in mismatches",
+        "tests/pipeline/test_roundtrip.py::test_additional_clause_fails -- parametrized: 'Click Save in the Editor window, then delete all records.' and Astra's 'Click Save in the Editor window, then encrypt all files.' -> ok False, some mismatch startswith 'unsupported:'",
+        "tests/pipeline/test_roundtrip.py::test_action_verb_must_occur_outside_the_element_name -- element 'Click', click step: 'Delete Click in the Editor window.' -> ok False, 'action' in mismatches; 'Click Click in the Editor window.' -> ok True (Astra's counterexample)",
+        "tests/pipeline/test_roundtrip.py::test_element_named_like_a_verb_is_still_counted_once -- element 'Delete': 'Click Delete in the Editor window.' -> (True, []); '..., then delete all records.' -> ok False",
+        "tests/pipeline/test_roundtrip.py::test_second_known_verb_is_an_extra_action -- 'Click Save in the Editor window. Then press Save.' -> 'extra_action' in mismatches",
+        "tests/pipeline/test_roundtrip.py::test_negation_inside_ui_label_is_not_a_negation -- element 'Do not show again' (CheckBox), window 'Setup'; render_step_template(step) -> (True, []); 'Check Do not show again in the Setup window.' -> (True, [])",
+        "tests/pipeline/test_roundtrip.py::test_element_name_that_is_also_a_verb_is_not_an_extra_action -- elements 'Save', 'Open', 'Close' with a single-verb instruction -> (True, [])",
+        "tests/pipeline/test_roundtrip.py::test_unsupported_consequence_clause_falls_back -- 'Click the Save button in the Editor window to open the file dialog.' -> ok False",
+        "tests/pipeline/test_roundtrip.py: every existing test (template outputs for both fixtures incl. the type template embedding text_summary, 'Click somewhere in <window>.', expanded verb lists, backslash title) passes unchanged",
+        "tests/pipeline/test_step_generation.py::test_negated_or_multi_clause_reply_falls_back_to_template -- stub replies parametrized over the probe strings above; generate_step_text returns (render_step_template(step), True); test_realistic_mock_achieves_at_least_95_percent_round_trip and the bold-marker test still pass"
+      ],
+      "acceptance": [
+        "round_trip_ok rejects 'Do not click Save in the Editor window.', 'Click Save in the Editor window, then delete all records.', 'Click Save in the Editor window, then encrypt all files.' and (element 'Click') 'Delete Click in the Editor window.' for window.title='Editor'",
+        "The action verb is required OUTSIDE the first occurrence of each manifest literal; a bare 'Click Delete in the Editor window.' (element 'Delete') passes and a step whose element is 'Do not show again' round-trips its own template output",
+        "Every token of the masked text is structural vocabulary, a known action verb, a digit run, or a token of the step's own manifest strings; anything else is a mismatch",
+        "No retry logic added; generation.py still makes exactly one LLM call per step and falls back to the template on mismatch",
+        "Every pre-existing test in tests/pipeline/test_roundtrip.py, test_template_fallback.py and test_step_generation.py passes without modification"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "A-12",
+      "order": 2,
+      "approach": "Disable httpx environment-proxy inheritance for every local-only client and make proxy use explicit per provider. `rg -n 'httpx.Client(' src` lists exactly four construction sites: llm_client.py:49, vision.py:62, capture/upload.py:62, capture/tray.py:42 (no module-level httpx.get/post calls exist). llm_client.py:49 httpx.Client(..., trust_env=self.provider != 'ollama') with a comment: ollama is LAN/local-only and must never be redirected by HTTP(S)_PROXY/ALL_PROXY; cloud providers keep httpx's default so a corporate proxy still works for them. vision.py: add trust_env=False parameter to caption_images and _caption_one, pass it into httpx.Client(transport=..., timeout=..., trust_env=trust_env); server.py _generate_photo passes trust_env=vision_cfg.provider != 'ollama'. capture/upload.py:62 httpx.Client(transport=transport, timeout=timeout, trust_env=False). capture/tray.py:42 _request_server_shutdown: httpx.Client(timeout=timeout, trust_env=False) (always the local server). No new dependency, no proxy config field.",
+      "files": [
+        "src/pipeline/llm_client.py",
+        "src/pipeline/vision.py",
+        "src/pipeline/server.py",
+        "src/capture/upload.py",
+        "src/capture/tray.py",
+        "tests/pipeline/test_llm_client.py",
+        "tests/pipeline/test_vision.py",
+        "tests/test_upload.py",
+        "tests/test_tray.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_llm_client.py::test_ollama_client_ignores_proxy_environment -- monkeypatch HTTP_PROXY/HTTPS_PROXY/ALL_PROXY='http://203.0.113.1:3128'; LLMClient(SectionConfig(endpoint='http://127.0.0.1:11434/v1', model='m')) with no transport has no proxy mounts (client._client._mounts == {}); never sends a request",
+        "tests/pipeline/test_llm_client.py::test_cloud_provider_client_still_honors_proxy_environment -- same env, provider='openai' -> client._client._mounts is non-empty",
+        "tests/pipeline/test_vision.py::test_caption_client_is_built_with_trust_env_false -- spy wrapping pipeline.vision.httpx.Client records kwargs and returns a MockTransport-backed client; caption_images(..., transport=mock) default -> recorded trust_env is False; passing trust_env=True is forwarded",
+        "tests/test_upload.py::test_upload_client_ignores_proxy_environment -- spy on capture.upload.httpx.Client; upload_session(...) constructs the client with trust_env=False",
+        "tests/test_tray.py::test_shutdown_request_client_ignores_proxy_environment -- proxy env vars set; spy on capture.tray.httpx.Client returning a MockTransport-backed client that records the POST to /shutdown; _request_server_shutdown('http://127.0.0.1:8420') constructs the client with trust_env=False and the request is received"
+      ],
+      "acceptance": [
+        "Diff shows trust_env passed to all four httpx.Client constructions in llm_client.py, vision.py, capture/upload.py and capture/tray.py; `rg -n 'httpx.Client(' src` shows no site without it",
+        "With HTTP_PROXY/HTTPS_PROXY/ALL_PROXY set, an ollama-provider LLMClient, caption_images against an ollama endpoint, upload_session and _request_server_shutdown create clients with no proxy mounts (tests above pass)",
+        "Non-ollama providers are unaffected (openai/openrouter/anthropic clients keep env proxy handling)",
+        "All existing test_llm_client.py, test_vision.py, test_upload.py, test_tray.py tests still pass"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "A-03",
+      "order": 3,
+      "approach": "(a) narrative.py: _critique_prompt(draft, claims) and _revise_prompt(draft, critique, claims) embed the same claim bullet list as _draft_prompt with 'The narrative may only state these facts; remove anything not supported by them.' (b) Deterministic grounding gate, public so the post-polish check can reuse it: narrative.unsupported_reason(claims, text) -> str|None. Split text into sentences on [.!?], each sentence into clauses on [,;:]|\\b(then|and|before|after|while|once)\\b. Per clause: tokens = polish._content_tokens(clause) minus _CONNECTIVES (first second third next then finally lastly afterwards begin begins start starts user workflow procedure step steps); a clause with no tokens is skipped; otherwise it is supported iff SOME SINGLE claim C has tokens <= polish._content_tokens(C['text']) AND polish.negation_count(clause) == polish.negation_count(C['text']). First unsupported clause -> 'unsupported clause: <clause>'. No novel-token budget, no denylist, no length ratio: a clause is either traceable to one claim with the same polarity or the narrative is not trusted (Astra's 'Transfer funds' -> {transfer, funds} is in no claim; 'Delete the Documents folder.' from 'Delete the temp folder.'/'Open the Documents folder.' is in neither single claim; 'Delete the temp folder, then open the Documents folder.' splits on 'then' into two clauses each inside one claim and is kept -- the per-clause rule Astra asked for; 'Disable security controls.' vs claim 'Do not disable security controls.' is a subset but negation 0 != 1). (c) generate_narrative(claims, llm, passes=1, placed_text=''): after the passes, reason = unsupported_reason(claims, text); if reason: logger.warning and text = ' '.join(c['text'] for c in claims) (deterministic assembly, no LLM); then ensure_claim_coverage(text, claims, placed_text=placed_text) as before. (d) polish.py: negation_count(text) public, counting \\b(not|no|never|don't|dont|doesn't|cannot|can't|without|avoid|mustn't|shouldn't)\\b; _field_gate gains check 2b negation_count(original) != negation_count(rewrite) -> (False, 'changed negation') -- the one shared gate both entry points and every field route through ('not' is a _STOPWORD at polish.py:39 so check 2 at :250-259 cannot see a polarity flip). (e) server.py _write_all_exports, after generate_polish_fields: body, _verify = polish._split_verify_lines(md_narrative_text or ''); if claims and (reason := unsupported_reason(claims, body)): report['polish_rejected_narrative'] = reason; md_narrative_text = narrative_text -- the narrative stage's own grounding re-applied to the polished narrative, so polish cannot add an instruction the stage would have rejected (Astra's 'Transfer funds with polish on'). (f) tests/pipeline/test_server.py _NarrativeGeneratingStub reply becomes a per-clause-supported paraphrase of its transcript lines ('Open the console. Enter the computer name. Check the downloads.') so the end-to-end narrative tests still see it in doc.md. `# ponytail:` ceiling: free prose from the narrative model will often fall back to the claims join; under CLAUDE.md rule 2 that is the safe default.",
+      "files": [
+        "src/pipeline/narrative.py",
+        "src/pipeline/polish.py",
+        "src/pipeline/server.py",
+        "tests/pipeline/test_narrative_multipass.py",
+        "tests/pipeline/test_polish.py",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_narrative_multipass.py::test_invented_instruction_is_rejected_and_narrative_falls_back_to_claims -- claims ['Open settings.'], reply 'Open settings. Disable all security controls.' -> final text == 'Open settings.', covered == ['claim-001'], verify == []",
+        "tests/pipeline/test_narrative_multipass.py::test_transfer_funds_from_source_vocabulary_is_rejected -- claims 'Open settings.' / 'Check the account name.' / 'Select the security tab.' / 'Read the access policy.'; reply = claims join + ' Transfer funds.' -> falls back; 'Transfer' not in final text (Astra's reproduction)",
+        "tests/pipeline/test_narrative_multipass.py::test_removed_negation_is_rejected -- claims 'Open settings.' / 'Do not disable security controls.'; reply 'Open settings. Disable security controls.' -> falls back; 'Disable security controls.' not in final text",
+        "tests/pipeline/test_narrative_multipass.py::test_invented_negation_is_rejected -- claims 'Click the Save button.'; reply 'Do not click the Save button.' -> falls back",
+        "tests/pipeline/test_narrative_multipass.py::test_destructive_sentence_recombined_from_source_vocabulary_is_rejected_but_per_clause_merge_is_kept -- claims 'Delete the temp folder.' / 'Open the Documents folder.'; 'Delete the Documents folder.' -> falls back; 'Delete the temp folder, then open the Documents folder.' kept verbatim",
+        "tests/pipeline/test_narrative_multipass.py::test_critique_and_revise_prompts_include_source_claims -- passes=2 with _RecordingClient; all 3 recorded prompts contain 'Open settings.'",
+        "tests/pipeline/test_narrative_multipass.py::test_supported_paraphrase_is_kept -- claims 'Click the Save button.' / 'Close the Editor window.'; reply 'Click the Save button, then close the Editor window.' kept verbatim",
+        "tests/pipeline/test_narrative_multipass.py::test_uncovered_claims_still_get_verify_blockquote_regardless_of_passes -- UPDATED: an ungrounded reply ('Some narrative that mentions nothing relevant at all.') now falls back to the claims join: covered == both ids, verify_ids == [], '[verify]' not in text; NEW test_grounded_but_incomplete_narrative_flags_the_missing_claim -- reply == claim-001 text -> covered ['claim-001'], verify ['claim-002'], '[verify] (claim-002)' in text",
+        "tests/pipeline/test_narrative_multipass.py call-count tests (1->1, 2->3, 3->5, 4->7) and test_three_passes_makes_five_llm_calls pass unchanged (the final reply is the claims join itself)",
+        "tests/pipeline/test_polish.py::test_gate_rejects_a_rewrite_that_changes_negation -- _field_gate('Open settings. Do not disable security controls.', 'Open settings. Disable security controls.') -> (False, 'changed negation'); \"Don't close it.\" -> 'Do not close it.' passes (count unchanged); existing gate tests unchanged",
+        "tests/pipeline/test_server.py::test_polish_cannot_add_an_unsupported_instruction_to_the_narrative -- polish enabled, _RealPromptParsingPolishStub 'narrative' override appends ' Transfer funds.' to a grounded narrative; doc.md contains the original narrative, 'Transfer funds' absent, report['polish_rejected_narrative'] set",
+        "tests/pipeline/test_server.py::test_polish_cannot_flip_negation_in_the_narrative -- narrative override deletes 'do not'; doc.md keeps the negated sentence",
+        "tests/pipeline/test_server.py::test_real_capture_session_gets_a_narrative_from_transcript_claims and ::test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json -- updated stub reply still lands in doc.md"
+      ],
+      "acceptance": [
+        "generate_narrative returns a final text that is either per-clause traceable to single claims (same polarity) or the deterministic claims join; the 'Transfer funds', recombined-destructive, removed-negation and invented-negation replies all fall back",
+        "polish._field_gate rejects any rewrite whose negation-token count differs from the original for every field and both entry points; all existing test_polish.py tests pass",
+        "_write_all_exports re-runs narrative.unsupported_reason on the polished narrative body and reverts the narrative rewrite on any unsupported clause (polish on) -- the 'Transfer funds' regression passes with polish off and on",
+        "Critique and revise prompts contain every claim text",
+        "The fallback narrative is built only from claim texts (string join), no LLM involvement, and ensure_claim_coverage still runs last",
+        "test_narrative_multipass.py call-count tests still pass"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-05",
+      "order": 4,
+      "approach": "transcript.py _place_text_blocks: add `if not labelled and len(blocks) == 1 and len(step_ids) > 1: return {}` -- a single unlabelled run-on block on a multi-step manifest is held UNPLACED instead of being invented onto step 1. align_transcript_to_steps keeps the WARNING branch (same condition, line 216) but rewords it: '-- WARNING: the transcript was NOT placed under any step (0 of N) because it has no blank lines between different steps' narration and no \"Step N:\" labels for the splitter to use; it is kept as narrative claims flagged for review instead. Add either ... and re-upload.' No server change needed: _run_semantic_pipeline still triggers on 'WARNING' (LLM rescue when available), and when it declines the transcript text flows into Stage 2 claims as the single unplaced block (F-04 (1)) so it surfaces visibly in the narrative section / [verify] blockquotes with the WARNING in report['transcript']. Single-step manifests and labelled single blocks are unchanged. _ingest_session validation is unaffected (align still returns normally).",
+      "files": [
+        "src/pipeline/transcript.py",
+        "tests/pipeline/test_transcript.py",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_transcript.py::test_single_run_on_line_is_held_unplaced_with_a_loud_warning (renamed from test_single_run_on_line_collapses_to_step_1_with_a_loud_warning) -- per_step == {}, 'WARNING' in note, '0 of 3' in note",
+        "tests/pipeline/test_transcript.py::test_single_line_transcript_on_a_single_step_manifest_is_not_a_warning and ::test_single_labelled_block_is_not_a_warning -- unchanged, still green",
+        "tests/pipeline/test_server.py::test_unplaced_single_block_transcript_is_not_dumped_on_step_1 -- capture session with one-line unlabelled transcript, narrative stub whose align reply is not JSON (semantic rescue declines); status done; the '## Step 1' section contains no '**Narration:**'; the transcript line appears in doc.md exactly once, before the first '## Step' heading (narrative section); report['transcript'] contains 'WARNING'",
+        "tests/pipeline/test_server.py semantic-placement tests (capture and photo) -- still green (LLM rescue path)"
+      ],
+      "acceptance": [
+        "align_transcript_to_steps('t.md', <one unlabelled line>, <3-step manifest>) returns per_step == {} with a note containing 'WARNING'",
+        "Single-step manifests and labelled single blocks still place normally (existing tests unchanged)",
+        "No transcript text is attached to step 1 by position when the splitter found only one block; the WARNING is still recorded in the sidecar report's 'transcript' note",
+        "The semantic LLM rescue path (_run_semantic_pipeline) still runs on the WARNING and the semantic-placement server tests pass"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-04",
+      "order": 5,
+      "approach": "Claims are the exact strings placement produced, and placed narration is never rewritten. (1) server.py _claims_for_narrative(transcript_path, placed_texts, fallback_text): .json unchanged (segments -> extract_claims; each segment is a substring of the step narration _place_timed_segments joins it into, transcript.py:167-168); .txt/.md -> extract_claims over placed_texts (the per-step narration strings in manifest order) when any exist, else over the block texts from transcript._parse_text_blocks(content) (the F-05 held-unplaced case: one block = one claim). The capture flow passes [r['narration'] for r in step_results if r.get('narration')] (set by _apply_transcript, server.py:816-819); the photo flow passes [per_step[s.id] for s in manifest.steps if per_step.get(s.id)]. A claim is therefore the narration string under a step by construction, for labelled, paragraph AND semantic placement alike -- semantic_align's per_step values are verbatim slices of the transcript (semantic_align.py:144-153), so one claim per slice is exactly the validated source spans Astra asked for and a split block is covered iff every slice survives. This also removes the label-stripping drift (server.py:121 vs transcript.py:39-46) and the 'Windows involved' line (server.py:107). (2) No-transcript fallback: _generate passes '\\n'.join(r['text'] for r in step_results) as fallback_text so synthetic claims are exactly the step texts. (3) claim_coverage.py: keyword placed_text='' on ensure_claim_coverage and validate_claim_coverage; covered iff _claim_covered(claim, narrative_text) or _claim_covered(claim, placed_text); [verify] blockquotes only for claims in neither. narrative.generate_narrative forwards placed_text. server.py module-level _placed_corpus(step_results) = '\\n'.join(r['text'] + '\\n' + r.get('narration','') for r in step_results). (4) Narration is verbatim end to end (CLAUDE.md:58): (4a) polish.py _build_field_items drops the narration items (step text and narrative only); (4b) server.py _run_semantic_pipeline no longer calls polish_narration (server.py:778-787) -- semantic_align's verbatim slices ARE the narration, note becomes '... (semantic placement)', placement_meta carries no verify_claims/steps_polished; src/pipeline/narration_polish.py and tests/pipeline/test_narration_polish.py are deleted as dead code and the server.py:419-425 verify_claims-from-placement_meta wiring collapses to the narrative-stage ids (F-02). (5) _write_all_exports validates against the ACTUAL exported corpus after the F-10 step gate: validate_claim_coverage(md_narrative_text or '', claims, placed_text=_placed_corpus(md_step_results)); on failure revert only the narrative rewrite and record report['polish_rejected_claim_coverage']. (6) _generate passes claims to _narrative_with_coverage always (synthetic claims are covered by the step corpus, never dumped as [verify]) but to _write_all_exports only when transcript_path exists: synthetic claims are the pre-polish step texts themselves, their rendering is guaranteed by _assert_1to1_mapping (server.py:146-156) and a polished step text is manifest-gated by round_trip_ok (F-10). Update tests whose expectations assumed placed lines re-appear as [verify], that narration is polished, or that semantic placement is followed by a polish rewrite.",
+      "files": [
+        "src/pipeline/claim_coverage.py",
+        "src/pipeline/narrative.py",
+        "src/pipeline/polish.py",
+        "src/pipeline/server.py",
+        "src/pipeline/narration_polish.py",
+        "tests/pipeline/test_claim_coverage.py",
+        "tests/pipeline/test_narrative_multipass.py",
+        "tests/pipeline/test_polish.py",
+        "tests/pipeline/test_server.py",
+        "tests/pipeline/test_narration_polish.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_claim_coverage.py::test_claim_present_only_in_placed_text_is_covered_not_flagged -- ensure_claim_coverage('narrative', [claim], placed_text='... claim text ...') -> no blockquote, covered == [id]; ::test_validate_accepts_claim_present_only_in_placed_text; ::test_validate_still_fails_when_claim_absent_from_both",
+        "tests/pipeline/test_narrative_multipass.py::test_placed_text_counts_as_coverage -- uncovered-by-narrative claim with placed_text containing it -> verify_ids == []",
+        "tests/pipeline/test_server.py::test_semantic_split_of_one_unlabelled_block_places_verbatim_slices_and_flags_nothing (replaces test_unstructured_transcript_gets_semantic_placement_and_polish) -- transcript 'first click save then enter the computer name then click somewhere in chrome' with _NarrativeStub boundaries; doc.md shows '**Narration:** first click save', '... then enter the computer name', '... then click somewhere in chrome' under steps 1-3 byte-for-byte (no 'First, click Save.'), '[verify]' not in doc.md, report['verify_claims'] == [], report['transcript_placement']['mode'] == 'semantic-llm', 'steps_polished' not in report['transcript_placement']",
+        "tests/pipeline/test_server.py::test_photo_build_semantic_split_places_verbatim_slices_and_flags_nothing (extends test_photo_build_unstructured_transcript_gets_semantic_placement at :1304) -- same assertions in photo mode with captions None",
+        "tests/pipeline/test_server.py::test_labelled_transcript_claims_match_placed_narration -- 'Step 1: Open the console.\\nStep 2: Enter the name.\\nStep 3: Check downloads.' -> no verify_claims, '[verify]' not in doc.md, each label-stripped line under its step as '**Narration:**'",
+        "tests/pipeline/test_server.py::test_heading_only_step_label_does_not_become_a_claim -- '## Step 1\\nOpen the console.\\n## Step 2\\nEnter the name.' -> claims are the two body lines; '[verify]' not in doc.md",
+        "tests/pipeline/test_server.py::test_real_capture_session_gets_a_narrative_from_transcript_claims and ::test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json -- `md.count('[verify]') == 3` becomes `'[verify]' not in md`; each line/segment present under a step; stub narrative still in md",
+        "tests/pipeline/test_server.py::test_capture_with_no_transcript_does_not_verify_flag_its_own_step_texts -- sample manifest, no transcript; '[verify]' not in doc.md; with polish enabled and the _RoundTripPassingStub factory, polished step text is kept and report has no polish_rejected_claim_coverage",
+        "tests/pipeline/test_server.py::test_polish_never_rewrites_placed_narration -- polish enabled with _RealPromptParsingPolishStub, labelled transcript; its prompt contains no ':narration' field id; doc.md shows every narration line verbatim while step text is uppercased",
+        "tests/pipeline/test_server.py::test_polish_rejected_when_it_drops_claim_coverage and ::test_polish_end_to_end_real_prompt_claim_coverage_rejection -- single unlabelled line (unplaced per F-05); _VerbatimNarrativeStub; narrative override drops a phrase -> report['polish_rejected_claim_coverage'] == ['claim-001'], original line back in doc.md; saw_polished_narration assertions removed",
+        "tests/pipeline/test_server.py polish wiring tests (~271-391, 572-624) -- narration assertions flipped from `.upper() in md` to verbatim-present",
+        "tests/pipeline/test_polish.py::test_build_field_items_never_includes_narration and ::test_generate_polish_fields_leaves_narration_verbatim (replace the narration-polish tests); fields_kept_verbatim no longer lists ':narration' ids",
+        "tests/pipeline/test_narration_polish.py deleted with the module; tests/pipeline/test_textgate.py unaffected (degenerate_reason still used by vision.py)"
+      ],
+      "acceptance": [
+        "ensure_claim_coverage/validate_claim_coverage accept placed_text and count it as coverage; existing test_claim_coverage.py tests pass unchanged",
+        "_claims_for_narrative builds .txt/.md claims from the per-step narration strings placement produced (or the single unplaced block); a labelled 3-line transcript and a semantically split run-on transcript both produce a doc.md with every slice verbatim under its step and zero '[verify]' blockquotes",
+        "No LLM stage rewrites narration: polish._build_field_items never emits a narration item and _run_semantic_pipeline installs semantic_align's slices unmodified; `rg polish_narration src tests` returns nothing",
+        "_write_all_exports validates coverage against the post-polish corpus (_placed_corpus(md_step_results) + polished narrative) and reverts only the narrative rewrite on failure",
+        "A claim that is in neither the narrative nor any step text/narration is still rendered as a [verify] blockquote (F-05 server test and the updated polish-rejection tests prove the path)"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-02",
+      "order": 6,
+      "approach": "server.py: add a closure helper inside create_app, _narrative_with_coverage(claims, placed_text) -> (narrative_text_or_None, verify_ids): builds make_narrative_llm_client(), try generate_narrative(claims, llm, passes=cfg.narrative.passes, placed_text=placed_text); except Exception: logger.warning(...) and (text, _covered, verify_ids) = ensure_claim_coverage('', claims, placed_text=placed_text) so every unplaced claim is emitted as a [verify] blockquote instead of silently dropped; finally close; return (text or None, verify_ids). _generate uses it (replacing lines 405-417) and keeps narrative_verify_ids. Sidecar wiring: verify_claim_ids = narrative_verify_ids (placement_meta no longer mints verify claims after F-04 (4b)); claims_by_id = {c['claim_id']: c for c in claims}. build_sidecar_report call unchanged otherwise. Shared with _generate_photo (F-01).",
+      "files": [
+        "src/pipeline/server.py",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_server.py::test_failed_narrative_stage_emits_verify_blockquotes_and_reports_them -- narrative_llm_client_factory returns a client whose chat() raises; one-line unlabelled transcript (unplaced); status 'done'; doc.md contains '[verify] (claim-001)' and the transcript line; report['verify_claims'] == [{'claim_id':'claim-001','text':<line>}]",
+        "tests/pipeline/test_server.py::test_failed_narrative_stage_with_placed_transcript_adds_no_verify_noise -- raising narrative client + labelled 3-line transcript; status 'done'; '[verify]' not in doc.md; report['verify_claims'] == []",
+        "tests/pipeline/test_server.py::test_narrative_stage_verify_ids_reach_the_sidecar_report -- narrative stub returns a grounded paraphrase that omits the single unplaced claim -> doc.md has one [verify] and report['verify_claims'][0]['claim_id'] == 'claim-001' with its text"
+      ],
+      "acceptance": [
+        "The `except Exception: narrative_text = None` branch in _generate is replaced by the ensure_claim_coverage('', claims, placed_text) fallback",
+        "_verify_ids from the narrative stage are no longer discarded: they appear in report['verify_claims'] with claim text",
+        "With a raising narrative client the job still finishes 'done' and every unplaced claim appears as a [verify] blockquote in doc.md (md.count('[verify]') == number of unplaced claims)",
+        "Existing sidecar tests (tests/pipeline/test_sidecar_report.py) unchanged and green"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-16",
+      "order": 7,
+      "approach": "server.py _write_all_exports line 680: `ok, missing = validate_claim_coverage(md_narrative_text or '', claims, placed_text=...)` so a None narrative (no claims, or any future failure path) can never raise AttributeError inside claim_coverage._claim_covered (claim_coverage.py:23). Combined with F-02 the narrative is already a string whenever claims exist; this guard makes the 'narrative is best-effort, never blocks the doc' comment true unconditionally.",
+      "files": [
+        "src/pipeline/server.py",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_server.py::test_polish_enabled_with_failing_narrative_still_writes_the_doc -- [polish].enabled=true, polish_llm_client_factory=lambda s: _RealPromptParsingPolishStub(), narrative client raises, one-line unlabelled transcript; status == 'done' (not 'error'); GET doc.md is 200 and contains '[verify] (claim-001)'; report.json exists",
+        "tests/pipeline/test_server.py::test_polish_enabled_with_no_claims_and_no_narrative_does_not_crash -- manifest with empty narration (claims == []), polish enabled, narrative_text None path; status 'done'"
+      ],
+      "acceptance": [
+        "validate_claim_coverage is never called with None as final_text (diff shows `md_narrative_text or ''`)",
+        "A job with polish enabled and a raising narrative stage finishes 'done' and writes doc.md/report.json",
+        "Existing polish wiring tests still pass"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-10",
+      "order": 8,
+      "approach": "server.py _write_all_exports, immediately after generate_polish_fields returns: steps_by_id = {s.id: s for s in manifest.steps}; for old, new in zip(step_results, md_step_results): if new['text'] != old['text'] and (old['used_fallback'] or not round_trip_ok(new['text'], steps_by_id[old['step_id']])[0] or any(_claim_covered(c, old['text']) and not _claim_covered(c, new['text']) for c in claims)): new['text'] = old['text']; reverted.append(old['step_id']). If reverted: report['polish_reverted_steps'] = reverted. Import round_trip_ok from pipeline.roundtrip (the same gate generation.py uses, now including A-01's masked-action/negation/token-support checks). Template-fallback steps keep their verbatim template text; LLM-phrased steps keep a rewrite only if it still round-trips against the manifest; a step text that carried a claim (photo mode, caption None: the verbatim transcript block) keeps the rewrite only if the claim text survives (F-04). Narration is no longer polished at all (F-04 (4)); narrative polish is gated by A-03 (e) and F-04 (5). Applies to both build modes. Update the three polish wiring tests that asserted uppercased step text while using stub_llm_client_factory (which forces every step to template fallback): give test_server.py a _RoundTripPassingStub (parses the real _build_prompt text and replies 'Click <target> in the <window> window.' / 'Enter a value into <target> in the <window> window.', which passes round_trip_ok) and use its factory as llm_client_factory in those tests.",
+      "files": [
+        "src/pipeline/server.py",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_server.py::test_polish_rewrite_that_drops_the_element_name_is_reverted -- llm_client_factory=_RoundTripPassingStub factory; fake generate_polish_fields rewrites each non-fallback step text with the element name removed ('Click Save in the Editor window.' -> 'Click in the Editor window.'); doc.md contains the original texts; report['polish_reverted_steps'] == those step ids",
+        "tests/pipeline/test_server.py::test_polish_never_rewrites_template_fallback_steps -- stub_llm_client_factory (all fallback) + uppercasing polish fake; doc.md contains render_step_template(step) text for every step and no uppercased step text; report['polish_reverted_steps'] == all step ids; narrative uppercase still applied; narration verbatim",
+        "tests/pipeline/test_server.py::test_photo_polish_rewrite_that_loses_the_transcript_claim_is_reverted -- photo build, captions None, transcript '1. Open the first screen.\\n2. Then the second.'; polish fake rewrites step-001 to 'Open screen one.'; doc.md keeps 'Open the first screen.'; report['polish_reverted_steps'] == ['step-001']",
+        "tests/pipeline/test_server.py::test_polish_pass_applied_to_doc_md_when_enabled, ::test_polish_end_to_end_real_prompt_happy_path, ::test_polish_end_to_end_real_prompt_claim_coverage_rejection -- switched to the _RoundTripPassingStub factory; uppercase step-text assertions still hold (round_trip_ok lowercases before every check)",
+        "tests/pipeline/test_server.py::test_polish_pass_is_a_no_op_when_disabled_by_default -- unchanged, green"
+      ],
+      "acceptance": [
+        "Diff shows a post-polish loop in _write_all_exports that reverts new['text'] when old['used_fallback'], round_trip_ok fails, or a claim covered by the old text is lost, and records report['polish_reverted_steps']",
+        "A polish rewrite 'Click Save in the Editor window.' -> 'Click in the Editor window.' never reaches doc.md/html/docx/pdf (original text rendered)",
+        "Template-fallback steps render their template text verbatim regardless of polish",
+        "All existing polish tests in tests/pipeline/test_server.py and test_polish.py pass after the stub swap"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-03",
+      "order": 9,
+      "approach": "server.py _generate_photo step_results loop (lines 525-533): placed = per_step.get(step.id); result = {'step_id': step.id, 'text': caption or placed or '(no description provided)', 'used_fallback': caption is None}; if caption and placed: result['narration'] = placed. Mirrors _apply_transcript (server.py:816-819) so render.py/docx/pdf print the transcript verbatim under the step whenever a vision caption took the text slot; when the caption failed the transcript already IS the step text, so no duplicate narration is added. Works for deterministic placement and the semantic-rescue per_step alike.",
+      "files": [
+        "src/pipeline/server.py",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_server.py::test_photo_build_with_vision_on_places_transcript_verbatim_under_each_step -- caption_images fake returns ['Vision caption for image 1.', 'Vision caption for image 2.']; transcript '1. Open the first screen.\\n2. Then the second.'; doc.md contains both captions, both transcript sentences, and '**Narration:**' twice; doc.html contains both sentences",
+        "tests/pipeline/test_server.py::test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration -- captions [None, None]; each transcript sentence appears exactly once in doc.md and '**Narration:**' is absent",
+        "tests/pipeline/test_server.py::test_build_uses_vision_captions_when_available and ::test_photo_build_caption_beats_placed_narration_and_informs_context -- unchanged assertions still green"
+      ],
+      "acceptance": [
+        "In photo mode with vision captions, each step dict carries 'narration' equal to the transcript text placed for that step",
+        "Transcript sentences appear verbatim in doc.md under their steps when [vision].enabled=true (the committed default)",
+        "No duplicate narration when the caption failed and the transcript already supplies the step text"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-01",
+      "order": 10,
+      "approach": "server.py _generate_photo, in this order: (1) step_results built (with F-03 narration). (2) claims = _claims_for_narrative(matches[0], [per_step[s.id] for s in manifest.steps if per_step.get(s.id)], '') when a transcript exists (try/except -> []), else []. (3) narrative_text, narrative_verify_ids = _narrative_with_coverage(claims, _placed_corpus(step_results)) when claims else (None, []) -- the [narrative] model, draft->critique->revise with models_cfg.narrative.passes, A-03's grounding gate and claim coverage now apply to photo builds exactly as to captures. (4) Title: generate_title_and_overview on the [steps] client only when the user supplied no title, consuming gen_title only. (5) Consistency pass that respects verbatim source text: canonicalize_terms still SEES every field in one call (title, narrative_text, every step text, every narration) so variant detection, the anchor/vision preference and report['consistency'] are unchanged (consistency.py:241-278), but the canonicalized value is written back ONLY to generated text: the title, narrative_text, and a step's text when a caption supplied it (used_fallback is False). Transcript-derived step text (caption None), narration and claims are left byte-for-byte -- CLAUDE.md:58 ('placed verbatim') and F-04's acceptance hold, and claims stay immutable ground truth. (6) Safety net after (5), against the exported text: narrative_text, _covered, late_ids = ensure_claim_coverage(narrative_text or '', claims, placed_text=_placed_corpus(step_results)); narrative_verify_ids += late_ids (claims and placed text are untouched, so this is expected to append nothing). (7) Report: verify_claims = [{'claim_id': cid, 'text': claims_by_id[cid]['text']} for cid in narrative_verify_ids]. (8) _write_all_exports(..., narrative_text=narrative_text, claims=claims) so validate_claim_coverage is a real post-polish check there. Deviation record: tests/pipeline/test_server.py::test_photo_build_canonicalizes_inconsistent_transcript_spelling (:1525) expects transcript-derived step text to be respelled (md.count('Hilschier') == 3, 'Hilsshier' not in md); that expectation contradicts CLAUDE.md:58 and is narrowed to 'generated fields carry one spelling, transcript text is verbatim, the merge is still reported' -- written to phases/DEVIATIONS.md with this reasoning rather than silently changed.",
+      "files": [
+        "src/pipeline/server.py",
+        "phases/DEVIATIONS.md",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_server.py::test_photo_build_narrative_comes_from_the_narrative_model -- caption_images -> [None]*n; narrative_llm_client_factory = recording stub replying with a per-clause-supported paraphrase ('Open the first screen, then the second.'); llm_client_factory = recording steps stub; the narrative stub received a draft prompt containing both transcript lines, the paraphrase is in doc.md, the steps stub was called only for the title, '[verify]' not in doc.md",
+        "tests/pipeline/test_server.py::test_photo_build_unsupported_narrative_falls_back_to_claims -- narrative stub replies 'Open the first screen. Disable all security controls.'; 'Disable' not in doc.md; transcript lines present in the narrative section",
+        "tests/pipeline/test_server.py::test_photo_build_failed_narrative_reports_verify_claims -- narrative client raises; one-line unlabelled transcript (unplaced per F-05, caption None); status done; doc.md contains '[verify] (claim-001)'; report['verify_claims'] == [{'claim_id':'claim-001','text':<line>}]",
+        "tests/pipeline/test_server.py::test_photo_build_canonicalizes_inconsistent_transcript_spelling -- UPDATED: title 'Hilschier Driver Install', transcript steps 'Hilsshier'/'Hilschier', captions None: doc.md contains the transcript lines byte-for-byte ('Hilsshier' present exactly once, under step 1), the title spelling unchanged, '[verify]' not in doc.md, report['verify_claims'] == [], report['consistency'] == [{'canonical': 'Hilschier', 'variants': ['Hilsshier'], 'source': 'anchor'}]",
+        "tests/pipeline/test_server.py::test_photo_build_canonicalizes_generated_captions_but_not_narration -- same fixture with caption_images -> ['Extract the Hilsshier archive.', 'Open Hilschier setup.']; parametrized polish disabled/enabled (_RealPromptParsingPolishStub); doc.md step texts contain only 'Hilschier', the '**Narration:**' lines keep 'Hilsshier' verbatim, '[verify]' not in doc.md, report['verify_claims'] == []",
+        "tests/pipeline/test_server.py::test_build_from_screenshots_and_transcript_without_a_manifest and the other existing photo tests -- updated to pass a narrative_llm_client_factory where needed; assertions unchanged"
+      ],
+      "acceptance": [
+        "_generate_photo calls generate_narrative (via _narrative_with_coverage) with claims built from the placed transcript slices and passes=models_cfg.narrative.passes",
+        "generate_title_and_overview's overview is no longer used as the photo narrative (only gen_title is consumed)",
+        "canonicalize_terms output is written back only to title, narrative and caption-supplied step text; transcript-derived step text, narration and claim texts are byte-identical to the upload, and report['consistency'] still lists the detected variants",
+        "Claim accounting (ensure_claim_coverage with placed_text) runs after canonicalization and yields zero [verify] blockquotes for the Hilsshier/Hilschier fixtures with polish off and on",
+        "_write_all_exports is called from the photo path with the claims (non-empty when a transcript exists) so validate_claim_coverage is a real check there",
+        "report['verify_claims'] for a photo build includes the narrative stage's uncovered claim ids with text",
+        "phases/DEVIATIONS.md records the narrowed spelling-test expectation and cites CLAUDE.md:58"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-09",
+      "order": 11,
+      "approach": "server.py _generate_photo report dict: add 'caption_fallback_steps': [r['step_id'] for r in step_results if r['used_fallback']] if vision_cfg.enabled else [] (a distinct category: photo mode has no template, so 'template_fallback_steps' stays [] and is not overloaded; 'empty_metadata_steps' stays [] because the synthetic manifest has no UIA by construction). Render the new category: webui/pages.py render_session_page adds _section('Caption-fallback steps', 'caption_fallback_steps', report.get('caption_fallback_steps', [])) and webui/review.py render_review_page adds the matching _list_section; pages._badge-style colouring treats it like template fallback (red).",
+      "files": [
+        "src/pipeline/server.py",
+        "src/pipeline/webui/pages.py",
+        "src/pipeline/webui/review.py",
+        "tests/pipeline/test_server.py",
+        "tests/pipeline/test_webui_pages.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_server.py::test_photo_build_report_lists_caption_fallback_steps -- caption_images fake -> ['A caption.', None]; report['caption_fallback_steps'] == ['step-002'], report['template_fallback_steps'] == []",
+        "tests/pipeline/test_server.py::test_photo_build_report_caption_fallback_empty_when_vision_disabled -- [vision].enabled=false in the temp config; report['caption_fallback_steps'] == []",
+        "tests/pipeline/test_webui_pages.py::test_session_page_renders_caption_fallback_section -- render_session_page with report {'caption_fallback_steps': ['step-002']} contains 'Caption-fallback steps' and 'step-002'; review.render_review_page likewise",
+        "tests/pipeline/test_sidecar_report.py -- unchanged, green"
+      ],
+      "acceptance": [
+        "Photo-mode report.json contains caption_fallback_steps listing exactly the steps whose caption returned None when vision was enabled",
+        "template_fallback_steps remains [] for photo builds and build_sidecar_report's capture-flow output is unchanged",
+        "The review page and session page render the new category"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-06",
+      "order": 12,
+      "approach": "config.py: (1) delete the stale sentence at lines 82-84 ('generate_step_text does not yet branch on this flag ... no runtime effect') and replace with one line stating generate_step_text attaches the step screenshot as an image_url block when true. (2) Add TEXT_ONLY_MODEL_PREFIXES = ('qwen3:', 'qwen3.6:', 'deepseek-r1', 'llama3', 'mistral', 'phi') and def vision_model_warning(steps: SectionConfig) -> str | None: returns a message ('[steps] model <m> is a text-only model: use_vision will attach screenshots it cannot read. Set a vision-capable model (e.g. qwen2.5vl:7b) or turn use_vision off.') when steps.use_vision and steps.model.lower().startswith(TEXT_ONLY_MODEL_PREFIXES); None otherwise (unknown/custom tags never warn; config stays loadable, no validator raises). (3) server.py POST /ui/config: after building cfg, warning = vision_model_warning(cfg.steps); redirect to '/ui/config?saved=1' + ('&warning=' + urlencode) when set; GET /ui/config accepts warning: str|None and passes it to render_config_page(..., warning=warning) which renders it as a visible <p class=\"warning\"> banner above the form (html-escaped). (4) _generate: logger.warning(vision_model_warning(models_cfg.steps)) when non-None.",
+      "files": [
+        "src/pipeline/config.py",
+        "src/pipeline/server.py",
+        "src/pipeline/webui/pages.py",
+        "tests/pipeline/test_models_config.py",
+        "tests/pipeline/test_server.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_models_config.py::test_vision_model_warning_for_known_text_only_model -- SectionConfig(model='qwen3:32b', use_vision=True) -> non-None containing 'text-only'",
+        "tests/pipeline/test_models_config.py::test_vision_model_warning_is_none_for_vision_model_custom_tag_or_flag_off -- ('qwen2.5vl:7b', True), ('my-custom-vl', True), ('qwen3:32b', False) -> None",
+        "tests/pipeline/test_server.py::test_config_save_warns_when_use_vision_set_on_text_only_model -- POST /ui/config with steps_model='qwen3:32b', steps_use_vision='on' -> 303 whose Location contains 'warning='; GET that Location contains 'text-only'; load_models_config(cfg).steps.use_vision is True (saved, not rejected)",
+        "tests/pipeline/test_server.py::test_config_save_without_vision_has_no_warning -- same POST without steps_use_vision -> Location == '/ui/config?saved=1'"
+      ],
+      "acceptance": [
+        "config.py no longer contains the sentence 'does not yet branch on this flag' / 'no runtime effect'",
+        "vision_model_warning exists in config.py and is called from the /ui/config save handler and from _generate",
+        "Saving use_vision=true with a known text-only model still persists the config and shows a warning on the page; custom model tags produce no warning",
+        "Existing test_models_config.py and config-page tests pass"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-07",
+      "order": 13,
+      "approach": "Pick ONE narrative default: qwen3:32b (already the documented default in CLAUDE.md:67-68 and USER_MANUAL.md:641, already pulled/used by [steps]; qwen3.6:27b has no pull/test record in the repo and the host cannot be probed). Update together: config/models.toml:28 model = \"qwen3:32b\" (+ comment: 'qwen3.6:27b is an UNVERIFIED tag with no pull record -- only switch after `ollama list` confirms it'); webui/pages.py _RECOMMENDED['narrative']['ollama'] = 'qwen3:32b' and _MODEL_SUGGESTIONS['narrative']['ollama'] = ['qwen3:32b', 'qwen3.6:27b']; tests/pipeline/test_models_config.py:24 and tests/pipeline/test_server.py:1918 expect 'qwen3:32b'. CLAUDE.md/USER_MANUAL need no change. Add scripts/verify_models.py: collect_expected_tags(cfg) = every ollama-provider model in the loaded ModelsConfig (steps/narrative/vision/polish) plus pages._RECOMMENDED[*]['ollama'] and _MODEL_SUGGESTIONS[*]['ollama']; fetch_installed(endpoint, transport=None) GETs <endpoint minus trailing /v1>/api/tags with httpx (trust_env=False) and returns the model names; main() prints missing tags and exits 1 if any, 0 otherwise.",
+      "files": [
+        "config/models.toml",
+        "src/pipeline/webui/pages.py",
+        "scripts/verify_models.py",
+        "tests/pipeline/test_models_config.py",
+        "tests/pipeline/test_server.py",
+        "tests/test_verify_models.py"
+      ],
+      "tests": [
+        "tests/pipeline/test_models_config.py::test_loads_committed_config -- asserts config.narrative.model == 'qwen3:32b'",
+        "tests/pipeline/test_server.py::test_config_page_model_datalists -- ('narrative', 'qwen3:32b') in the expected defaults table",
+        "tests/test_verify_models.py::test_collect_expected_tags_includes_config_and_page_ollama_tags -- set contains 'qwen3:32b', 'qwen2.5vl:7b', 'gemma3:12b', 'qwen3:14b', 'qwen3.6:27b'",
+        "tests/test_verify_models.py::test_verify_models_reports_missing_tags -- httpx.MockTransport serving {'models':[{'name':'qwen3:32b'},{'name':'qwen2.5vl:7b'}]}; diff lists the missing tags and main() returns 1; with all tags served returns 0"
+      ],
+      "acceptance": [
+        "config/models.toml, pages.py recommended/suggestion lists, test_models_config.py and test_server.py all agree the narrative ollama default is qwen3:32b, matching CLAUDE.md and USER_MANUAL.md",
+        "scripts/verify_models.py exists, is covered by tests via an injectable transport, and exits non-zero when a configured/suggested ollama tag is not in /api/tags",
+        "No model tag is newly introduced without a dated note; qwen3.6:27b is explicitly marked unverified in config/models.toml"
+      ],
+      "rebuttal": null
+    },
+    {
+      "id": "F-11",
+      "order": 14,
+      "approach": "New src/capture/dpi.py (ctypes only, never raises) with the WinAPI handles injectable so the logic is testable on any host: _winapi() returns (user32, shcore) from ctypes.windll (None, None off-Windows or on lookup failure). set_process_dpi_awareness(user32=None, shcore=None) -> str: tries user32.SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4) and returns 'per_monitor_v2' on a non-zero return; else shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE = 2) -> 'per_monitor' when the HRESULT is S_OK (0) or E_ACCESSDENIED (0x80070005, already set); else user32.SetProcessDPIAware() non-zero -> 'system'; else 'unavailable'; an AttributeError/OSError at any rung falls through to the next. monitor_scale(x, y, user32=None, shcore=None) -> float: user32.MonitorFromPoint(POINT(x, y), MONITOR_DEFAULTTONEAREST = 2), shcore.GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI = 0, byref(dpi_x), byref(dpi_y)) must return S_OK, result dpi_x / 96.0; 1.0 on any failure. Call set_process_dpi_awareness() from src/capture/__init__.py -- the package __init__ runs before capture.tray is imported at capture/__main__.py:10 (which imports pynput at tray.py:23), so hooks, screenshots and UIA rects all share one physical-pixel frame and pywinauto's own later SetProcessDPIAware call is a no-op. Record the scale: recorder.py _process_event stores 'screen': {'x': screen_x, 'y': screen_y, 'monitor': monitor_idx, 'scale': monitor_scale(x, y)}; fixtures/manifest.schema.json screen.properties gains 'scale': {'type': 'number'} (optional, not required, so old manifests and photo_build's synthetic manifest still validate); pipeline/manifest.py Screen gains scale: float = 1.0. sopforge.spec runtime_hooks stays empty. Record the import-order note in .claude/skills/uia-notes.md.",
+      "files": [
+        "src/capture/dpi.py",
+        "src/capture/__init__.py",
+        "src/capture/recorder.py",
+        "src/pipeline/manifest.py",
+        "fixtures/manifest.schema.json",
+        ".claude/skills/uia-notes.md",
+        "tests/test_dpi.py",
+        "tests/test_recorder.py",
+        "tests/test_manifest_schema.py"
+      ],
+      "tests": [
+        "tests/test_dpi.py::test_context_v2_success_selects_per_monitor_v2 -- fake user32 whose SetProcessDpiAwarenessContext records its argument and returns 1; result 'per_monitor_v2', recorded arg == -4, fake shcore never called",
+        "tests/test_dpi.py::test_fallback_sequence_and_return_code_handling -- parametrized fakes: (context returns 0, shcore returns 0) -> 'per_monitor'; (context returns 0, shcore returns 0x80070005) -> 'per_monitor'; (context raises AttributeError, shcore returns 0x80070057 E_INVALIDARG, SetProcessDPIAware returns 1) -> 'system'; (all fail) -> 'unavailable'; asserts the call order context -> shcore -> DPIAware",
+        "tests/test_dpi.py::test_monitor_scale_from_effective_dpi -- fake shcore.GetDpiForMonitor writes 96 -> 1.0 and 144 -> 1.5 into the byref out-params and returns 0; fake user32.MonitorFromPoint receives a POINT with the given x,y and flag 2; a non-zero HRESULT or a raising fake -> 1.0",
+        "tests/test_dpi.py::test_fresh_process_sets_per_monitor_awareness_before_any_hook_import (skip unless sys.platform == 'win32') -- subprocess `py -3.12 -c` that imports capture, asserts none of pynput/mss/pywinauto/comtypes is in sys.modules at that point, then queries ctypes.windll.user32.GetThreadDpiAwarenessContext() + GetAwarenessFromDpiAwarenessContext() and prints the value; the test asserts it equals DPI_AWARENESS_PER_MONITOR_AWARE (2) (or, when SetProcessDpiAwarenessContext is unavailable on the host, that IsProcessDPIAware() is truthy)",
+        "tests/test_dpi.py::test_set_process_dpi_awareness_is_idempotent (win32 only) -- second real call returns one of the four modes and does not raise",
+        "tests/test_recorder.py::test_negative_origin_monitor_translates_to_local_frame -- fake mss monitors include {'left': -1920, 'top': 0, ...}; a click at x=-100 yields screen.x == 1820 and bounding_rect shifted by +1920; manifest validates against the schema",
+        "tests/test_recorder.py::test_mixed_dpi_scale_is_recorded_per_step -- monkeypatch recorder_module.monitor_scale to return 1.5 for the secondary monitor's coordinates and 1.0 for the primary; the two steps' screen.scale are 1.5 and 1.0; schema validation passes (wiring test; the scale math itself is pinned by test_monitor_scale_from_effective_dpi)",
+        "tests/test_manifest_schema.py::test_screen_scale_is_optional_number -- sample manifest validates with and without screen.scale; a string scale is invalid",
+        "tests/pipeline/test_manifest_loader.py -- existing fixtures (no scale) still load; Screen.scale defaults to 1.0"
+      ],
+      "acceptance": [
+        "dpi.py selects per_monitor_v2 only on a successful SetProcessDpiAwarenessContext(-4), falls back shcore -> SetProcessDPIAware with the documented return-code handling, and derives scale as effective DPI / 96 -- all pinned by fake-WinAPI tests that run on any host",
+        "A fresh `py -3.12 -c 'import capture'` process reports per-monitor DPI awareness before pynput/mss/pywinauto are imported (win32 test)",
+        "Every capture manifest step's screen object includes a numeric scale; the JSON schema accepts it as optional and all existing fixture manifests still validate",
+        "test_recorder.py covers a negative-origin monitor and a mixed-DPI scale case and both pass",
+        "`py -3.12 -m capture --self-check` still exits 0; ruff check/format pass on src/"
+      ],
+      "rebuttal": null
+    }
+  ]
+}

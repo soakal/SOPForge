@@ -1,0 +1,5 @@
+{
+  "subject": "F-10 already landed; no code change",
+  "summary": "I made no code change. The F-10 post-polish gate was already in `_write_all_exports` at HEAD. It reverts a rewrite when the step used template fallback, when `round_trip_ok` fails, or when a claim the old text covered is lost. It records `report['polish_reverted_steps']`. The named tests pass. Ruff check and format are clean, and the full pytest run gave 720 passed, 5 skipped, 3 deselected. The verifiers' \"partial\" finding is about two documented exceptions in `phases/DEVIATIONS.md`. Photo mode skips `round_trip_ok`, because its synthetic steps have empty element and window fields, so every caption rewrite would be reverted. Captures without a transcript skip the step-text claim gate, because their claims are synthesized from the step texts themselves. Making acceptance #1 hold literally would break `test_photo_polish_keeps_descriptive_vision_caption_rewrite`. CLAUDE.md rule 3 forbids weakening a criterion silently, so I left the code alone. The user needs to sign off on those two deviations, or amend acceptance #1 to match.",
+  "files_changed": []
+}

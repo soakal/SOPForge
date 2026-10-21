@@ -1,0 +1,8 @@
+{
+  "subject": "align manual narration default, flag tag unverified",
+  "summary": "Kept qwen3.6:27b as the narrative default, since upstream, CLAUDE.md, pages.py and the tests all use it. Changed USER_MANUAL.md:694 from `qwen3:32b` to `qwen3.6:27b` so the manual agrees with config/models.toml. Added a dated 2026-10-20 note above `[narrative]` in config/models.toml saying qwen3.6:27b is unverified. The note points at `scripts/verify_models.py` and says to fall back to qwen3:32b if the tag isn't installed. I did not run verify_models.py against the Ollama host, so the tag is still unconfirmed. `ruff check` and `ruff format` are clean. The first pytest run stopped at one failure, `tests/test_recorder.py::test_scripted_session_produces_ordered_manifest_and_screenshots` (assert 2 == 1 steps). I didn't change that area and didn't investigate it. Re-running with that test deselected gave 717 passed, 5 skipped, 4 deselected. The 4 deselected are the recorder test plus 3 that are deselected by default. The tests/pipeline/test_frozen_paths.py failures you expected did not show up. PowerShell was denied partway through, so I ran the recorder re-check and the deselected run through Bash instead.",
+  "files_changed": [
+    "USER_MANUAL.md",
+    "config/models.toml"
+  ]
+}

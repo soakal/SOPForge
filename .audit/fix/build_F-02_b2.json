@@ -1,0 +1,7 @@
+{
+  "summary": "Fixed both gate failures. `ruff format` reformatted `server.py`. `test_session_page_colors_sidecar_sections_correctly` expected \"Verify claims\" to be green. With F-02 the narrative stage's `[verify]` ids now reach the sidecar report, and the stub narrative client leaves the synthesized-narration claims uncovered. So \"Verify claims\" now correctly renders yellow, and I updated the assertion and its stale comment. I did not touch any F-02 acceptance criterion. `ruff check` passes, `ruff format` leaves 51 files unchanged, and pytest gives 550 passed, 5 skipped and 3 deselected. The only failures are the 2 expected `test_frozen_paths.py` ones.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_webui_pages.py"
+  ]
+}

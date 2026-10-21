@@ -15,3 +15,7 @@ ESCALATION.md
 .pytest_cache/
 .ruff_cache/
 .hypothesis/
+
+# raw agent transcripts from .audit loops (public repo)
+.audit/**/*.log
+.audit/*.log

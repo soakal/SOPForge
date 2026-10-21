@@ -1,0 +1,5 @@
+{
+  "subject": "verify F-10 post-polish revert is green",
+  "summary": "No new edits. F-10 was already committed as 9acf768, and the working tree is clean apart from the untracked .audit/ folder. ruff check passes, ruff format --check passes, and the full pytest run gives 575 passed, 5 skipped with only tests/pipeline/test_frozen_paths.py deselected. With the default -x run, the only failure is test_sop_factory_2_dir_dev_mode_is_the_external_clone in that file, one of the two expected env failures. I did not look at the other one.\n\nI did not touch the verifier's remaining concerns. They are the absent strengthened round-trip validator (that is A-01) and narration still being polished (that is F-04). Both are held in .audit/fix/PLAN_UNRESOLVED.md and are outside this task. The photo-mode claim-loss check also still gets claims=() and so can't fire. I didn't change that or investigate it.",
+  "files_changed": []
+}

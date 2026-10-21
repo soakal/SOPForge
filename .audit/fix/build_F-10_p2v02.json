@@ -1,0 +1,7 @@
+{
+  "subject": "pin monitor scale in recorder multi-monitor test",
+  "summary": "The gate failure came from tests/test_recorder.py::test_screen_coords_and_bounding_rect_translated_to_monitor_local_frame. It asserted scale 1.0 but read the real display DPI, which is 1.25 on this host. That is host-dependent and unrelated to F-10. I monkeypatched recorder_module.monitor_scale to return 1.0 in that test, so it no longer reads host DPI. The test still checks the same coordinate translation. No F-10 code changed. The F-10 post-polish gate and its tests were already in HEAD. ruff check passes, ruff format changed nothing, and pytest gives 718 passed, 5 skipped. This does not close the verifiers' PARTIAL finding. Photo mode skipping round_trip_ok, and no claim gate for captures without a transcript, are still documented deviations in phases/DEVIATIONS.md and still need Brian's sign-off.",
+  "files_changed": [
+    "tests/test_recorder.py"
+  ]
+}

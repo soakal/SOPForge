@@ -143,3 +143,24 @@ def test_on_progress_none_is_unaffected(tmp_path):
 
     caps = caption_images(imgs, "", "http://x/v1", "m", transport=httpx.MockTransport(handler))
     assert caps == ["Do it."]
+
+
+def test_caption_client_is_built_with_trust_env_false(tmp_path, monkeypatch):
+    imgs = [_png(tmp_path, "1.png")]
+    recorded = []
+    real_client = httpx.Client
+
+    def spy(*args, **kwargs):
+        recorded.append(kwargs.get("trust_env"))
+        return real_client(*args, **kwargs)
+
+    monkeypatch.setattr("pipeline.vision.httpx.Client", spy)
+
+    def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "Do it."}}]})
+
+    mock = httpx.MockTransport(handler)
+    assert caption_images(imgs, "", "http://x/v1", "m", transport=mock) == ["Do it."]
+    assert recorded == [False]
+    caption_images(imgs, "", "http://x/v1", "m", transport=mock, trust_env=True)
+    assert recorded == [False, True]

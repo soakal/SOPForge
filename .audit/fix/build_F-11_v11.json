@@ -1,0 +1,8 @@
+{
+  "subject": "resolve DPI APIs independently in _winapi",
+  "summary": "Partly done. (1) Fixed in src/capture/dpi.py: _winapi now configures each WinAPI signature independently (getattr per function, missing ones skipped). It no longer returns (None, None) when SetProcessDpiAwarenessContext is absent, so the shcore and SetProcessDPIAware fallbacks stay reachable. (2) Added tests/test_dpi.py::test_winapi_missing_v2_still_returns_handles_for_fallbacks. It goes through the real _winapi loader with a fake windll that has no v2 API and expects 'system'. With that test in place, `ruff check` and `ruff format` on src/ and tests/test_dpi.py were clean and tests/test_dpi.py passed 9/9. (3) NOT done: the import-order note in .claude/skills/uia-notes.md. The Edit tool was denied for that file (\"don't ask\" permission mode), and I didn't try another route around the denial. Until that note is added, the comment in src/capture/__init__.py:5 still points to a note that doesn't exist. The note to append (a section titled \"DPI awareness must be set before any hook library is imported (F-11)\") should say: capture/__init__.py calls set_process_dpi_awareness() at package import; that runs before capture.tray imports pynput; so hooks, mss and UIA rects share one physical-pixel frame and pywinauto's later SetProcessDPIAware is a no-op; don't import pynput/mss/pywinauto/comtypes above that call; and each step records screen.scale = effective DPI / 96. (4) Not run: the full `pytest -x -q` and `py -3.12 -m capture --self-check`. After the dpi.py edit, Bash and PowerShell were denied, so I couldn't run either. The only runs I got were the ruff check/format and tests/test_dpi.py above.",
+  "files_changed": [
+    "src/capture/dpi.py",
+    "tests/test_dpi.py"
+  ]
+}

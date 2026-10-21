@@ -1,0 +1,108 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "LANDED",
+      "evidence": "Static verification on audit-fixes HEAD 83ddf1e: all four src httpx.Client sites specify trust_env. Ollama disables environment proxies; cloud LLM providers retain them. Server forwards the vision provider policy at server.py:532. Named regression tests are present. Runtime verification for this entire audit was unavailable: Python launcher returned 'No installed Python found!'. Diff and log were inspected; no files were changed.",
+      "file": "src/pipeline/llm_client.py",
+      "line": 56,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider --capture=sys tests/pipeline/test_transcript.py tests/test_dpi.py tests/test_verify_models.py",
+      "gap": null
+    },
+    {
+      "id": "F-05",
+      "verdict": "LANDED",
+      "evidence": "Single unlabelled blocks on multi-step manifests return {} at transcript.py:113; the warning explicitly reports zero placements. Semantic rescue remains enabled. Capture narrative coverage and photo fallback at server.py:594 preserve unplaced content. Named placement and preservation tests are present; execution unavailable.",
+      "file": "src/pipeline/transcript.py",
+      "line": 113,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-02",
+      "verdict": "PARTIAL",
+      "evidence": "The shared helper catches narrative failures and calls ensure_claim_coverage('', claims, placed_text=placed_text). Narrative verify IDs reach build_sidecar_report. However, coverage now relies on narration that capture export polish can subsequently rewrite without preserving its claims.",
+      "file": "src/pipeline/server.py",
+      "line": 470,
+      "command": null,
+      "gap": "Preserve or revalidate placed narration through export polish. Otherwise a failed narrative stage can leave no narrative fallback, polish can delete a placed claim, and neither the document nor verify_claims retains it. Named tests are present but could not run."
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "validate_claim_coverage receives md_narrative_text or '', removing the reported None crash. The failing-narrative polish regression test checks document and report availability. Execution unavailable. The additional test named 'with_no_claims_and_no_narrative' does not actually establish that condition: its normal fixture generates synthetic claims.",
+      "file": "src/pipeline/server.py",
+      "line": 781,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "PARTIAL",
+      "evidence": "Post-polish processing restores fallback text, rejects capture rewrites failing round_trip_ok, and records reverted IDs before all exporters. However, photo mode explicitly bypasses round_trip_ok; capture without a transcript disables the claim-loss gate. The photo exception is documented in phases/DEVIATIONS.md:3.",
+      "file": "src/pipeline/server.py",
+      "line": 747,
+      "command": null,
+      "gap": "The agreed unconditional post-polish checks do not apply to both modes: photo round-trip checks and no-transcript capture claim checks are exempted. These deviations require an amended acceptance criterion or implementation matching the plan. Named tests could not run."
+    },
+    {
+      "id": "F-03",
+      "verdict": "LANDED",
+      "evidence": "Successful captions retain placed transcript as narration, using raw semantic-alignment slices. Failed captions do not add duplicate narration. Export polish restores photo narration verbatim at server.py:745. Tests cover captions, failure, semantic rescue, and export polish; execution unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 567,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "Photo reports derive caption_fallback_steps from used_fallback only when vision is enabled, leaving template_fallback_steps empty. Session and review pages render the category at pages.py:538 and review.py:25. Named tests are present; execution unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 642,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "Stale flag documentation is removed. vision_model_warning implements the planned prefixes; generation logs it, config save adds it to the redirect, and the page escapes the warning. Configuration remains saveable. Named tests are present; execution unavailable.",
+      "file": "src/pipeline/config.py",
+      "line": 98,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "LANDED",
+      "evidence": "Committed config, page defaults, tests, CLAUDE.md, and USER_MANUAL.md agree on qwen3:32b. qwen3.6:27b is explicitly unverified. verify_models collects configured and suggested Ollama tags, queries /api/tags without environment proxies, and returns 1 for missing tags. Injectable-transport tests exist; execution unavailable.",
+      "file": "scripts/verify_models.py",
+      "line": 35,
+      "command": null,
+      "gap": null
+    },
+    {
+      "id": "F-11",
+      "verdict": "PARTIAL",
+      "evidence": "Package initialization sets DPI awareness before capture imports. dpi.py implements independent API loading, fallback return-code handling, and effective-DPI scale calculation. Recorder stores scale; schema and loader support it. Fake API, fresh-process, negative-origin, and mixed-scale tests exist.",
+      "file": "src/capture/dpi.py",
+      "line": 65,
+      "command": null,
+      "gap": "The planned import-order note was not added to .claude/skills/uia-notes.md. Fresh-process awareness, recorder tests, capture --self-check, and required ruff checks remain unverified: Python 3.12 is unavailable and no ruff command was found."
+    }
+  ],
+  "regressions": [
+    {
+      "title": "Capture export polish can now silently remove claims previously protected by verify blockquotes",
+      "file": "src/pipeline/server.py",
+      "line": 745,
+      "evidence": "New placed_text coverage at server.py:419 suppresses narrative verify blockquotes for placed claims. Only photo mode restores narration after polish. For capture narration 'Open console. Save settings.', polish can accept 'Open console.' under its 0.4 length-ratio and no-new-token checks. If narrative generation failed, narrative_text is None and verify_claims is empty. The final coverage check detects missing content but merely restores the same None narrative, leaving 'Save settings.' absent. Before this diff, narrative failure-independent successful coverage emitted a verify copy for omitted narrative claims."
+    },
+    {
+      "title": "Photo semantic-polish sidecar can report verify claims absent from the rendered document",
+      "file": "src/pipeline/server.py",
+      "line": 632,
+      "evidence": "Semantic rescue still runs polish_narration and collects dropped-clause verify_claims, but captioned steps now render raw pre-polish narration at line 568. The sidecar still includes the discarded polish result's verify IDs. Thus a clause retained verbatim in the document can be reported as requiring verification, while its corresponding nar-* verify marker is never rendered."
+    }
+  ]
+}

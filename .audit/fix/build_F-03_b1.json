@@ -1,0 +1,7 @@
+{
+  "summary": "F-03 implemented. In `_generate_photo`, each step result now gets `narration = placed` when a vision caption took the text slot and a transcript was placed for that step. When the caption failed, the transcript is already the step text, so no narration is added. This mirrors `_apply_transcript`. I added the two named tests, using a shared helper `_photo_build_with_captions`. `ruff check` and `ruff format` are clean. The full `pytest` run gave 552 passed and 5 skipped. I deselected all of `test_frozen_paths.py` (10 tests) instead of running it, so its two expected failures were not exercised. The two existing vision-caption tests named in the task pass unchanged.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

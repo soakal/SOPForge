@@ -1,0 +1,8 @@
+{
+  "subject": "keep photo transcript verbatim under export polish",
+  "summary": "The full suite passed (576 passed, 5 skipped) with only test_frozen_paths.py deselected, and ruff check and format are clean. Last time the gate failed in tests/test_tray.py::test_default_server_url_comes_from_env with \"WinError 1410 Class already exists\"; I did not touch that code, it passes when run alone (20 passed), and it did not recur in the two full runs this time. I treated it as an env flake. I didn't re-run the suite after the final one-character docstring fix (a stray period I'd left).\n\nWhat F-03 now does:\n- Captioned photo steps carry the placed transcript as `narration`, and a failed caption leaves the transcript as the step text with no duplicate narration.\n- The export polish step can no longer rewrite that narration. `_write_all_exports` takes a new `verbatim_narration` flag, set only by the photo build, that restores each step's original `narration` after the polish pass. A new test, `test_photo_build_export_polish_keeps_transcript_verbatim`, checks it with a polish fake that upper-cases everything.\n\nThe semantic-rescue path is not made verbatim, so the verifier's partial finding stands for that path. Stage 2 of `_run_semantic_pipeline` (`polish_narration`) still rewrites the placed segments. I tried skipping it for photo builds, but that broke the existing `test_photo_build_unstructured_transcript_gets_semantic_placement`, which asserts the polished text. I reverted rather than weaken that test. To get verbatim there, the test's expectation would have to change; that's a contract call, so I haven't made it.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

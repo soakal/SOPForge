@@ -393,17 +393,32 @@ def test_session_page_colors_sidecar_sections_correctly(tmp_path):
     # section is yellow. Step generation is LLM-backed now; the stub LLM
     # client (tests/pipeline/_stub_llm.py) deterministically fails every
     # step's round-trip check, so every step falls back to its template ->
-    # "Template-fallback steps" is genuinely red here. "Verify claims" is
-    # green regardless -- narration/claim-coverage still isn't wired into
-    # the live server's request path at all.
+    # "Template-fallback steps" is genuinely red here. The stub narrative
+    # client also fails to cover the synthesized-narration claims, and F-02
+    # now surfaces those [verify] ids in the report -> "Verify claims" is
+    # yellow (it used to be silently discarded, hence green).
     session_id = _create_and_wait(client, tmp_path)
 
     resp = client.get(f"/ui/sessions/{session_id}")
     matches = re.findall(r'data-status="(\w+)"[^<]*<h2>([^<]+)</h2>', resp.text)
     title_to_status = {title: status for status, title in matches}
     assert title_to_status["Template-fallback steps"] == "red"
-    assert title_to_status["Verify claims"] == "green"
+    assert title_to_status["Verify claims"] == "yellow"
     assert title_to_status["Empty-metadata steps"] == "yellow"
+
+
+def test_session_page_renders_caption_fallback_section():
+    from pipeline.webui.pages import render_session_page
+    from pipeline.webui.review import render_review_page
+
+    report = {"caption_fallback_steps": ["step-002"]}
+    page = render_session_page("sid", "T", "2026-01-01", report, {})
+    assert "Caption-fallback steps" in page
+    assert "step-002" in page
+    assert re.search(r'data-status="red"[^<]*<h2>Caption-fallback steps</h2>', page)
+    review = render_review_page(report)
+    assert "Caption-fallback steps" in review
+    assert "step-002" in review
 
 
 def test_report_findings_render_as_thumbnail_rows_linked_to_their_step():

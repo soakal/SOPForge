@@ -30,9 +30,10 @@ def _revise_prompt(draft, critique):
     )
 
 
-def generate_narrative(claims, llm_client, passes=1):
+def generate_narrative(claims, llm_client, passes=1, placed_text=""):
     """Runs one initial draft pass, then `passes - 1` critique+revise
-    rounds, then gates the final text through claim coverage. Returns
+    rounds, then gates the final text through claim coverage (claims already
+    placed verbatim in `placed_text` count as covered). Returns
     (final_text, covered_claim_ids, verify_claim_ids)."""
     if passes < 1:
         raise ValueError("passes must be >= 1")
@@ -42,4 +43,4 @@ def generate_narrative(claims, llm_client, passes=1):
         critique = llm_client.chat([{"role": "user", "content": _critique_prompt(text)}])
         text = llm_client.chat([{"role": "user", "content": _revise_prompt(text, critique)}])
 
-    return ensure_claim_coverage(text, claims)
+    return ensure_claim_coverage(text, claims, placed_text=placed_text)

@@ -22,6 +22,14 @@ _CLAIMS = [
 ]
 
 
+def test_validate_claim_coverage_counts_placed_text():
+    placed = "Then click Save to save your changes."
+    ok, missing = validate_claim_coverage("", _CLAIMS[1:2], placed_text=placed)
+    assert ok and missing == []
+    ok, missing = validate_claim_coverage("", _CLAIMS[1:2])
+    assert not ok and missing == ["claim-002"]
+
+
 def test_ensure_claim_coverage_covers_present_claims_and_flags_missing_ones():
     narrative = f"{_CLAIMS[0]['text']} {_CLAIMS[1]['text']}"  # claim-003 missing
     final_text, covered, verify_ids = ensure_claim_coverage(narrative, _CLAIMS)

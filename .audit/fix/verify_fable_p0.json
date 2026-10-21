@@ -1,0 +1,114 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "PARTIAL",
+      "evidence": "Original finding applied to 48f757c: the diff's '-' lines show llm_client.py, vision.py, capture/upload.py and capture/tray.py all built httpx.Client without trust_env. Fix landed at the four planned sites: src/pipeline/llm_client.py:53 `trust_env=self.provider != \"ollama\"`; src/pipeline/vision.py:64-66 `trust_env=trust_env` (default False, threaded through caption_images/_caption_one, server.py passes `trust_env=vision_cfg.provider != \"ollama\"`); src/capture/upload.py:74 and src/capture/tray.py:43 `trust_env=False`. New tests test_ollama_client_ignores_proxy_environment, test_cloud_provider_client_still_honors_proxy_environment, test_caption_client_is_built_with_trust_env_false, test_upload_client_ignores_proxy_environment, test_shutdown_request_client_ignores_proxy_environment all pass (full suite 717 passed, 5 skipped).",
+      "file": "src/pipeline/preflight.py",
+      "line": 89,
+      "command": "py -3.12 -m pytest -q  -> 717 passed, 5 skipped, 3 deselected",
+      "gap": "Acceptance #1 ('rg httpx.Client( src shows no site without it') fails on HEAD: src/pipeline/preflight.py:89 (present on 48f757c, added upstream after the audit base) builds `httpx.Client(transport=..., timeout=...)` with no trust_env, so the Ollama preflight probe (probe_section GET of the LAN models endpoint) still follows HTTP(S)_PROXY/ALL_PROXY. Needs `trust_env=provider != \"ollama\"` plus a spy test like the other four."
+    },
+    {
+      "id": "F-05",
+      "verdict": "LANDED",
+      "evidence": "Original finding applied to 48f757c: diff removes the base wording 'the whole transcript landed on step 1' from transcript.py. Fix: src/pipeline/transcript.py:111-112 `if not labelled and len(blocks) == 1 and len(step_ids) > 1: return {}` holds the block unplaced; :222-228 WARNING reworded with '(0 of N)'. _run_semantic_pipeline still gates on 'WARNING' in note (server.py:1665). Photo mode additionally routes the unplaced block through ensure_claim_coverage so it surfaces as a [verify] claim (server.py:1157-1174). Tests test_single_run_on_line_is_held_unplaced_with_a_loud_warning, test_unplaced_single_block_transcript_is_not_dumped_on_step_1, test_photo_build_unplaced_transcript_is_kept_as_verify_claim, test_photo_single_block_transcript_survives_claim_extraction_failure and the existing semantic-placement tests all pass.",
+      "file": "src/pipeline/transcript.py",
+      "line": 111,
+      "command": "py -3.12 -m pytest -q  -> 717 passed",
+      "gap": null
+    },
+    {
+      "id": "F-02",
+      "verdict": "LANDED",
+      "evidence": "Original finding applied to 48f757c: diff's '-' lines show `except Exception: narrative_text = None` and `_verify_ids` discarded, claims_by_id built only from placement verify_claims. Fix: src/pipeline/server.py:1014-1040 `_narrative_with_coverage` falls back to `ensure_claim_coverage(\"\", claims, placed_text=placed_text)` on failure; :970-975 _generate uses it; :979-986 `claims_by_id` built from all claims and `verify_claim_ids = list(narrative_verify_ids)` + placement ids reach build_sidecar_report. generate_narrative/ensure_claim_coverage gained `placed_text` (narrative.py:33,46; claim_coverage.py:56,64). tests/pipeline/test_sidecar_report.py untouched. Tests test_failed_narrative_stage_emits_verify_blockquotes_and_reports_them, test_failed_narrative_stage_with_placed_transcript_adds_no_verify_noise, test_narrative_stage_verify_ids_reach_the_sidecar_report, test_successful_narrative_stage_does_not_reflag_placed_claims pass. Note: the placed_text extension also changes test_server.py:1436 from `[verify] count == 3` to `== 0` (step-placed transcript lines now count as covered), i.e. it lands the held finding F-04's remedy as a side effect; this was called out in the plan's F-02 approach.",
+      "file": "src/pipeline/server.py",
+      "line": 1014,
+      "command": "py -3.12 -m pytest -q  -> 717 passed",
+      "gap": null
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "Original finding applied to 48f757c: diff '-' line shows `validate_claim_coverage(md_narrative_text, claims)` with narrative_text set to None on failure. Fix: src/pipeline/server.py:1381 `ok, missing = validate_claim_coverage(md_narrative_text or \"\", claims)`. Tests test_polish_enabled_with_failing_narrative_still_writes_the_doc (status done, doc.md 200 containing '[verify] (claim-001)', report 200) and test_polish_enabled_with_no_claims_and_no_narrative_does_not_crash pass; existing polish wiring tests pass.",
+      "file": "src/pipeline/server.py",
+      "line": 1381,
+      "command": "py -3.12 -m pytest -q  -> 717 passed",
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "LANDED",
+      "evidence": "Original finding applied to 48f757c: base _write_all_exports had no post-polish gate (diff adds the whole loop; `round_trip_ok` import is new at server.py:92). Fix: src/pipeline/server.py:1322-1354 reverts `new['text']` when `old.get('used_fallback')`, or `not round_trip_ok(new['text'], steps_by_id[...])[0]` (capture mode), or a claim covered by the old text is lost; records `report['polish_reverted_steps']`. Photo mode skips round_trip_ok (synthetic manifest has no element/window truth) and this is recorded in phases/DEVIATIONS.md:4-12 and pinned by test_photo_polish_keeps_descriptive_vision_caption_rewrite. The claim-loss gate is turned off when no transcript was uploaded (server.py:1009-1011, `gate_steps_on_claims=transcript_path is not None`) because the claims are then the step texts themselves; this narrowing is explained in a code comment but not in DEVIATIONS.md. Tests test_polish_rewrite_that_drops_the_element_name_is_reverted, test_polish_never_rewrites_template_fallback_steps, test_photo_polish_rewrite_that_loses_the_transcript_claim_is_reverted, test_polish_rephrase_is_kept_without_a_transcript and the three stub-swapped polish tests (_RoundTripPassingStub, test_server.py:306-324) pass; test_polish.py untouched and green.",
+      "file": "src/pipeline/server.py",
+      "line": 1322,
+      "command": "py -3.12 -m pytest -q  -> 717 passed",
+      "gap": null
+    },
+    {
+      "id": "F-03",
+      "verdict": "LANDED",
+      "evidence": "Original finding applied to 48f757c: diff '-' lines show photo step_results built with only step_id/text/used_fallback (no 'narration'). Fix: src/pipeline/server.py:1118-1128 `if caption and placed: result['narration'] = verbatim.get(step.id, placed)` where `verbatim` captures stage-1 slices before any polish (semantic pipeline `raw_out`, server.py:1104,1114,1676-1678); when caption is None the transcript already is the step text so no duplicate narration. Export polish cannot rewrite photo narration (server.py:1332-1334). Tests test_photo_build_with_vision_on_places_transcript_verbatim_under_each_step ('**Narration:**' twice, sentences in md and html), test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration, test_photo_build_semantic_rescue_keeps_aligned_slices_verbatim_under_captions, test_photo_build_export_polish_keeps_transcript_verbatim, plus the unchanged test_build_uses_vision_captions_when_available / test_photo_build_caption_beats_placed_narration_and_informs_context pass.",
+      "file": "src/pipeline/server.py",
+      "line": 1125,
+      "command": "py -3.12 -m pytest -q  -> 717 passed",
+      "gap": null
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "Original finding applied to 48f757c: diff shows base photo report hardcoded `\"template_fallback_steps\": []` with no caption category. Fix: src/pipeline/server.py:1225-1228 `\"caption_fallback_steps\": [r['step_id'] for r in step_results if r['used_fallback']] if vision_cfg.enabled else []`; template_fallback_steps stays []. Rendered in src/pipeline/webui/pages.py:105 (red colouring) and :758-766 (section shown when key present), src/pipeline/webui/review.py:25. Tests test_photo_build_report_lists_caption_fallback_steps (['step-002'], template_fallback_steps == []), test_photo_build_report_caption_fallback_empty_when_vision_disabled, test_session_page_renders_caption_fallback_section (session + review page, data-status red) pass; test_sidecar_report.py untouched.",
+      "file": "src/pipeline/server.py",
+      "line": 1225,
+      "command": "py -3.12 -m pytest -q  -> 717 passed",
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "Moot on 48f757c: `git grep -n -i use_vision 48f757c -- src config tests CLAUDE.md USER_MANUAL.md` returns nothing, and Grep over HEAD src/config/tests/docs finds no use_vision, no 'no runtime effect'/'branch on this flag' sentence, no TEXT_ONLY_MODEL_PREFIXES/vision_model_warning. Upstream removed the steps.use_vision flag (and generation.py's image_url attachment) entirely, so there is no text-only-model/vision mismatch left to warn about and the stale config.py sentence is gone with it. Commit 2a22a22 deliberately reverted the F-06 fix; docs and config agree (neither mentions the flag).",
+      "file": "src/pipeline/config.py",
+      "line": null,
+      "command": "git grep -n -i use_vision 48f757c896cd7159e8937836d408beb1251a4539 -- src config tests CLAUDE.md USER_MANUAL.md  -> (no output)",
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "PARTIAL",
+      "evidence": "Original finding applied to 48f757c: base USER_MANUAL.md:694 says narration ollama = `qwen3:32b` while config/models.toml:28, pages.py:440/475, CLAUDE.md:67-68 and test_models_config.py:24 say `qwen3.6:27b`, and models.toml has no dated note for qwen3.6:27b. Landed part: scripts/verify_models.py:1-44 (collect_expected_tags over config + pages._RECOMMENDED/_MODEL_SUGGESTIONS, GET /api/tags with trust_env=False, exit 1 on missing) with tests test_collect_expected_tags_includes_config_and_page_ollama_tags and test_verify_models_reports_missing_tags passing. Default switch intentionally dropped (2a22a22): HEAD config/models.toml:28, pages.py:440 and :475, CLAUDE.md:67-68, test_models_config.py:24, test_server.py:2660 all agree on qwen3.6:27b.",
+      "file": "USER_MANUAL.md",
+      "line": 694,
+      "command": "py -3.12 -m pytest -v tests/test_verify_models.py -> 2 passed",
+      "gap": "Docs and config do not fully agree: USER_MANUAL.md:694 ('| Narration | `qwen3:32b` | ...') still documents qwen3:32b as the ollama narration default, contradicting config/models.toml:28 and pages.py:440. Also acceptance #3 is unmet: config/models.toml carries no dated pull/verification note for qwen3.6:27b (only gemma3:12b has one at :47-49), and the tag could not be verified live (Ollama host down). Fix: change USER_MANUAL.md:694 to qwen3.6:27b and add a dated comment next to models.toml:28 once scripts/verify_models.py passes against the host."
+    },
+    {
+      "id": "F-11",
+      "verdict": "PARTIAL",
+      "evidence": "Original finding applied to 48f757c: `git grep -n -i 'SetProcessDpi|shcore|GetDpiForMonitor|dpi' 48f757c -- src` returns nothing. Landed: src/capture/dpi.py:1-101 (independent user32/shcore resolution, ctypes signatures incl. c_void_p HMONITOR, v2 context -> shcore (S_OK/E_ACCESSDENIED) -> SetProcessDPIAware -> 'unavailable', monitor_scale = effective DPI/96 with 1.0 fallback); src/capture/__init__.py:4-8 calls set_process_dpi_awareness() before capture.tray/pynput import; src/capture/recorder.py:12,192-197 records screen.scale; src/pipeline/manifest.py:44 `scale: float = 1.0`; fixtures/manifest.schema.json:54 optional number. All 10 tests in tests/test_dpi.py pass on this win32 host, including test_fresh_process_sets_per_monitor_awareness_before_any_hook_import (awareness == 2 with pynput/mss/pywinauto/comtypes absent) and the idempotency test; tests/test_recorder.py negative-origin and mixed-DPI cases and test_manifest_schema.py::test_screen_scale_is_optional_number pass; existing fixture manifests still validate/load.",
+      "file": ".claude/skills/uia-notes.md",
+      "line": 88,
+      "command": "py -3.12 -m pytest -v tests/test_dpi.py tests/test_manifest_schema.py -> 15 passed",
+      "gap": "(1) The planned `.claude/skills/uia-notes.md` import-order note was never written: `git log 48f757c..HEAD -- .claude/skills/uia-notes.md` is empty and the only DPI mention is the pre-existing line 88; commit 929b26b's message confirms the edit was denied and left undone. CLAUDE.md requires UIA/timing quirks be recorded there. (2) Acceptance #5 (`py -3.12 -m capture --self-check` exits 0; ruff check/format pass on src/) could not be verified in this session: both commands were denied by the permission mode, so they remain unconfirmed here (the .remember log claims a green gate at 83ddf1e, but that predates the merge commit). (3) Minor: the plan's test_manifest_loader.py 'Screen.scale defaults to 1.0' assertion was not added; the default is only exercised indirectly."
+    }
+  ],
+  "regressions": [
+    {
+      "title": "Merge commit f6edb89 corrupted five em-dashes in tests/test_recorder.py into UTF-8 mojibake ('â€”')",
+      "file": "tests/test_recorder.py",
+      "line": 3,
+      "evidence": "`git diff 48f757c..HEAD -- tests/test_recorder.py` shows five context-only lines changed from '—' to 'â€”' (lines 3, 98, 113, 360, 386: docstrings/comments/assert message). Commit 929b26b's diff of the same file shows the em-dashes intact, so the double-encoding was introduced when the merge f6edb89 rewrote the file (176+/40- vs 2a22a22). Grep for 'â€' over src/, tests/, scripts/, config/, *.md, phases/, fixtures/, .claude/ finds only these 5 occurrences. Tests still pass; it is a text-encoding corruption of a tracked file in a public repo and will keep re-breaking diffs until re-saved as UTF-8."
+    },
+    {
+      "title": "Held finding F-04 was effectively decided by the F-02 placed_text extension (test expectation flipped 3 -> 0 [verify] blockquotes)",
+      "file": "tests/pipeline/test_server.py",
+      "line": 1436,
+      "evidence": "claim_coverage.py:56-64 / narrative.py:33-46 now treat any claim whose text appears in the step-placed transcript (`placed_text`) as covered, so test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json changed `md.count('[verify]') == 3` to `== 0`. This is exactly the remedy for F-04, which .audit/fix/PLAN_UNRESOLVED.md lists as held pending the user's decision; the plan's F-02 approach text does mention placed_text, so it is planned rather than accidental, but it silently removes the previously-asserted [verify] duplication behaviour and should be acknowledged when F-04 is adjudicated."
+    },
+    {
+      "title": "preflight.py's Ollama probe still inherits environment proxies (A-12 coverage gap, not introduced by the diff)",
+      "file": "src/pipeline/preflight.py",
+      "line": 89,
+      "evidence": "`httpx.Client(transport=transport, timeout=httpx.Timeout(timeout, connect=connect_timeout))` with no trust_env; this file exists unchanged on 48f757c and HEAD. Listed here because the A-12 acceptance statement 'no site without it' is now false on the merged branch; see A-12 gap."
+    }
+  ]
+}

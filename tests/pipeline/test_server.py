@@ -301,6 +301,251 @@ def test_get_doc_md_and_html(tmp_path):
     assert html_resp.text.startswith("<!doctype html>")
 
 
+_STEP_PROMPT_RE = re.compile(
+    r"to (click|enter a value into) '(.*?)' in the (?:'(.*?)' window|current window) --"
+)
+
+
+class _RoundTripPassingStub:
+    """Parses the real generation._build_prompt text and replies with a step
+    phrasing that passes round_trip_ok, so steps are LLM-phrased
+    (used_fallback False) rather than template fallback."""
+
+    def chat(self, messages, **kwargs):
+        verb, target, window = _STEP_PROMPT_RE.search(messages[0]["content"]).groups()
+        window = window or "current"
+        if verb == "click":
+            return f"Click {target} in the {window} window."
+        return f"Enter a value into {target} in the {window} window."
+
+
+def _round_trip_passing_stub_factory():
+    return _RoundTripPassingStub()
+
+
+def _polish_enabled_app(tmp_path, monkeypatch, fake, narrative_factory=None, llm_factory=None):
+    """create_app with [polish].enabled and generate_polish_fields faked."""
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "generate_polish_fields", fake)
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+    return TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=llm_factory or stub_llm_client_factory,
+            narrative_llm_client_factory=narrative_factory or stub_llm_client_factory,
+            polish_llm_client_factory=lambda section: object(),
+            config_path=cfg,
+        )
+    )
+
+
+def _fake_polish(step_text_fn):
+    """A generate_polish_fields fake applying step_text_fn(step_result) to
+    every step's text and uppercasing the narrative."""
+
+    def _fake(narrative_text, step_results, llm):
+        polished = []
+        for step in step_results:
+            new_step = dict(step)
+            new_step["text"] = step_text_fn(step)
+            polished.append(new_step)
+        meta = {"attempted": True, "fields_polished": [], "fields_kept_verbatim": {}}
+        return (narrative_text.upper() if narrative_text else narrative_text), polished, meta
+
+    return _fake
+
+
+def test_polish_rewrite_that_drops_the_element_name_is_reverted(tmp_path, monkeypatch):
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    names = {s.id: s.element.name for s in manifest.steps}
+    originals = {}
+
+    def _drop_element_name(step):
+        originals[step["step_id"]] = step["text"]
+        name = names[step["step_id"]]
+        return re.sub(re.escape(name) + " ", "", step["text"]) if name else step["text"]
+
+    client = _polish_enabled_app(
+        tmp_path,
+        monkeypatch,
+        _fake_polish(_drop_element_name),
+        llm_factory=_round_trip_passing_stub_factory,
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    for text in originals.values():
+        assert text in md
+    expected = [sid for sid, name in names.items() if name]
+    assert expected, "sanity: fixture must have named elements"
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["polish_reverted_steps"] == expected
+
+
+def test_polish_rephrase_is_kept_without_a_transcript(tmp_path, monkeypatch):
+    """No transcript -> the claims are the step texts themselves; a genuine
+    rephrase (here: dropping the trailing period) must not be reverted."""
+    client = _polish_enabled_app(
+        tmp_path,
+        monkeypatch,
+        _fake_polish(lambda step: step["text"].rstrip(".") + " now"),
+        llm_factory=_round_trip_passing_stub_factory,
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "polish_reverted_steps" not in report
+    assert " now" in client.get(f"/sessions/{session_id}/doc.md").text
+
+
+def test_polish_never_rewrites_template_fallback_steps(tmp_path, monkeypatch):
+    manifest = load_manifest(FIXTURES / "sample-manifest.json")
+    client = _polish_enabled_app(
+        tmp_path,
+        monkeypatch,
+        _fake_polish(lambda step: step["text"].upper()),
+        narrative_factory=lambda: _VerbatimNarrativeStub(),
+    )
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files.append(("transcript_file", ("narration.md", _E2E_TRANSCRIPT.encode(), "text/markdown")))
+    session_id = client.post(
+        "/sessions", data={"manifest_json": manifest_json}, files=files
+    ).json()["session_id"]
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    for step in manifest.steps:
+        text = render_step_template(step)
+        assert text in md
+        assert text.upper() not in md
+    for line in _E2E_TRANSCRIPT.split("\n\n"):
+        assert line in md  # narration stays verbatim
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["polish_reverted_steps"] == [s.id for s in manifest.steps]
+    assert "FIRST, OPEN THE CONSOLE." in md  # narrative polish still applied
+
+
+def test_photo_polish_rewrite_that_loses_the_transcript_claim_is_reverted(tmp_path, monkeypatch):
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    def _rewrite_step_1(step):
+        return "Open screen one." if step["step_id"] == "step-001" else step["text"]
+
+    client = _polish_enabled_app(tmp_path, monkeypatch, _fake_polish(_rewrite_step_1))
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.md", b"1. Open the first screen.\n2. Then the second.", "text/markdown"),
+        ),
+    ]
+    resp = client.post(
+        "/ui/build", data={"title": "Photo Polish"}, files=files, follow_redirects=False
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Open the first screen." in md
+    assert "Open screen one." not in md
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["polish_reverted_steps"] == ["step-001"]
+
+
+def _photo_png(color):
+    buf = io.BytesIO()
+    Image.new("RGB", (120, 90), color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_photo_polish_keeps_descriptive_vision_caption_rewrite(tmp_path, monkeypatch):
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(
+        server_module,
+        "caption_images",
+        lambda paths, *a, **k: ["The Settings dialog is shown."] * len(paths),
+    )
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.vision.enabled = True
+    save_models_config(models_cfg, cfg)
+    monkeypatch.setattr(
+        server_module,
+        "generate_polish_fields",
+        _fake_polish(lambda step: "The Settings dialog appears on screen."),
+    )
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+    client = TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=stub_llm_client_factory,
+            narrative_llm_client_factory=stub_llm_client_factory,
+            polish_llm_client_factory=lambda section: object(),
+            config_path=cfg,
+        )
+    )
+    files = [("files", ("a.png", _photo_png((10, 10, 10)), "image/png"))]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "The Settings dialog appears on screen." in md
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "polish_reverted_steps" not in report
+
+
+def test_photo_single_block_transcript_survives_claim_extraction_failure(tmp_path, monkeypatch):
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    def _boom(*a, **k):
+        raise RuntimeError("extraction down")
+
+    monkeypatch.setattr(server_module, "_claims_for_narrative", _boom)
+    client = TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=stub_llm_client_factory,
+            narrative_llm_client_factory=stub_llm_client_factory,
+            config_path=default_config_path(),
+        )
+    )
+    files = [
+        ("files", ("a.png", _photo_png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", _photo_png((20, 20, 20)), "image/png")),
+        ("transcript_file", ("t.md", b"Zebra widget calibration notes.", "text/markdown")),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert "Zebra widget calibration notes." in md
+
+
 def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
     """[polish].enabled=true routes narrative_text and every step's
     "text"/present "narration" through generate_polish_fields (polish.py)
@@ -349,7 +594,7 @@ def test_polish_pass_applied_to_doc_md_when_enabled(tmp_path, monkeypatch):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=stub_llm_client_factory,
         polish_llm_client_factory=lambda section: object(),
         config_path=cfg,
@@ -650,7 +895,7 @@ def test_polish_rejected_when_it_drops_claim_coverage(tmp_path, monkeypatch):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
         polish_llm_client_factory=lambda section: object(),
         config_path=cfg,
@@ -776,7 +1021,7 @@ def test_polish_end_to_end_real_prompt_happy_path(tmp_path):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
         polish_llm_client_factory=lambda section: stub,
         config_path=cfg,
@@ -881,7 +1126,7 @@ def test_polish_end_to_end_real_prompt_claim_coverage_rejection(tmp_path):
 
     app = create_app(
         sessions_root=tmp_path / "sessions",
-        llm_client_factory=stub_llm_client_factory,
+        llm_client_factory=_round_trip_passing_stub_factory,
         narrative_llm_client_factory=lambda: _VerbatimNarrativeStub(),
         polish_llm_client_factory=lambda section: stub,
         config_path=cfg,
@@ -933,6 +1178,45 @@ def test_polish_end_to_end_real_prompt_claim_coverage_rejection(tmp_path):
         assert _html.escape(original.upper()) in html_doc, (
             f"expected polished {field_id!r} to survive in doc.html"
         )
+
+
+def _run_polish_job(tmp_path, narrative_stub, transcript):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    models_cfg = load_models_config(cfg)
+    models_cfg.polish.enabled = True
+    save_models_config(models_cfg, cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: narrative_stub,
+        polish_llm_client_factory=lambda section: _RealPromptParsingPolishStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    if transcript is not None:
+        files.append(("transcript_file", ("t.md", transcript.encode(), "text/markdown")))
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    return client, session_id, _wait_for_terminal_status(client, session_id)
+
+
+def test_polish_enabled_with_failing_narrative_still_writes_the_doc(tmp_path):
+    client, session_id, status = _run_polish_job(
+        tmp_path, _RaisingNarrativeStub(), "first click save then enter the computer name"
+    )
+    assert status["status"] == "done"
+    doc = client.get(f"/sessions/{session_id}/doc.md")
+    assert doc.status_code == 200
+    assert "[verify] (claim-001)" in doc.text
+    assert client.get(f"/sessions/{session_id}/report").status_code == 200
+
+
+def test_polish_enabled_with_no_claims_and_no_narrative_does_not_crash(tmp_path):
+    client, session_id, status = _run_polish_job(tmp_path, _RaisingNarrativeStub(), None)
+    assert status["status"] == "done"
+    assert client.get(f"/sessions/{session_id}/doc.md").status_code == 200
 
 
 def test_review_page_renders_sidecar_report(tmp_path):
@@ -1149,10 +1433,10 @@ def test_real_capture_session_with_json_transcript_extracts_claims_not_raw_json(
 
     md = client.get(f"/sessions/{session_id}/doc.md").text
     assert "This SOP walks through configuring the deployment console end to end." in md
-    # None of the fixed reply's words match the segments' text, so
-    # claim-coverage gating must have flagged all three -- one [verify]
-    # blockquote per segment, quoting that segment's actual text.
-    assert md.count("[verify]") == 3
+    # The timestamped segments are placed verbatim under their steps, so the
+    # narrative stage's coverage gate counts them as covered (placed_text)
+    # and adds no duplicate [verify] blockquote for any of them.
+    assert md.count("[verify]") == 0
     for text in segment_texts:
         assert text in md
     # The regression: raw JSON transcript syntax must never leak into the
@@ -1227,6 +1511,108 @@ def test_unstructured_transcript_gets_semantic_placement_and_polish(tmp_path):
     assert placement["mode"] == "semantic-llm"
     assert placement["boundaries_resolved"] == 3
     assert set(placement["steps_polished"]) == {"step-001", "step-002", "step-003"}
+
+
+class _DecliningNarrativeStub:
+    """Narrative LLM whose replies are never JSON, so semantic rescue declines."""
+
+    def chat(self, messages, **kwargs):
+        return "sorry, no"
+
+
+def test_unplaced_single_block_transcript_is_not_dumped_on_step_1(tmp_path):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _DecliningNarrativeStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    manifest_json, files = _manifest_and_files(tmp_path)
+    transcript = "first click save then enter the computer name then click somewhere in chrome"
+    files.append(("transcript_file", ("t.md", transcript.encode(), "text/markdown")))
+
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    status = _wait_for_terminal_status(client, session_id)
+    assert status["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    step1 = md.split("## Step 1", 1)[1].split("## Step 2", 1)[0]
+    assert "**Narration:**" not in step1
+    assert md.count(transcript) == 1
+    assert md.index(transcript) < md.index("## Step")
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "WARNING" in report["transcript"]
+
+
+class _RaisingNarrativeStub:
+    def chat(self, messages, **kwargs):
+        raise RuntimeError("narrative model down")
+
+
+class _ParaphraseNarrativeStub:
+    def chat(self, messages, **kwargs):
+        return "The operator saves the settings and then moves on."
+
+
+_RUN_ON = "first click save then enter the computer name then click somewhere in chrome"
+
+
+def _run_narrative_job(tmp_path, narrative_stub, transcript):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: narrative_stub,
+        config_path=cfg,
+    )
+    client = TestClient(app)
+    manifest_json, files = _manifest_and_files(tmp_path)
+    files.append(("transcript_file", ("t.md", transcript.encode(), "text/markdown")))
+    resp = client.post("/sessions", data={"manifest_json": manifest_json}, files=files)
+    session_id = resp.json()["session_id"]
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    return md, client.get(f"/sessions/{session_id}/report").json()
+
+
+def test_failed_narrative_stage_emits_verify_blockquotes_and_reports_them(tmp_path):
+    md, report = _run_narrative_job(tmp_path, _RaisingNarrativeStub(), _RUN_ON)
+    assert "[verify] (claim-001)" in md
+    assert md.count("[verify]") == 1
+    assert _RUN_ON in md
+    assert report["verify_claims"] == [{"claim_id": "claim-001", "text": _RUN_ON}]
+
+
+def test_failed_narrative_stage_with_placed_transcript_adds_no_verify_noise(tmp_path):
+    transcript = (
+        "First, open the console.\n\nThen enter the computer name.\n\nFinally, check the downloads."
+    )
+    md, report = _run_narrative_job(tmp_path, _RaisingNarrativeStub(), transcript)
+    assert "[verify]" not in md
+    assert report["verify_claims"] == []
+
+
+def test_narrative_stage_verify_ids_reach_the_sidecar_report(tmp_path):
+    md, report = _run_narrative_job(tmp_path, _ParaphraseNarrativeStub(), _RUN_ON)
+    assert md.count("[verify]") == 1
+    assert report["verify_claims"][0]["claim_id"] == "claim-001"
+    assert report["verify_claims"][0]["text"] == _RUN_ON
+
+
+def test_successful_narrative_stage_does_not_reflag_placed_claims(tmp_path):
+    transcript = (
+        "First, open the console.\n\nThen enter the computer name.\n\nFinally, check the downloads."
+    )
+    md, report = _run_narrative_job(tmp_path, _ParaphraseNarrativeStub(), transcript)
+    assert "[verify]" not in md
+    assert report["verify_claims"] == []
 
 
 def test_build_from_screenshots_and_transcript_without_a_manifest(tmp_path, monkeypatch):
@@ -1319,6 +1705,171 @@ def test_build_uses_vision_captions_when_available(tmp_path, monkeypatch):
     assert "Vision caption for image 2." in md
     report = client.get(f"/sessions/{session_id}/report").json()
     assert "vision" in report
+
+
+def _photo_build_with_captions(tmp_path, monkeypatch, captions):
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda *a, **k: list(captions))
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.txt", b"1. Open the first screen.\n2. Then the second.", "text/plain"),
+        ),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+    return client, session_id
+
+
+def test_photo_build_with_vision_on_places_transcript_verbatim_under_each_step(
+    tmp_path, monkeypatch
+):
+    client, sid = _photo_build_with_captions(
+        tmp_path,
+        monkeypatch,
+        ["Vision caption for image 1.", "Vision caption for image 2."],
+    )
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "Vision caption for image 1." in md
+    assert "Vision caption for image 2." in md
+    assert "Open the first screen." in md
+    assert "Then the second." in md
+    assert md.count("**Narration:**") == 2
+    html = client.get(f"/sessions/{sid}/doc.html").text
+    assert "Open the first screen." in html
+    assert "Then the second." in html
+
+
+def test_photo_build_caption_failure_does_not_duplicate_transcript_as_narration(
+    tmp_path, monkeypatch
+):
+    client, sid = _photo_build_with_captions(tmp_path, monkeypatch, [None, None])
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert md.count("Open the first screen.") == 1
+    assert md.count("Then the second.") == 1
+    assert "**Narration:**" not in md
+
+
+def test_photo_build_semantic_rescue_keeps_aligned_slices_verbatim_under_captions(
+    tmp_path, monkeypatch
+):
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda *a, **k: ["Cap one.", "Cap two."])
+
+    def _align(content, manifest, contexts, llm):
+        ids = [s.id for s in manifest.steps]
+        return {ids[0]: "okay open the console", ids[1]: "um then hit save"}, {}
+
+    def _rewrite(per_step, *a, **k):
+        return {k: v.upper() for k, v in per_step.items()}, {}
+
+    monkeypatch.setattr(server_module, "semantic_align", _align)
+    monkeypatch.setattr(server_module, "polish_narration", _rewrite)
+    client = _make_client(tmp_path)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.txt", b"okay open the console um then hit save", "text/plain"),
+        ),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    sid = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, sid)
+    assert _wait_for_terminal_status(client, sid)["status"] == "done"
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "okay open the console" in md
+    assert "um then hit save" in md
+    assert "OKAY OPEN" not in md
+
+
+def test_photo_build_export_polish_keeps_transcript_verbatim(tmp_path, monkeypatch):
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(
+        server_module, "caption_images", lambda *a, **k: ["Caption one.", "Caption two."]
+    )
+
+    def _upper_polish(narrative_text, step_results, llm):
+        steps = [
+            {**s, **{k: s[k].upper() for k in ("text", "narration") if s.get(k)}}
+            for s in step_results
+        ]
+        return narrative_text, steps, {"attempted": True}
+
+    client = _polish_enabled_app(tmp_path, monkeypatch, _upper_polish)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        (
+            "transcript_file",
+            ("t.txt", b"1. Open the first screen.\n2. Then the second.", "text/plain"),
+        ),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    sid = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, sid)
+    assert _wait_for_terminal_status(client, sid)["status"] == "done"
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "Open the first screen." in md
+    assert "Then the second." in md
+    assert "OPEN THE FIRST SCREEN." not in md
+
+
+def test_photo_build_report_lists_caption_fallback_steps(tmp_path, monkeypatch):
+    client, sid = _photo_build_with_captions(tmp_path, monkeypatch, ["A caption.", None])
+    report = client.get(f"/sessions/{sid}/report").json()
+    assert report["caption_fallback_steps"] == ["step-002"]
+    assert report["template_fallback_steps"] == []
+
+
+def test_photo_build_report_caption_fallback_empty_when_vision_disabled(tmp_path, monkeypatch):
+    import pipeline.config as config_module
+    import pipeline.server as server_module
+
+    original_load = config_module.load_models_config
+
+    def loaded_with_vision_disabled(*a, **k):
+        loaded = original_load(*a, **k)
+        loaded.vision.enabled = False
+        return loaded
+
+    monkeypatch.setattr(server_module, "load_models_config", loaded_with_vision_disabled)
+    client, sid = _photo_build_with_captions(tmp_path, monkeypatch, [None, None])
+    report = client.get(f"/sessions/{sid}/report").json()
+    assert report["caption_fallback_steps"] == []
 
 
 def test_photo_build_reports_caption_progress(tmp_path, monkeypatch):
@@ -1430,6 +1981,60 @@ def test_photo_build_unstructured_transcript_gets_semantic_placement(tmp_path, m
 
     report = client.get(f"/sessions/{session_id}/report").json()
     assert report["transcript_placement"]["mode"] == "semantic-llm"
+
+
+def test_photo_build_unplaced_transcript_is_kept_as_verify_claim(tmp_path, monkeypatch):
+    """One run-on unlabelled block on a multi-step photo build is held
+    unplaced; when the semantic rescue declines (non-JSON reply) its text must
+    still reach the doc as a [verify] claim, not vanish."""
+    import io
+
+    import pipeline.server as server_module
+
+    monkeypatch.setattr(server_module, "caption_images", lambda paths, *a, **k: [None] * len(paths))
+
+    narrative_calls = []
+
+    class _DecliningStub:
+        def chat(self, messages, **kwargs):
+            narrative_calls.append(messages)
+            return "not json"
+
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=lambda: _DecliningStub(),
+        config_path=cfg,
+    )
+    client = TestClient(app)
+
+    def png(color):
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), color).save(buf, "PNG")
+        return buf.getvalue()
+
+    line = b"first open the file then save it"
+    files = [
+        ("files", ("a.png", png((10, 10, 10)), "image/png")),
+        ("files", ("b.png", png((20, 20, 20)), "image/png")),
+        ("transcript_file", ("t.md", line, "text/markdown")),
+    ]
+    resp = client.post("/ui/build", data={"title": "T"}, files=files, follow_redirects=False)
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    _confirm_all_steps(client, session_id)
+    assert _wait_for_terminal_status(client, session_id)["status"] == "done"
+
+    md = client.get(f"/sessions/{session_id}/doc.md").text
+    assert md.count("first open the file then save it") == 1
+    assert "[verify]" in md
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "WARNING" in report["transcript"]
+    assert report["verify_claims"]
+    # Photo mode must not run the [narrative] LLM (held finding F-01).
+    # (the semantic-placement rescue shares this client; only it may call.)
+    assert [m for m in narrative_calls if "raw narration transcript" not in m[0]["content"]] == []
 
 
 def test_photo_build_caption_beats_placed_narration_and_informs_context(tmp_path, monkeypatch):

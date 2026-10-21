@@ -1,0 +1,8 @@
+{
+  "subject": "fix photo polish gate and lost transcript",
+  "summary": "Two code fixes, both in src/pipeline/server.py, plus two new tests. (1) Photo mode: the polish round-trip gate is skipped when verbatim_narration is set, because the synthetic manifest has no real action, element or window to check against. Vision caption rewrites are no longer reverted for lacking a click verb. The used_fallback and claim-coverage reverts still apply. (2) Photo single-block transcript: if claim extraction raises, it now falls back to the plain line-split _narration_to_claims. The transcript then always reaches the doc as narrated or [verify] claims, even when title/overview generation fails. (3) Verification stages: ruff check and ruff format --check on src/ are clean (ran them myself). Full pytest: 583 passed, 5 skipped, and only the 2 expected test_frozen_paths failures. I did not run the capture --self-check smoke or a PyInstaller build.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

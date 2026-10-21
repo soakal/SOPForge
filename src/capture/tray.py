@@ -40,7 +40,7 @@ def _request_server_shutdown(server_url, timeout=2.0):
     stopping, unreachable) must never keep the tray from closing, so this
     swallows everything and just logs."""
     try:
-        with httpx.Client(timeout=timeout) as client:
+        with httpx.Client(timeout=timeout, trust_env=False) as client:
             client.post(f"{server_url.rstrip('/')}/shutdown")
     except Exception:  # noqa: BLE001 - best-effort; Exit must not depend on the server
         logger.info("no running server to stop at %s (or it was already stopping)", server_url)

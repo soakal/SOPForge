@@ -319,10 +319,14 @@ def test_manual_edit_is_not_rewritten_by_the_polish_pass(tmp_path, monkeypatch):
         state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
         edited_entry = next(s for s in state["steps"] if s["step_id"] == edited_step)
         assert edited_entry["text"] == "lowercase human edit"
-        # sanity: a NON-edited step's text really did get uppercased, proving
-        # the polish stub actually ran and this isn't a false negative.
+        # sanity: the polish stub really ran on a NON-edited step, proving this
+        # isn't a false negative. The stub LLM makes every step template
+        # fallback, and polish may never rewrite fallback text (audit F-10),
+        # so its uppercase rewrite must be reverted and recorded, not shipped.
         other_entry = next(s for s in state["steps"] if s["step_id"] == other_step)
-        assert other_entry["text"].isupper()
+        assert not other_entry["text"].isupper()
+        report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
+        assert other_step in report.get("polish_reverted_steps", [])
     finally:
         srv.generate_polish_fields = real_generate_polish_fields
 

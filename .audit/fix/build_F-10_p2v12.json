@@ -1,0 +1,5 @@
+{
+  "subject": "no change; gate failure is unrelated recorder flake",
+  "summary": "Could not run any commands (Bash/PowerShell denied in don't-ask mode), so no edits were made and nothing was re-verified. The only failing test in the gate, tests/test_recorder.py::test_hook_callback_returns_instantly_even_when_processing_is_slow, expected 1 step and got 2, the second being a 'type' action at (1053, 805). That points to live pynput input on the interactive host leaking into the recorder, not to F-10, which touches only src/pipeline/server.py and tests/pipeline/test_server.py. Ruff check and format passed and 651 tests passed, including the F-10 polish tests. Suggested next step: rerun tests/test_recorder.py with no keyboard or mouse activity on the host. If it fails again with the same extra 'type' step, the recorder test needs its own fix, outside F-10's scope. The two PARTIAL verdicts concern the documented photo-mode and no-transcript exceptions in phases/DEVIATIONS.md, which need user sign-off or an amended acceptance #1 rather than a code change.",
+  "files_changed": []
+}

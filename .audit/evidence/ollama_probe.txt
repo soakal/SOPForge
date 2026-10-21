@@ -1,0 +1,6 @@
+# captured 2026-10-20T08:22:23.4094976-04:00 from build host
+$ Invoke-RestMethod http://192.168.200.60:11434/api/tags
+No connection could be made because the target machine actively refused it.
+$ Test-Connection 192.168.200.60   -> True (host up)
+$ Test-NetConnection 192.168.200.60 -Port 11434 -> TcpTestSucceeded False
+=> Ollama not listening at audit time; model tags CANNOT be verified live. Treat every tag as UNVERIFIED.

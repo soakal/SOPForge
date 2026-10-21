@@ -52,7 +52,11 @@ from PIL import Image
 
 from pipeline import __version__
 from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
-from pipeline.claim_coverage import validate_claim_coverage
+from pipeline.claim_coverage import (
+    _claim_covered,
+    ensure_claim_coverage,
+    validate_claim_coverage,
+)
 from pipeline.claims import extract_claims
 from pipeline.consistency import canonicalize_terms
 from pipeline.photo_build import synthetic_manifest_dict
@@ -85,6 +89,7 @@ from pipeline.narrative import generate_narrative
 from pipeline.polish import generate_polish_fields
 from pipeline.preflight import probe_section
 from pipeline.render import render_html, render_markdown, render_steps_llm_mode
+from pipeline.roundtrip import round_trip_ok
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
@@ -962,28 +967,22 @@ def create_app(
             claims = _claims_for_narrative(transcript_path, synthetic_narration)
         except Exception:  # noqa: BLE001 - a bad transcript must never block Stage 2
             claims = []
+        narrative_verify_ids = []
         if claims:
-            narrative_llm = make_narrative_llm_client()
-            try:
-                narrative_text, _covered, _verify_ids = generate_narrative(
-                    claims,
-                    narrative_llm,
-                    passes=models_cfg.narrative.passes,
-                )
-            except Exception:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
-                narrative_text = None
-            finally:
-                close = getattr(narrative_llm, "close", None)
-                if callable(close):
-                    close()
+            placed_text = "\n".join(r["narration"] for r in step_results if r.get("narration"))
+            narrative_text, narrative_verify_ids = _narrative_with_coverage(
+                claims, placed_text, models_cfg.narrative.passes
+            )
 
-        # narration_polish's minted verify_claims (dropped clauses from a
-        # polished rewrite) finally give this hardcoded-empty parameter real
-        # content, the same [verify]-blockquote accounting the sidecar report
-        # has always supported for the (still-unwired) audio narration path.
+        # Verify claims come from two places: the narrative stage's uncovered
+        # claims and narration_polish's dropped clauses (placement_meta).
         verify_claims = (placement_meta or {}).get("verify_claims", [])
-        verify_claim_ids = [c["claim_id"] for c in verify_claims]
-        claims_by_id = {c["claim_id"]: c for c in verify_claims}
+        claims_by_id = {c["claim_id"]: c for c in claims}
+        claims_by_id.update({c["claim_id"]: c for c in verify_claims})
+        verify_claim_ids = list(narrative_verify_ids)
+        verify_claim_ids += [
+            c["claim_id"] for c in verify_claims if c["claim_id"] not in verify_claim_ids
+        ]
         report = build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)
         if transcript_note:
             report["transcript"] = transcript_note
@@ -1007,7 +1006,33 @@ def create_app(
             narrative_text=narrative_text,
             polish_override=polish_override,
             claims=claims,
+            # Without a transcript the claims ARE the step texts, so gating
+            # step rewrites on them would revert every genuine rephrase.
+            gate_steps_on_claims=transcript_path is not None,
         )
+
+    def _narrative_with_coverage(claims, placed_text, passes):
+        """Stage 2 narrative -> (text_or_None, verify_claim_ids). If the LLM
+        stage fails, every claim not already placed verbatim under a step
+        (`placed_text`) still comes out as a [verify] blockquote rather than
+        being silently dropped."""
+        narrative_llm = None
+        try:
+            narrative_llm = make_narrative_llm_client()
+            text, _covered, verify_ids = generate_narrative(
+                claims,
+                narrative_llm,
+                passes=passes,
+                placed_text=placed_text,
+            )
+        except Exception as exc:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
+            logger.warning("narrative stage failed (%s); emitting unplaced claims as [verify]", exc)
+            text, _covered, verify_ids = ensure_claim_coverage("", claims, placed_text=placed_text)
+        finally:
+            close = getattr(narrative_llm, "close", None)
+            if callable(close):
+                close()
+        return (text if text and text.strip() else None), verify_ids
 
     def _generate_photo(session_id, polish_override=None):
         """Manifest-free mode: one step per uploaded image, in order. When
@@ -1063,6 +1088,7 @@ def create_app(
                 api_key=provider_api_key(vision_cfg.provider),
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
                 max_workers=vision_cfg.max_concurrency,
+                trust_env=vision_cfg.provider != "ollama",
             )
             vision_note = (
                 f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
@@ -1075,6 +1101,7 @@ def create_app(
         # per-step context this synthetic manifest has) instead of window/
         # element metadata, which doesn't exist here.
         placement_meta = None
+        verbatim = dict(per_step)
         if transcript_note and "WARNING" in transcript_note:
             step_contexts = build_step_contexts(
                 manifest,
@@ -1084,18 +1111,28 @@ def create_app(
                 ],
             )
             per_step, transcript_note, placement_meta = _run_semantic_pipeline(
-                narration, manifest, step_contexts, per_step, transcript_note
+                narration,
+                manifest,
+                step_contexts,
+                per_step,
+                transcript_note,
+                # Captioned steps print the verbatim slice, so polish only
+                # matters when some step has no caption to fall back on.
+                polish=any(c is None for c in captions),
+                raw_out=verbatim,
             )
 
         step_results = []
         for step, caption in zip(manifest.steps, captions):
-            step_results.append(
-                {
-                    "step_id": step.id,
-                    "text": caption or per_step.get(step.id) or "(no description provided)",
-                    "used_fallback": caption is None,
-                }
-            )
+            placed = per_step.get(step.id)
+            result = {
+                "step_id": step.id,
+                "text": caption or placed or "(no description provided)",
+                "used_fallback": caption is None,
+            }
+            if caption and placed:
+                result["narration"] = verbatim.get(step.id, placed)
+            step_results.append(result)
         _assert_1to1_mapping(manifest, step_results)
 
         # A title + one-line overview from the narration (best-effort). Fill the
@@ -1120,6 +1157,28 @@ def create_app(
                 # before that would save a title the document itself never
                 # actually uses. Persisted once, after canonicalization,
                 # right below.
+
+        # A transcript that no placement path put under any step (one run-on
+        # unlabelled block and the semantic rescue declined) must not vanish:
+        # route it through the same Stage 2 claim coverage the capture flow
+        # uses, so every claim is narrated or rendered as a [verify]
+        # blockquote.
+        claims, narrative_verify_ids = [], []
+        if matches and not per_step and narration.strip():
+            try:
+                claims = _claims_for_narrative(matches[0], narration)
+            except Exception:  # noqa: BLE001 - a bad transcript must never block Stage 2
+                # Plain line split needs no parsing/LLM, so the text still lands.
+                claims = _narration_to_claims(narration)
+            if claims:
+                # Deterministic only: no [narrative] LLM in photo mode (wiring
+                # generate_narrative here is held finding F-01).
+                claim_text, _covered, narrative_verify_ids = ensure_claim_coverage("", claims)
+                claim_text = claim_text.strip()
+                if claim_text:
+                    narrative_text = (
+                        f"{narrative_text}\n\n{claim_text}" if narrative_text else claim_text
+                    )
 
         # Photo-mode has no manifest ground truth (element/window names) to
         # round-trip-gate step text against -- a raw narration transcript is
@@ -1163,9 +1222,25 @@ def create_app(
         # polish-restore below.
         manually_edited = _apply_manual_edits(session_dir, step_results)
 
-        verify_claims = (placement_meta or {}).get("verify_claims", [])
+        # Captioned steps render the raw transcript slice verbatim, so a
+        # polish-dropped clause shown there needs no [verify].
+        placed_text = "\n".join(r.get("narration") or "" for r in step_results)
+        verify_claims = [
+            c
+            for c in (placement_meta or {}).get("verify_claims", [])
+            if not _claim_covered(c, placed_text)
+        ]
+        claims_by_id = {c["claim_id"]: c for c in claims}
+        verify_claims = verify_claims + [
+            claims_by_id[cid]
+            for cid in narrative_verify_ids
+            if cid in claims_by_id and cid not in {c["claim_id"] for c in verify_claims}
+        ]
         report = {
             "template_fallback_steps": [],
+            "caption_fallback_steps": [r["step_id"] for r in step_results if r["used_fallback"]]
+            if vision_cfg.enabled
+            else [],
             "verify_claims": [
                 {"claim_id": c["claim_id"], "text": c.get("text")} for c in verify_claims
             ],
@@ -1194,6 +1269,8 @@ def create_app(
             report,
             narrative_text=narrative_text,
             polish_override=polish_override,
+            claims=claims,
+            verbatim_narration=True,
         )
 
     def _write_all_exports(
@@ -1207,6 +1284,8 @@ def create_app(
         narrative_text=None,
         polish_override=None,
         claims=(),
+        verbatim_narration=False,
+        gate_steps_on_claims=True,
     ):
         """Render every output format + the review report from finished
         step_results and annotated images. Shared by both generation modes.
@@ -1255,6 +1334,45 @@ def create_app(
                 close = getattr(polish_llm, "close", None)
                 if callable(close):
                     close()
+            # Step text is manifest-derived: a template-fallback step keeps
+            # its verbatim template text; an LLM-phrased step keeps a polish
+            # rewrite only if it still round-trips against the manifest and
+            # doesn't lose a claim the pre-polish text carried.
+            steps_by_id = {s.id: s for s in manifest.steps}
+            reverted = []
+            for old, new in zip(step_results, md_step_results):
+                # Photo mode: uploaded transcript text is placed verbatim, so
+                # an export polish may not rewrite it.
+                if "narration" in old and (
+                    verbatim_narration
+                    or any(
+                        _claim_covered(c, old["narration"])
+                        and not _claim_covered(c, new.get("narration") or "")
+                        for c in claims
+                    )
+                ):
+                    new["narration"] = old["narration"]
+                if new["text"] != old["text"] and (
+                    old.get("used_fallback")
+                    # Photo mode's synthetic manifest has no real action/element/
+                    # window to round-trip against (every step is a bare click).
+                    or (
+                        not verbatim_narration
+                        and not round_trip_ok(new["text"], steps_by_id[old["step_id"]])[0]
+                    )
+                    or (
+                        gate_steps_on_claims
+                        and any(
+                            _claim_covered(c, old["text"]) and not _claim_covered(c, new["text"])
+                            for c in claims
+                        )
+                    )
+                ):
+                    new["text"] = old["text"]
+                    reverted.append(old["step_id"])
+            if reverted:
+                report["polish_reverted_steps"] = reverted
+
             # A human's exact wording must never be silently reworded by the
             # polish pass -- generate_polish_fields has no concept of "this
             # text is authoritative," it treats every step's text as equally
@@ -1282,7 +1400,11 @@ def create_app(
             # known-good original narrative_text rather than ship a doc with
             # a silently dropped claim. Step text/narration polish carries no
             # such risk and is kept either way.
-            ok, missing = validate_claim_coverage(md_narrative_text, claims)
+            # Claims covered only by transcript placed under a step (placed_text)
+            # are not the narrative's to keep; the narration restore above
+            # guards them.
+            owned = [c for c in claims if validate_claim_coverage(narrative_text or "", [c])[0]]
+            ok, missing = validate_claim_coverage(md_narrative_text or "", owned)
             if not ok:
                 report["polish_rejected_claim_coverage"] = missing
                 md_narrative_text = narrative_text
@@ -1544,7 +1666,9 @@ def create_app(
             claims=(),
         )
 
-    def _run_semantic_pipeline(content, manifest, step_contexts, per_step, note):
+    def _run_semantic_pipeline(
+        content, manifest, step_contexts, per_step, note, polish=True, raw_out=None
+    ):
         """Shared by the real-capture flow (_apply_transcript) and the photo
         build flow (_generate_photo): when the deterministic placement
         (transcript.py) collapses onto a single step despite there being
@@ -1558,7 +1682,9 @@ def create_app(
         deterministic result (with its warning); polish_narration failing
         keeps stage 1's verbatim placement. Returns (per_step, note,
         placement_meta) -- placement_meta is None if semantic_align declined
-        or "WARNING" wasn't in `note` to begin with (nothing to try)."""
+        or "WARNING" wasn't in `note` to begin with (nothing to try).
+        polish=False skips stage 2. raw_out, if given, receives stage 1's
+        verbatim slices before any polish (photo mode prints those as-is)."""
         if "WARNING" not in note:
             return per_step, note, None
 
@@ -1572,19 +1698,23 @@ def create_app(
                 close()
         if aligned:
             per_step, placement_meta = aligned
-            polish_llm = make_narrative_llm_client()
-            try:
-                per_step, polish_meta = polish_narration(
-                    per_step, manifest, step_contexts, polish_llm
-                )
-            finally:
-                close = getattr(polish_llm, "close", None)
-                if callable(close):
-                    close()
-            placement_meta.update(polish_meta)
+            if raw_out is not None:
+                raw_out.clear()
+                raw_out.update(per_step)
+            if polish:
+                polish_llm = make_narrative_llm_client()
+                try:
+                    per_step, polish_meta = polish_narration(
+                        per_step, manifest, step_contexts, polish_llm
+                    )
+                finally:
+                    close = getattr(polish_llm, "close", None)
+                    if callable(close):
+                        close()
+                placement_meta.update(polish_meta)
             note = (
                 f"{len(per_step)} of {len(manifest.steps)} step(s) narrated "
-                "(semantic placement + polish)"
+                f"(semantic placement{' + polish' if polish else ''})"
             )
         return per_step, note, placement_meta
 

@@ -1,0 +1,80 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "findings"
+  ],
+  "properties": {
+    "findings": {
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "checklist_item",
+          "title",
+          "file",
+          "line",
+          "evidence",
+          "command",
+          "proposed_fix"
+        ],
+        "properties": {
+          "id": {
+            "description": "Own-prefixed, stable across rounds, e.g. F-03 or A-03",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "med",
+              "low"
+            ],
+            "type": "string"
+          },
+          "checklist_item": {
+            "description": "1-8 from the brief, null if outside it",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "file": {
+            "description": "repo-relative path",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 10,
+            "description": "Quoted code (verbatim) or command output"
+          },
+          "command": {
+            "description": "Command that produced the evidence, if any",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposed_fix": {
+            "type": "string"
+          }
+        }
+      },
+      "type": "array"
+    }
+  }
+}

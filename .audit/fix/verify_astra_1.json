@@ -1,0 +1,102 @@
+{
+  "items": [
+    {
+      "id": "A-12",
+      "verdict": "LANDED",
+      "evidence": "On audit-fixes at 70a2b0b. All four src httpx.Client constructions explicitly set trust_env: llm_client.py:56, vision.py:65, capture/upload.py:62, capture/tray.py:42. server.py:527 preserves environment proxies for non-Ollama vision providers. Regression tests cover each construction. Requested Python 3.12 test invocation failed with 'No installed Python found!'; Python 3.13 also lacks required dependencies, including httpx and mss. Test passes therefore remain unverified.",
+      "file": "src/pipeline/llm_client.py",
+      "line": 56,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_llm_client.py tests/pipeline/test_vision.py tests/test_upload.py tests/test_tray.py",
+      "gap": null
+    },
+    {
+      "id": "F-05",
+      "verdict": "LANDED",
+      "evidence": "The splitter holds a single unlabelled block unplaced. A read-only Python 3.13 probe returned {} and a WARNING containing '0 of 3'. Capture retains the semantic rescue and claim-generation paths; server.py:589 adds claim coverage for wholly unplaced photo transcripts. Named regression tests are present, but could not run with the unavailable Python 3.12 environment.",
+      "file": "src/pipeline/transcript.py",
+      "line": 113,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_transcript.py tests/pipeline/test_server.py",
+      "gap": null
+    },
+    {
+      "id": "F-02",
+      "verdict": "PARTIAL",
+      "evidence": "server.py:465 supplies ensure_claim_coverage on narrative chat failure, and lines 426-432 propagate narrative verify IDs and source text to the sidecar. However, the successful generate_narrative call omits placed_text. Executing the actual helper in isolation with an already-placed 'Open the console.' claim and a successful 'Summary.' response still returned a duplicate [verify] blockquote and claim-001. Named tests were inspected; Python 3.12 execution was unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 458,
+      "command": null,
+      "gap": "Thread placed_text through successful narrative generation and coverage, as specified by the plan. The current helper applies placement-aware coverage only on exception. Client construction also remains outside the try block, so a construction failure bypasses the fallback entirely."
+    },
+    {
+      "id": "F-16",
+      "verdict": "LANDED",
+      "evidence": "The export coverage validator now receives md_narrative_text or '', eliminating the reported None.lower() failure. The failing-narrative integration test asserts successful document/report production. Tests could not run under Python 3.12. The new 'no claims' test is weaker than its name suggests: it supplies no transcript but still uses a populated manifest, allowing synthesized claims.",
+      "file": "src/pipeline/server.py",
+      "line": 770,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_server.py",
+      "gap": null
+    },
+    {
+      "id": "F-10",
+      "verdict": "LANDED",
+      "evidence": "The post-polish loop restores fallback text, rejects capture rewrites failing round_trip_ok, checks lost text claims, and records reverted step IDs. All exporters consume the resulting md_step_results. Photo captions appropriately bypass the synthetic manifest's action check; transcript-backed photo fallback text remains protected. Added tests cover dropped element names and fallback preservation; existing polish tests use the new round-trip-capable stub. Runtime test results remain unavailable.",
+      "file": "src/pipeline/server.py",
+      "line": 734,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_server.py tests/pipeline/test_polish.py",
+      "gap": null
+    },
+    {
+      "id": "F-03",
+      "verdict": "PARTIAL",
+      "evidence": "Captioned photo steps now receive narration, while caption failures retain transcript text without duplicating narration. Export polish restores photo narration. However, server.py:549 invokes semantic rescue, whose server.py:870 call to polish_narration rewrites the transcript before the new narration assignment. A read-only probe confirmed that 'okay open the console' -> 'Open the console.' passes that gate. Added verbatim tests cover deterministic placement, not this successful semantic rewrite.",
+      "file": "src/pipeline/server.py",
+      "line": 561,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_server.py",
+      "gap": "Preserve the original semantic-align transcript slices when constructing photo narration. Restoring narration after export polish currently restores an already-rewritten value, so transcript sentences are not always verbatim under their steps."
+    },
+    {
+      "id": "F-09",
+      "verdict": "LANDED",
+      "evidence": "Photo reports list used_fallback step IDs under caption_fallback_steps only when vision is enabled, while template_fallback_steps remains empty. Both session and review pages render the category, and the session page marks nonempty lists red. Matching report and rendering tests exist. Python 3.12 tests could not execute.",
+      "file": "src/pipeline/server.py",
+      "line": 635,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_server.py tests/pipeline/test_webui_pages.py tests/pipeline/test_sidecar_report.py",
+      "gap": null
+    },
+    {
+      "id": "F-06",
+      "verdict": "LANDED",
+      "evidence": "The stale inert-flag documentation is removed. vision_model_warning implements the planned prefixes; generation logs it, configuration saves redirect with it, and the configuration page HTML-escapes the warning. Tests assert persistence and warning behavior, including an unknown custom tag. Runtime tests remain unverified because Python 3.12 is unavailable.",
+      "file": "src/pipeline/config.py",
+      "line": 98,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/pipeline/test_models_config.py tests/pipeline/test_server.py",
+      "gap": null
+    },
+    {
+      "id": "F-07",
+      "verdict": "LANDED",
+      "evidence": "Committed configuration, UI recommendations, suggestions, and changed test expectations agree with CLAUDE.md and USER_MANUAL.md on qwen3:32b. qwen3.6:27b is explicitly marked unverified. verify_models.py gathers configured and suggested Ollama tags, fetches /api/tags with trust_env=False, and returns 1 for missing tags; injectable-transport tests cover both outcomes. No live model availability was established, and Python 3.12 tests could not run.",
+      "file": "scripts/verify_models.py",
+      "line": 35,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/test_verify_models.py tests/pipeline/test_models_config.py tests/pipeline/test_server.py",
+      "gap": null
+    },
+    {
+      "id": "F-11",
+      "verdict": "PARTIAL",
+      "evidence": "Capture initialization sets awareness before hook imports, recorder output includes scale, and schema/model changes preserve compatibility. Six fake-WinAPI cases passed through direct read-only Python 3.13 invocation. However, _winapi returns (None, None) if SetProcessDpiAwarenessContext is missing, discarding available fallback APIs. A probe with missing v2 but working shcore/system APIs returned 'unavailable'. The promised UIA import-order note is absent.",
+      "file": "src/capture/dpi.py",
+      "line": 29,
+      "command": "py -3.12 -B -m pytest -q -p no:cacheprovider tests/test_dpi.py tests/test_recorder.py tests/test_manifest_schema.py tests/pipeline/test_manifest_loader.py",
+      "gap": "Resolve and configure optional WinAPI functions independently so missing v2 support still reaches shcore and system-awareness fallbacks. Add coverage through the real _winapi loader and the promised documentation note. Python 3.12 tests, fresh-process awareness, capture self-check, and ruff acceptance checks remain unverified."
+    }
+  ],
+  "regressions": [
+    {
+      "title": "New DPI initialization discards usable fallback APIs when an optional API is absent",
+      "file": "src/capture/dpi.py",
+      "line": 29,
+      "evidence": "All DLL loading and function-signature setup share one try block. Missing SetProcessDpiAwarenessContext or shcore causes _winapi to return neither handle, preventing the advertised older-Windows fallback sequence and leaving awareness dependent on later imports. A read-only probe reproduced 'unavailable' despite working fallback APIs. Existing injected-handle tests bypass this loader and miss the defect."
+    }
+  ]
+}

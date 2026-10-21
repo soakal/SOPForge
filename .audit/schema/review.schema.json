@@ -1,0 +1,181 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "responses",
+    "withdrawn",
+    "findings"
+  ],
+  "properties": {
+    "responses": {
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "peer_id",
+          "verdict",
+          "duplicate_of",
+          "file",
+          "line",
+          "command",
+          "evidence"
+        ],
+        "properties": {
+          "peer_id": {
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "CONFIRM",
+              "DISPUTE"
+            ],
+            "type": "string"
+          },
+          "duplicate_of": {
+            "description": "Own finding id if the peer item is the same issue",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence": {
+            "minLength": 10,
+            "type": "string"
+          }
+        }
+      },
+      "type": "array"
+    },
+    "withdrawn": {
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "evidence_changed",
+          "file",
+          "line",
+          "command"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "evidence_changed": {
+            "minLength": 10,
+            "type": "string"
+          },
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "command": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "type": "array"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "severity",
+          "checklist_item",
+          "title",
+          "file",
+          "line",
+          "evidence",
+          "command",
+          "proposed_fix"
+        ],
+        "properties": {
+          "id": {
+            "description": "Own-prefixed, stable across rounds, e.g. F-03 or A-03",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high",
+              "med",
+              "low"
+            ],
+            "type": "string"
+          },
+          "checklist_item": {
+            "description": "1-8 from the brief, null if outside it",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "file": {
+            "description": "repo-relative path",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "line": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 10,
+            "description": "Quoted code (verbatim) or command output"
+          },
+          "command": {
+            "description": "Command that produced the evidence, if any",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "proposed_fix": {
+            "type": "string"
+          }
+        }
+      },
+      "description": "Your full CURRENT list: kept + new (ADD) findings, minus withdrawn"
+    }
+  }
+}

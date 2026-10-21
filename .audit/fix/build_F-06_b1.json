@@ -1,0 +1,10 @@
+{
+  "summary": "F-06 implemented. config.py: stale use_vision comment replaced, TEXT_ONLY_MODEL_PREFIXES + vision_model_warning added. server.py: POST /ui/config redirects with &warning=<urlencoded> when warning applies (config still saved), GET /ui/config passes warning to render_config_page, _generate logs warning. pages.py renders html-escaped <p class=\"warning\"> banner. Four named tests added. ruff check/format clean; pytest 561 passed, 5 skipped, test_frozen_paths.py deselected (first -x run hit the known flaky test_recorder test, passed on rerun). Not committed.",
+  "files_changed": [
+    "src/pipeline/config.py",
+    "src/pipeline/server.py",
+    "src/pipeline/webui/pages.py",
+    "tests/pipeline/test_models_config.py",
+    "tests/pipeline/test_server.py"
+  ]
+}

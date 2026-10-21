@@ -1,0 +1,11 @@
+{
+  "subject": "fix polish/narrative regressions, DPI loading",
+  "summary": "Four of the five regressions are fixed or recorded, and the fifth (frozen-paths) is the expected env failure. ruff is clean. The full pytest run gives 588 passed, 5 skipped, and 2 failed. The 2 failures are the expected test_frozen_paths.py ones.\n\n1. **Photo-mode narrative LLM.** Photo mode no longer calls the [narrative] LLM for an unplaced transcript. It uses `ensure_claim_coverage(\"\", claims)` directly. The text is kept as `[verify]` blockquotes whether or not Ollama is up. The existing photo-build test now also asserts that no narrative-drafting call is made (the semantic-placement rescue shares that client and may still call it).\n2. **Over-reverted step polish.** I added a `gate_steps_on_claims` parameter to `_write_all_exports`. The capture flow passes `transcript_path is not None`, because without a transcript the claims are the step texts themselves. A new test, `test_polish_rephrase_is_kept_without_a_transcript`, shows a genuine rephrase is kept there. Photo mode and capture-with-transcript still gate on claims.\n3. **Undocumented F-10 deviation.** I recorded the photo-mode `round_trip_ok` skip in `phases/DEVIATIONS.md`.\n4. **test_frozen_paths failures.** I made no change. These are the expected environment failures: the `SOPFORGE_SOP_FACTORY_2_DIR` override takes precedence over the dev and frozen branches.\n5. **DPI loader.** `_winapi` now loads `user32` and `shcore` independently. A missing `shcore` no longer discards `user32`. The per-function signature setup was already independent in HEAD. I added a test for the missing-`shcore` case.\n\nI ran no build or smoke stage.",
+  "files_changed": [
+    "src/pipeline/server.py",
+    "src/capture/dpi.py",
+    "tests/pipeline/test_server.py",
+    "tests/test_dpi.py",
+    "phases/DEVIATIONS.md"
+  ]
+}

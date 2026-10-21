@@ -102,7 +102,7 @@ def _shell(title, body):
 def _color_for(category, count):
     if count == 0:
         return "green"
-    return "red" if category == "template_fallback_steps" else "yellow"
+    return "red" if category in ("template_fallback_steps", "caption_fallback_steps") else "yellow"
 
 
 def _section(title, category, items):
@@ -755,6 +755,15 @@ def render_session_page(session_id, title, date, report, config, steps=None, can
                 session_id,
                 steps_by_id,
             ),
+            # Photo builds only (their report always carries the key, even
+            # empty); capture sessions keep the fixed three sections.
+            _section(
+                "Caption-fallback steps",
+                "caption_fallback_steps",
+                report["caption_fallback_steps"],
+            )
+            if "caption_fallback_steps" in report
+            else "",
             _section("Verify claims", "verify_claims", verify_items),
             _step_section(
                 "Empty-metadata steps",
