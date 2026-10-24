@@ -37,12 +37,14 @@ def _ids(report, key):
 
 def review_count(report):
     """Things the sidecar report asks a human to look at: each flagged step
-    once (template/caption fallback, empty UIA metadata) plus each [verify]
+    once (template/caption fallback, empty UIA metadata, uncaptured typed
+    value) plus each [verify]
     claim. 0 means nothing is flagged."""
     flagged = (
         set(_ids(report, "template_fallback_steps"))
         | set(_ids(report, "caption_fallback_steps"))
         | set(_ids(report, "empty_metadata_steps"))
+        | set(_ids(report, "uncaptured_value_steps"))
     )
     claims = report.get("verify_claims")
     return len(flagged) + (len(claims) if isinstance(claims, list) else 0)

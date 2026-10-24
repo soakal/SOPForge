@@ -1493,6 +1493,25 @@ def render_session_page(
         )
     else:
         regenerate_declined_note = ""
+    uncaptured_ids = report.get("uncaptured_value_steps") or []
+    if uncaptured_ids:
+        # Same "div, not a data-status section" reasoning as preflight_note:
+        # the UI-smoke contract counts exactly the three fixed categories.
+        uncaptured_note = (
+            '<div class="card" style="border-left:4px solid var(--warn)">'
+            "<strong>Values not captured</strong> &mdash; these steps typed a value the "
+            "capture couldn&rsquo;t record; the document marks each one "
+            f"[REVIEW NEEDED]: {html.escape(', '.join(uncaptured_ids))}</div>"
+        )
+    else:
+        uncaptured_note = ""
+    omitted_ids = report.get("omitted_screenshot_steps") or []
+    omitted_note = (
+        '<p class="help" style="margin:0 0 16px">Screenshots left out as exact repeats of '
+        f"the previous screen: {html.escape(', '.join(omitted_ids))}</p>"
+        if omitted_ids
+        else ""
+    )
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">'
         f"{_icon('download')}{label}</a></li>"
@@ -1529,7 +1548,9 @@ def render_session_page(
         f"{regenerate_declined_note}"
         f"{transcript_note}"
         f"{narration_transcription_note}"
+        f"{uncaptured_note}"
         f"{sections}"
+        f"{omitted_note}"
         f"{_edit_steps_card(session_id, steps, can_regenerate)}"
         '<div class="card"><h2>Narration transcript</h2>'
         f'<form method="post" action="/ui/sessions/{sid}/transcript" enctype="multipart/form-data">'

@@ -181,7 +181,20 @@ def test_review_count_counts_each_flagged_step_once_plus_claims():
         "verify_claims": [{"claim_id": "c1"}],
     }
     assert review_count(report) == 3
+    assert review_count({**report, "uncaptured_value_steps": ["step-002", "step-004"]}) == 4
     assert review_count({}) == 0
+
+
+def test_session_page_lists_uncaptured_values_and_omitted_screenshots():
+    from pipeline.webui.pages import render_session_page
+
+    report = {"uncaptured_value_steps": ["step-002"], "omitted_screenshot_steps": ["step-005"]}
+    page = render_session_page("sid", "Title", "date", report, {})
+    assert "Values not captured" in page and "step-002" in page
+    assert "exact repeats" in page and "step-005" in page
+    # Still exactly the three fixed sidecar sections (UI-smoke contract).
+    assert page.count('<section class="card" data-status="') == 3
+    assert "Values not captured" not in render_session_page("sid", "T", "d", {}, {})
 
 
 def test_library_stats_ratio_covers_finished_documents_only():
