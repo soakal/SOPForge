@@ -17,7 +17,7 @@ from pathlib import Path
 import html
 
 from pipeline.annotate import annotate_click, crop_to_element
-from pipeline.assembler import assemble_steps, step_heading
+from pipeline.assembler import assemble_steps, is_grouped, phase_starts, step_heading
 from pipeline.generation import generate_all_steps
 from pipeline.review_notes import step_review_notes
 from pipeline.template import render_step_template
@@ -97,9 +97,22 @@ def _image_ref(shot, base_dir):
     return Path(shot).relative_to(base_dir).as_posix()
 
 
-def render_markdown(manifest, step_results, annotated_paths, narrative_text=None, base_dir=None):
+def render_markdown(
+    manifest,
+    step_results,
+    annotated_paths,
+    narrative_text=None,
+    base_dir=None,
+    phases=None,
+    omitted_screenshots=(),
+):
     """Assembles a Markdown document: title, optional narrative section,
-    then one section per step with its text and annotated screenshot."""
+    then one section per step with its text and annotated screenshot. When
+    steps are grouped into phases (6c), each phase gets a `##` heading and
+    step headings drop to `###`; ungrouped output is unchanged."""
+    grouped = is_grouped(phases)
+    starts = phase_starts(manifest, phases) if grouped else {}
+    step_level = "###" if grouped else "##"
     lines = [f"# {manifest.session.title or manifest.session.id}", ""]
     if narrative_text:
         lines.append(narrative_text)
@@ -107,8 +120,11 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
+        if step.id in starts:
+            lines.append(f"## {starts[step.id]}")
+            lines.append("")
         heading = step_heading(n, step)
-        lines.append(f"## {heading}")
+        lines.append(f"{step_level} {heading}")
         lines.append("")
         lines.append(result["text"])
         lines.append("")
@@ -118,8 +134,9 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
         if result.get("narration"):
             lines.append(f"> **Narration:** {result['narration']}")
             lines.append("")
-        lines.append(f"![{_escape_md_alt_text(heading)}]({_image_ref(shot, base_dir)})")
-        lines.append("")
+        if step.id not in omitted_screenshots:
+            lines.append(f"![{_escape_md_alt_text(heading)}]({_image_ref(shot, base_dir)})")
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -157,9 +174,20 @@ def narrative_html_blocks(narrative_text):
     return blocks
 
 
-def render_html(manifest, step_results, annotated_paths, narrative_text=None, base_dir=None):
+def render_html(
+    manifest,
+    step_results,
+    annotated_paths,
+    narrative_text=None,
+    base_dir=None,
+    phases=None,
+    omitted_screenshots=(),
+):
     """Assembles a minimal HTML document mirroring render_markdown's
     structure — plain string building, no templating engine dependency."""
+    grouped = is_grouped(phases)
+    starts = phase_starts(manifest, phases) if grouped else {}
+    tag = "h3" if grouped else "h2"
     title = manifest.session.title or manifest.session.id
     parts = [
         "<!doctype html>",
@@ -171,11 +199,13 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
+        if step.id in starts:
+            parts.append(f"<h2>{html.escape(starts[step.id])}</h2>")
         heading = step_heading(n, step)
         # id=step.id anchors each step so a link like doc.html#step-003 (the
         # session page's report rows, webui/pages.py's _finding_row) jumps
         # straight to it.
-        parts.append(f'<h2 id="{html.escape(step.id)}">{html.escape(heading)}</h2>')
+        parts.append(f'<{tag} id="{html.escape(step.id)}">{html.escape(heading)}</{tag}>')
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         parts.extend(review_note_html(step))
         if result.get("narration"):
@@ -183,7 +213,8 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
                 '<blockquote class="narration"><strong>Narration:</strong> '
                 f"{html.escape(result['narration'])}</blockquote>"
             )
-        img_ref = _image_ref(shot, base_dir)
-        parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(heading)}">')
+        if step.id not in omitted_screenshots:
+            img_ref = _image_ref(shot, base_dir)
+            parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(heading)}">')
     parts.append("</body></html>")
     return "\n".join(parts)

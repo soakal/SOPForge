@@ -9,7 +9,7 @@ import html
 import mimetypes
 from pathlib import Path
 
-from pipeline.assembler import step_heading
+from pipeline.assembler import is_grouped, phase_starts, step_heading
 from pipeline.render import narrative_html_blocks, review_note_html
 
 _STYLE = (
@@ -28,10 +28,20 @@ def _data_uri(image_path):
     return f"data:{mime};base64,{data}"
 
 
-def render_single_file_html(manifest, step_results, annotated_paths, narrative_text=None):
+def render_single_file_html(
+    manifest,
+    step_results,
+    annotated_paths,
+    narrative_text=None,
+    phases=None,
+    omitted_screenshots=(),
+):
     """Same structure as render.render_html, but every image is inlined as
     a base64 data URI instead of referenced by path. Returns one complete
     HTML document string with no external references at all."""
+    grouped = is_grouped(phases)
+    starts = phase_starts(manifest, phases) if grouped else {}
+    tag = "h3" if grouped else "h2"
     title = manifest.session.title or manifest.session.id
     parts = [
         "<!doctype html>",
@@ -44,13 +54,15 @@ def render_single_file_html(manifest, step_results, annotated_paths, narrative_t
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
+        if step.id in starts:
+            parts.append(f"<h2>{html.escape(starts[step.id])}</h2>")
         heading = step_heading(n, step)
-        parts.append(f"<h2>{html.escape(heading)}</h2>")
+        parts.append(f"<{tag}>{html.escape(heading)}</{tag}>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         parts.extend(review_note_html(step))
         # Guard a missing annotated image (like render_pdf does) so one absent
         # file doesn't crash the job after docx/pdf were already written.
-        if shot is not None and Path(shot).exists():
+        if step.id not in omitted_screenshots and shot is not None and Path(shot).exists():
             parts.append(f'<img src="{_data_uri(shot)}" alt="{html.escape(heading)}">')
     parts.append("</body></html>")
     return "\n".join(parts)

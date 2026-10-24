@@ -78,6 +78,13 @@ from pipeline.export_html import render_single_file_html
 from pipeline.export_md import _slugify, export_markdown_bundle
 from pipeline.export_pdf import render_pdf
 from pipeline.generation import generate_step_text
+from pipeline.grouping import (
+    MIN_STEPS_TO_GROUP,
+    duplicate_screenshot_steps,
+    load_phases,
+    phases_to_json,
+    propose_phases,
+)
 from pipeline.jobs import JobRunner
 from pipeline.library import remove_entry
 from pipeline.library import search as library_search
@@ -983,6 +990,25 @@ def create_app(
         verify_claim_ids += [
             c["claim_id"] for c in verify_claims if c["claim_id"] not in verify_claim_ids
         ]
+        # Phase grouping (6c, grouping.py): the LLM may only propose phase
+        # boundaries and names; anything it gets wrong falls back to grouping
+        # by window. Saved so a later re-export (no LLM) keeps the same layout.
+        phase_llm = None
+        try:
+            if len(manifest.steps) >= MIN_STEPS_TO_GROUP:
+                phase_llm = make_llm_client()
+            phases, phase_source = propose_phases(manifest, step_results, phase_llm)
+        except Exception:  # noqa: BLE001 - grouping is layout only, never blocks the doc
+            logger.exception("phase grouping failed for session %s", session_id)
+            phases, phase_source = propose_phases(manifest, step_results, None)
+        finally:
+            close = getattr(phase_llm, "close", None)
+            if callable(close):
+                close()
+        (session_dir / "phases.json").write_text(
+            json.dumps(phases_to_json(phases, phase_source)), encoding="utf-8"
+        )
+
         report = build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)
         if transcript_note:
             report["transcript"] = transcript_note
@@ -1409,12 +1435,26 @@ def create_app(
                 report["polish_rejected_claim_coverage"] = missing
                 md_narrative_text = narrative_text
 
+        # Phases exist only for capture sessions (phases.json, written at
+        # generation); photo builds and pre-6c sessions render ungrouped.
+        phases_path = session_dir / "phases.json"
+        phases = load_phases(phases_path, manifest) if phases_path.exists() else None
+        omitted = duplicate_screenshot_steps(manifest, annotated_paths, phases) if phases else []
+        report.pop("phases", None)
+        report.pop("omitted_screenshot_steps", None)
+        if phases:
+            report["phases"] = [{"name": p.name, "step_ids": list(p.step_ids)} for p in phases]
+        if omitted:
+            report["omitted_screenshot_steps"] = omitted
+        layout = {"phases": phases, "omitted_screenshots": frozenset(omitted)}
+
         md = render_markdown(
             manifest,
             md_step_results,
             annotated_paths,
             narrative_text=md_narrative_text,
             base_dir=annotated_dir,
+            **layout,
         )
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
@@ -1424,6 +1464,7 @@ def create_app(
             annotated_paths,
             narrative_text=md_narrative_text,
             base_dir=annotated_dir,
+            **layout,
         )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
 
@@ -1441,6 +1482,7 @@ def create_app(
             author=doc_cfg.author,
             doc_no=doc_no,
             narrative_text=md_narrative_text,
+            **layout,
         )
         report["docx_warnings"] = docx_warnings
 
@@ -1454,10 +1496,11 @@ def create_app(
             date=doc_date,
             author=doc_cfg.author,
             doc_no=doc_no,
+            **layout,
         )
 
         single_html = render_single_file_html(
-            manifest, md_step_results, annotated_paths, narrative_text=md_narrative_text
+            manifest, md_step_results, annotated_paths, narrative_text=md_narrative_text, **layout
         )
         (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
 
@@ -1468,6 +1511,7 @@ def create_app(
             annotated_paths,
             md_bundle_dir,
             narrative_text=md_narrative_text,
+            **layout,
         )
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
 

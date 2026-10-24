@@ -14,7 +14,8 @@ from pathlib import Path
 
 from docx.shared import RGBColor
 
-from pipeline.assembler import step_heading, toc_lines
+from pipeline.assembler import phase_starts, step_heading, toc_lines
+from pipeline.grouping import DEFAULT_PHASE_NAME
 from pipeline.claim_coverage import parse_verify_line
 from pipeline.docx_fields import add_toc_field, enable_update_fields_on_open, set_outline_level
 from pipeline.resource_path import resource_path
@@ -90,6 +91,8 @@ def assemble_docx(
     author="SOPForge",
     doc_no=None,
     narrative_text=None,
+    phases=None,
+    omitted_screenshots=(),
 ):
     """Builds a complete docx from a manifest's steps (already rendered via
     task-06/task-12's step_results, one dict per step with a "text" key)
@@ -121,15 +124,22 @@ def assemble_docx(
     # heading below is marked with a matching outline level (0 for section
     # headings, 1 for step headings) since SOPBuilder's heading1/heading2
     # carry no named Word style for the field's \u switch to key off.
-    add_toc_field(sop, toc_lines(manifest, narrative_text))
+    add_toc_field(sop, toc_lines(manifest, narrative_text, phases))
 
     if narrative_text:
         sop.heading1("Overview")
         set_outline_level(sop.doc.paragraphs[-1], 0)
         _narrative_body(sop, narrative_text)
-    sop.heading1("Procedure")
-    set_outline_level(sop.doc.paragraphs[-1], 0)
+    # One top-level section per phase (6c, grouping.py); ungrouped, that is
+    # the single "Procedure" section this layout always had.
+    starts = phase_starts(manifest, phases)
+    if not starts:
+        sop.heading1(DEFAULT_PHASE_NAME)
+        set_outline_level(sop.doc.paragraphs[-1], 0)
     for n, (step, result) in enumerate(zip(manifest.steps, step_results, strict=True), start=1):
+        if step.id in starts:
+            sop.heading1(starts[step.id])
+            set_outline_level(sop.doc.paragraphs[-1], 0)
         heading = step_heading(n, step)
         sop.heading2(heading)
         set_outline_level(sop.doc.paragraphs[-1], 1)
@@ -146,7 +156,8 @@ def assemble_docx(
                 run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
         if result.get("narration"):
             sop.bullet(f"Narration: {result['narration']}", sub=True)
-        sop.image(step.screenshot, caption=heading)
+        if step.id not in omitted_screenshots:
+            sop.image(step.screenshot, caption=heading)
     sop.heading1("Revision History")
     set_outline_level(sop.doc.paragraphs[-1], 0)
     sop.revision_history([(date, revision, "Initial generation", author)])

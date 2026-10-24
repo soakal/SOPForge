@@ -1,5 +1,24 @@
 # Deviations
 
+## phase-06 6c: steps grouped into phases; one screenshot per screen
+
+Phase 2's renderers emit one heading + bullet + screenshot per manifest step.
+6c groups steps into phases (SOP Factory style: one top-level section per
+phase) and omits a step's screenshot when it exactly repeats the previous
+step's within the phase (same window and control, near-identical crop).
+
+Not a weakening of any invariant:
+- Every step still renders, in manifest order, with its id attached:
+  `set(doc.step_ids) == set(manifest.step_ids)` is still asserted.
+- The LLM never decides what the steps are. It may only propose phase
+  boundaries and names; `grouping.validate_grouping` accepts a proposal only
+  if it is a contiguous, order-preserving partition covering every step id
+  exactly once. Anything else falls back to deterministic grouping by
+  window, with no retry loop.
+- Screenshot omission is decided by pixel comparison of the raw screenshots,
+  not by a model, and every omitted screenshot is listed in the sidecar report
+  (`omitted_screenshot_steps`) so a reviewer can see what was left out.
+
 ## audit-fixes F-10: photo-mode polish skips round_trip_ok
 
 PLAN F-10 acceptance #1 said the polish step gate applies to both build modes.

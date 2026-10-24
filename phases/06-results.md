@@ -37,3 +37,32 @@
   paragraphs, nothing removed.
 - Verification: pinned ruff clean; pytest 664 passed, same 7 Windows-only
   failures/errors as the baseline.
+
+## AC3 (6c, phase grouping) — PASS
+
+- `src/pipeline/grouping.py`: the LLM (the `[steps]` model; no new config)
+  proposes only phase names + start step numbers, so the partition is
+  contiguous and in order by construction; `validate_phases` re-checks exact
+  coverage. Bad JSON, a bad partition, or an LLM error fall back to
+  `group_by_window` (one-step detours folded back in), with no retry. Captures
+  under 4 steps stay ungrouped with no LLM call.
+- Phases saved to `phases.json` at generation; every export (including the
+  no-LLM step-edit re-export) loads them and re-validates against the current
+  manifest, falling back to window grouping if a step was hidden since.
+- All five formats + TOC render one section per phase; with no phases the
+  output is byte-identical to before (golden docx unchanged, and an explicit
+  test). Step anchors (`id=step-…`) survive for the review page.
+- Duplicate screenshots: omitted only on an exact repeat (same window, same
+  control, <0.2% of pixels changed); listed as `omitted_screenshot_steps`.
+  Narrowed from the first draft because annotated images are already cropped
+  per control (see DEVIATIONS.md).
+- `tests/pipeline/test_grouping.py` (16 tests, one hypothesis property):
+  validation rejects drop/duplicate/reorder/non-contiguous/blank/empty/long;
+  proposal parsing; LLM accepted, rejected, raising, absent; window fallback;
+  stale `phases.json`; duplicate detection incl. moved marker kept; all
+  formats; end to end through the server incl. phases surviving a step edit.
+- Found by the tests and fixed before commit: the first detour rule folded
+  the first step of a new window into the previous phase, and a mean-pixel
+  duplicate check treated a moved click marker as a repeat.
+- Not yet done: editing phase names and restoring an omitted screenshot from
+  the review page; both belong with the 6h UI work.

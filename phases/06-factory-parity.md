@@ -34,9 +34,13 @@ writes to it. Code is copied into this repo, never imported from that folder.
   (`heading2("A)  Sign in")`, steps as bullets under them). The LLM may
   *propose* groups; code accepts a proposal only if it is a contiguous,
   order-preserving partition covering every step ID exactly once, otherwise falls
-  back to deterministic grouping by window title. One screenshot per distinct
-  screen within a phase; omitted screenshots are listed in the sidecar report.
-  Phase names are editable in the review UI.
+  back to deterministic grouping by window title. Within a phase, a step's
+  screenshot is omitted only when it exactly repeats the previous step's (same
+  window, same control, <0.2% of pixels changed, e.g. a double-click):
+  SOPForge's annotated images are already cropped tight to the clicked
+  control, so unlike SOP Factory's full-screen sources, anything short of an
+  exact repeat carries new information. Omitted screenshots are listed in the
+  sidecar report. Phase names are editable in the review UI (built with 6h).
 - **6d — Walkthrough export.** A seventh export, `walkthrough.html`: single
   self-contained file, engine ported from SOP Factory's
   `walkthrough_template.html` (step navigation, keyboard, clickable phase chips,
