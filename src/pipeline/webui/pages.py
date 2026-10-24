@@ -1358,7 +1358,15 @@ def render_config_page(config, keystatus, saved=False, nav=None):
 
 
 def render_session_page(
-    session_id, title, date, report, config, steps=None, can_regenerate=True, nav=None
+    session_id,
+    title,
+    date,
+    report,
+    config,
+    steps=None,
+    can_regenerate=True,
+    nav=None,
+    walkthrough=False,
 ):
     """steps: the steps.json sidecar's list (task-05), or None for a
     session generated before it existed -- report rows for
@@ -1522,6 +1530,13 @@ def render_session_page(
             ("export.md.zip", "markdown bundle (zip)"),
         )
     )
+    # The 6d click-through walkthrough, when this session has one. Deliberately
+    # no data-download attribute: that marks the four document formats.
+    if walkthrough:
+        downloads += (
+            f'<li><a href="/sessions/{sid}/walkthrough.html" title="Click-through walkthrough '
+            f'(single HTML file)">{_icon("download")}walkthrough</a></li>'
+        )
     actions = (
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
         '<button type="submit" class="secondary">Re-render</button></form>'

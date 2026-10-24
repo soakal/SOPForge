@@ -122,3 +122,16 @@ def test_unknown_session_404s_on_all_export_endpoints(tmp_path):
     for path in ("doc.docx", "doc.pdf", "doc.single.html", "export.md.zip"):
         resp = client.get(f"/sessions/does-not-exist/{path}")
         assert resp.status_code == 404, path
+
+
+def test_walkthrough_endpoint(tmp_path):
+    """Phase 6d: every capture session also ships a click-through walkthrough
+    with one entry per step, served as a download like the other exports."""
+    client, session_id, manifest = _create_session(tmp_path)
+    resp = client.get(f"/sessions/{session_id}/walkthrough.html")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/html")
+    slug = _slugify(manifest.session.title or manifest.session.id)
+    assert f'filename="{slug}.walkthrough.html"' in resp.headers["content-disposition"]
+    for step in manifest.steps:
+        assert f'"id": "{step.id}"' in resp.text

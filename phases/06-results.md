@@ -67,6 +67,29 @@
 - Not yet done: editing phase names and restoring an omitted screenshot from
   the review page; both belong with the 6h UI work.
 
+## AC4 (6d, walkthrough export) — PASS
+
+- `src/pipeline/export_walkthrough.py`: `walkthrough.html` written with every
+  export and served at `GET /sessions/{id}/walkthrough.html`. One
+  self-contained page (screenshots inlined), engine ported from SOP Factory's
+  `walkthrough_template.html`: Back/Next, arrow keys, Enter/Space on the
+  hotspot, clickable phase chips, progress bar, resume position, `?shot=N`.
+- Hotspots come from the manifest: the element's `bounding_rect` mapped into
+  the annotated crop via the same `compute_crop_box` call that made the crop;
+  a square around the click when there is no usable rect; none for photo-mode
+  steps. An omitted duplicate screenshot reuses the previous step's picture.
+- Review markers and narration show on each step, same as the document.
+- `tests/pipeline/test_export_walkthrough.py` (8): hotspot math vs.
+  `compute_crop_box`, click-centred fallback, photo/unknown frame, one entry per
+  step in order, omitted-screenshot reuse, no external references, `node
+  --check`, and a `ui`-marked playwright test that clicks Start, the hotspot,
+  a phase chip and ArrowRight and loads `?shot=3` (passes here with
+  `SOPFORGE_TEST_CHROMIUM` pointing at the container's chromium).
+  `test_server_exports.py::test_walkthrough_endpoint` covers the route.
+- Found by the tests and fixed: step text embedded as JSON escaped only `</`,
+  so a title containing `<script` reached the HTML parser; all `<`, `>`, `&`
+  are now `\u`-escaped.
+
 ## 6h — Forge UI redesign
 
 Rebuilt every page in `src/pipeline/webui/pages.py` (library, review queue,
@@ -102,6 +125,9 @@ page in both themes: `phases/06-screenshots/6h/`.
     as a "Values not captured" card (counted toward need-review) and
     `omitted_screenshot_steps` as a read-only note. Both are cards, not
     `<section data-status>`, so the three-section UI-smoke contract holds.
+  - 6d's walkthrough (`walkthrough.html`) is the WALK chip in the Exports
+    column and a "walkthrough" download on the session page, shown only when
+    the file exists (sessions generated before 6d have none).
 - **Drop zone**: one zone (drag-drop, Browse files, Choose folder; folders are
   walked). `manifest.json` present → `POST /ui/upload` (manifest_file, files,
   transcript_file, narration_wav_file); absent → `POST /ui/build` (title,
@@ -124,7 +150,7 @@ page in both themes: `phases/06-screenshots/6h/`.
 
 | Criterion | Result |
 |---|---|
-| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **691 passed**, 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (11). |
+| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **699 passed** (after merging `factory-parity` @ `60839a0`), 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (11). |
 | Playwright `-m ui` | **5 passed** (2 existing + 3 new). `test_ui_smoke_upload_to_docx_download` was already failing on `factory-parity` before this change: F-02 (`28287b5`) made "Verify claims" yellow and updated the unit-test twin (`test_session_page_colors_sidecar_sections_correctly`) but not this browser test. Its assertion now matches the unit test (`yellow`); nothing else in it changed. `_launch()` honours `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for containers whose browser revision differs from the pip package. |
 | Served pages make no external network requests | PASS. Browser-level: every request recorded on `/ui`, `/ui?view=review`, a session page, `/ui/config`, and through both drop-zone flows is same-origin (`_assert_local_only`). Markup-level: `test_pages_reference_no_external_resources` (no absolute `src`/`href`/`url()`, no `@import`, no CDN). |
 | Plex fonts load from the frozen bundle | PASS. `test_font_route_reads_from_the_frozen_bundle` (sys.frozen + `_MEIPASS` monkeypatched → bytes come from the bundle dir); `test_server_spec_bundles_the_plex_fonts`; in-browser `document.fonts.check()` true for Plex Sans 600 and Plex Mono on all four page types, body font resolves to `"IBM Plex Sans"`, every font response 200. A real PyInstaller build is not runnable on this Linux container (spec is Windows-targeted; CLAUDE.md runs it for phases 1 & 3 only). |

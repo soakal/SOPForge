@@ -146,8 +146,13 @@ def test_library_shows_table_stat_tiles_and_review_queue(tmp_path):
     # so 0% AI-written and the session needs review.
     assert f"(0 of {step_count})" in page
     assert '<span class="count" aria-label="1 need review">1</span>' in page
-    for path in ("doc.docx", "doc.pdf", "doc.single.html", "export.md.zip"):
+    for path in ("doc.docx", "doc.pdf", "doc.single.html", "export.md.zip", "walkthrough.html"):
         assert f'href="/sessions/{session_id}/{path}"' in page
+    assert ">WALK</a>" in page
+    session_page = client.get(f"/ui/sessions/{session_id}").text
+    walk_href = f'href="/sessions/{session_id}/walkthrough.html"'
+    assert walk_href in session_page
+    assert client.get(f"/sessions/{session_id}/walkthrough.html").status_code == 200
     assert 'id="new"' in page  # the drop zone
 
     queue = client.get("/ui", params={"view": "review"}).text

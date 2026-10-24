@@ -13,12 +13,13 @@ from pathlib import Path
 
 from pipeline.assembler import doc_number
 
-# (file on disk, chip label) -- the four download routes server.py serves.
+# (file on disk, chip label) -- the download routes server.py serves.
 EXPORTS = (
     ("doc.docx", "DOCX"),
     ("doc.pdf", "PDF"),
     ("doc.single.html", "HTML"),
     ("export.md.zip", "MD"),
+    ("walkthrough.html", "WALK"),  # 6d; absent for sessions generated before it
 )
 
 
