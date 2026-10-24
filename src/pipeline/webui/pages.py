@@ -1410,6 +1410,7 @@ def render_session_page(
     can_regenerate=True,
     nav=None,
     walkthrough=False,
+    spl_deck=False,
 ):
     """steps: the steps.json sidecar's list (task-05), or None for a
     session generated before it existed -- report rows for
@@ -1574,6 +1575,21 @@ def render_session_page(
     else:
         omitted_note = ""
     phases_card = _phases_card(sid, report.get("phases"), steps_by_id)
+    spl_overflow = [str(t) for t in report.get("spl_text_overflow") or []]
+    spl_note = ""
+    if report.get("spl_error"):
+        spl_note = (
+            '<div class="card" style="border-left:4px solid var(--bad)">'
+            "<strong>SPL deck not built</strong> &mdash; the other exports are fine: "
+            f"{html.escape(str(report['spl_error']))}</div>"
+        )
+    elif spl_overflow:
+        items = "".join(f"<li>{html.escape(t)}</li>" for t in spl_overflow)
+        spl_note = (
+            '<div class="card" style="border-left:4px solid var(--warn)">'
+            "<strong>SPL deck: text still too long at 12pt</strong> &mdash; the deck "
+            f"ships, but check these boxes in PowerPoint:<ul>{items}</ul></div>"
+        )
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">'
         f"{_icon('download')}{label}</a></li>"
@@ -1584,12 +1600,18 @@ def render_session_page(
             ("export.md.zip", "markdown bundle (zip)"),
         )
     )
-    # The 6d click-through walkthrough, when this session has one. Deliberately
-    # no data-download attribute: that marks the four document formats.
+    # The 6d click-through walkthrough and 6f SPL deck, when this session has
+    # them. Deliberately no data-download attribute: that marks the four
+    # document formats.
     if walkthrough:
         downloads += (
             f'<li><a href="/sessions/{sid}/walkthrough.html" title="Click-through walkthrough '
             f'(single HTML file)">{_icon("download")}walkthrough</a></li>'
+        )
+    if spl_deck:
+        downloads += (
+            f'<li><a href="/sessions/{sid}/spl.pptx" title="Single Point Lesson deck '
+            f'(PowerPoint)">{_icon("download")}SPL deck</a></li>'
         )
     actions = (
         f'<form method="post" action="/ui/sessions/{sid}/rerender">'
@@ -1618,6 +1640,7 @@ def render_session_page(
         f"{transcript_note}"
         f"{narration_transcription_note}"
         f"{uncaptured_note}"
+        f"{spl_note}"
         f"{sections}"
         f"{phases_card}"
         f"{omitted_note}"

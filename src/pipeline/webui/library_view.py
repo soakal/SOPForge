@@ -20,6 +20,7 @@ EXPORTS = (
     ("doc.single.html", "HTML"),
     ("export.md.zip", "MD"),
     ("walkthrough.html", "WALK"),  # 6d; absent for sessions generated before it
+    ("spl.pptx", "SPL"),  # 6f; absent before it, or when the deck export failed
 )
 
 

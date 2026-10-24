@@ -149,10 +149,13 @@ def test_library_shows_table_stat_tiles_and_review_queue(tmp_path):
     for path in ("doc.docx", "doc.pdf", "doc.single.html", "export.md.zip", "walkthrough.html"):
         assert f'href="/sessions/{session_id}/{path}"' in page
     assert ">WALK</a>" in page
+    assert ">SPL</a>" in page
     session_page = client.get(f"/ui/sessions/{session_id}").text
     walk_href = f'href="/sessions/{session_id}/walkthrough.html"'
     assert walk_href in session_page
     assert client.get(f"/sessions/{session_id}/walkthrough.html").status_code == 200
+    assert f'href="/sessions/{session_id}/spl.pptx"' in session_page
+    assert client.get(f"/sessions/{session_id}/spl.pptx").status_code == 200
     assert 'id="new"' in page  # the drop zone
 
     queue = client.get("/ui", params={"view": "review"}).text
@@ -325,3 +328,14 @@ def _png():
     buf = io.BytesIO()
     Image.new("RGB", (64, 48), (255, 255, 255)).save(buf, format="PNG")
     return buf.getvalue()
+
+
+def test_session_page_shows_spl_overflow_and_error_notes():
+    from pipeline.webui.pages import render_session_page
+
+    page = render_session_page("sid", "T", "d", {"spl_text_overflow": ["Step 3 <body>"]}, {})
+    assert "too long at 12pt" in page and "Step 3 &lt;body&gt;" in page
+    page = render_session_page("sid", "T", "d", {"spl_error": "boom"}, {})
+    assert "SPL deck not built" in page and "boom" in page
+    assert page.count('<section class="card" data-status="') == 3
+    assert "SPL deck" not in render_session_page("sid", "T", "d", {}, {})

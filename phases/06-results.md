@@ -107,6 +107,28 @@
   boxes. `tests/test_redaction.py` (real Windows OCR) renamed blur → cover; its
   assertions still hold by construction but have not been run on Windows yet.
 
+## AC6 (6f, SPL deck) — PASS (estimate path); PowerPoint path pending Windows run
+
+- `vendor/sop_factory_2/spl_lib.py` + `Single Point Lesson Template V4.potm`
+  vendored unmodified from sop-factory-local `e4a00e5`; bundled in
+  `sopforge-server.spec` (datas + `pptx`/`win32com.client` hidden imports);
+  `python-pptx==1.0.2` pinned.
+- `src/pipeline/export_spl.py`: `spl.pptx` written with every export, served at
+  `GET /sessions/{id}/spl.pptx`. Title slide + phase-labelled step slides
+  ("(cont.)" on later ones), up to 2 screenshots each, SOP step numbers
+  continued via `startAt`, review markers on the red notes line.
+- Fit: PowerPoint (`spl_lib.fit_text`, COM initialised per worker thread) when
+  `PowerPoint.Application` is registered; otherwise, or if COM fails, a
+  font-metric estimate (Calibri when installed, else the wider DejaVu Sans)
+  shrinks 1pt at a time to the 12pt floor. Slides are planned with the same
+  estimate so each fits at ≥12pt. Step text is never truncated; anything that
+  still overflows goes to the report as `spl_text_overflow`, and a deck
+  failure as `spl_error`, without blocking the other exports.
+- `tests/pipeline/test_export_spl.py` (8) + `test_server_exports.py::test_spl_endpoint`.
+  Rendered a 9-step sample through LibreOffice and checked the slides by eye.
+- Not verified here: the PowerPoint COM path, and how long PowerPoint takes
+  on each step-edit re-export (SOP Factory runs it once per build).
+
 ## 6h — Forge UI redesign
 
 Rebuilt every page in `src/pipeline/webui/pages.py` (library, review queue,
@@ -151,6 +173,9 @@ page in both themes: `phases/06-screenshots/6h/`.
     "user", keep_screenshots=...)`, which preserves whichever of name/keep-list
     the call didn't change, then run the existing no-LLM re-export. A session
     without phases.json (screenshot build, pre-6c) gets 409. No config keys.
+  - 6f's SPL deck (`spl.pptx`) is the SPL chip and an "SPL deck" download,
+    shown only when the file exists; `spl_text_overflow` renders as a review
+    note listing the over-long boxes, `spl_error` as a "deck not built" note.
   - 6d's walkthrough (`walkthrough.html`) is the WALK chip in the Exports
     column and a "walkthrough" download on the session page, shown only when
     the file exists (sessions generated before 6d have none).
@@ -176,7 +201,7 @@ page in both themes: `phases/06-screenshots/6h/`.
 
 | Criterion | Result |
 |---|---|
-| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **710 passed** (after merging `factory-parity` @ `5017898`), 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (16). |
+| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **720 passed** (after merging `factory-parity` @ `ae1a527`), 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (17). |
 | Playwright `-m ui` | **5 passed** (2 existing + 3 new). `test_ui_smoke_upload_to_docx_download` was already failing on `factory-parity` before this change: F-02 (`28287b5`) made "Verify claims" yellow and updated the unit-test twin (`test_session_page_colors_sidecar_sections_correctly`) but not this browser test. Its assertion now matches the unit test (`yellow`); nothing else in it changed. `_launch()` honours `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for containers whose browser revision differs from the pip package. |
 | Served pages make no external network requests | PASS. Browser-level: every request recorded on `/ui`, `/ui?view=review`, a session page, `/ui/config`, and through both drop-zone flows is same-origin (`_assert_local_only`). Markup-level: `test_pages_reference_no_external_resources` (no absolute `src`/`href`/`url()`, no `@import`, no CDN). |
 | Plex fonts load from the frozen bundle | PASS. `test_font_route_reads_from_the_frozen_bundle` (sys.frozen + `_MEIPASS` monkeypatched → bytes come from the bundle dir); `test_server_spec_bundles_the_plex_fonts`; in-browser `document.fonts.check()` true for Plex Sans 600 and Plex Mono on all four page types, body font resolves to `"IBM Plex Sans"`, every font response 200. A real PyInstaller build is not runnable on this Linux container (spec is Windows-targeted; CLAUDE.md runs it for phases 1 & 3 only). |

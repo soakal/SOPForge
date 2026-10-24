@@ -19,6 +19,11 @@ paragraph before an image, and `code_block()`. The template docx was
 content-identical and was not re-copied. That repo is a read-only reference;
 SOPForge never writes to it.
 
+Phase 6f added `spl_lib.py` and `Single Point Lesson Template V4.potm` from the
+same source (`template/`, `e4a00e5`), unmodified: the VRSI Single Point Lesson
+deck builder. `src/pipeline/export_spl.py` drives it and adds the
+no-PowerPoint text-fit estimate around it rather than editing it.
+
 `SOPFORGE_SOP_FACTORY_2_DIR` still overrides this location at runtime, for
 anyone testing against a newer/different copy of the engine.
 
