@@ -176,11 +176,27 @@ def propose_phases(manifest, step_results, llm_client):
     return group_by_window(manifest), "window"
 
 
-def phases_to_json(phases, source):
-    return {
+def phases_to_json(phases, source, keep_screenshots=()):
+    """phases.json content. keep_screenshots: step ids a reviewer restored,
+    whose screenshot stays even when duplicate_screenshot_steps flags it.
+    A writer that changes only the phases (e.g. a rename) must pass the
+    existing load_keep_screenshots() value through, or restores are lost."""
+    data = {
         "source": source,
         "phases": [{"name": p.name, "step_ids": list(p.step_ids)} for p in phases],
     }
+    if keep_screenshots:
+        data["keep_screenshots"] = sorted(keep_screenshots)
+    return data
+
+
+def load_keep_screenshots(path):
+    """Restored step ids from phases.json; empty if absent or unreadable."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return frozenset(str(i) for i in data.get("keep_screenshots", []))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return frozenset()
 
 
 def load_phases(path, manifest):

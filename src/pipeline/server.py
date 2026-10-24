@@ -82,6 +82,7 @@ from pipeline.generation import generate_step_text
 from pipeline.grouping import (
     MIN_STEPS_TO_GROUP,
     duplicate_screenshot_steps,
+    load_keep_screenshots,
     load_phases,
     phases_to_json,
     propose_phases,
@@ -1441,6 +1442,8 @@ def create_app(
         phases_path = session_dir / "phases.json"
         phases = load_phases(phases_path, manifest) if phases_path.exists() else None
         omitted = duplicate_screenshot_steps(manifest, annotated_paths, phases) if phases else []
+        kept = load_keep_screenshots(phases_path) if phases else frozenset()
+        omitted = [step_id for step_id in omitted if step_id not in kept]
         report.pop("phases", None)
         report.pop("omitted_screenshot_steps", None)
         if phases:
