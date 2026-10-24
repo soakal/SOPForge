@@ -11,8 +11,7 @@ import datetime as dt
 import json
 from pathlib import Path
 
-from pipeline.assembler import doc_number
-from pipeline.doc_meta import DEFAULT_DOC_PREFIX
+from pipeline.doc_meta import DOC_NO_FILE
 
 # (file on disk, chip label) -- the download routes server.py serves.
 EXPORTS = (
@@ -71,6 +70,13 @@ def ai_written_count(session_dir, report, step_count):
     return max(step_count - len(fallback), 0)
 
 
+def _saved_doc_no(session_dir):
+    try:
+        return (Path(session_dir) / DOC_NO_FILE).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
 def _updated(session_dir, fallback_iso):
     for name in ("report.json", "manifest.json"):
         try:
@@ -85,7 +91,7 @@ def _updated(session_dir, fallback_iso):
     return parsed.timestamp(), parsed.strftime("%m/%d/%Y")
 
 
-def session_row(session_id, title, date, session_dir, manifest, status, doc_no_prefix=""):
+def session_row(session_id, title, date, session_dir, manifest, status):
     """One library-table row. `status` is the server's view of the session:
     "staged" | "queued" | "processing" | "done" | "error" | "unknown"."""
     session_dir = Path(session_dir)
@@ -120,16 +126,16 @@ def session_row(session_id, title, date, session_dir, manifest, status, doc_no_p
         ]
 
     sort_ts, updated = _updated(session_dir, date)
-    doc_id = manifest.session.id if manifest is not None else session_id
     return {
         "session_id": session_id,
         "title": title or session_id,
         "date": str(date or ""),
         "mode": "Screenshots" if is_photo else "Capture",
-        # 6g: the number the exports were stamped with (overrides included);
-        # before a first export, the same inferred default doc_meta uses.
-        "doc_no": (report.get("document") or {}).get("doc_no")
-        or (doc_number(doc_no_prefix or DEFAULT_DOC_PREFIX, doc_id) if doc_id else None),
+        # 6g: the number the exports were stamped with (overrides included).
+        # Numbers are assigned sequentially at first export (doc_meta), so an
+        # unexported session shows its saved number if any, else none --
+        # never a guess, and never a counter bump from a page view.
+        "doc_no": (report.get("document") or {}).get("doc_no") or _saved_doc_no(session_dir),
         "steps": steps,
         "ai_steps": ai_written_count(session_dir, report, steps) if status == "done" else None,
         "state": state,

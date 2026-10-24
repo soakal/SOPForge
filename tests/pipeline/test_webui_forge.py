@@ -365,3 +365,20 @@ def test_document_details_card_round_trips_through_metadata_route(tmp_path):
     assert '<td class="num">SOP-IT-777</td>' in client.get("/ui").text
     page = client.get(f"/ui/sessions/{session_id}").text
     assert 'value="SOP-IT-777"' in page and 'value="2.1"' in page
+
+
+def test_library_never_assigns_doc_numbers_for_unexported_sessions(tmp_path):
+    """Doc numbers are sequential and assigned at first export (doc_meta);
+    a staged session shows none, and viewing the library must not consume
+    a number from the counter."""
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/build", files=[("files", ("a.png", _png(), "image/png"))], follow_redirects=False
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    page = client.get("/ui").text
+    row = page.split(f'href="/ui/sessions/{session_id}"', 1)[1].split("</tr>", 1)[0]
+    assert '<td class="num">&mdash;</td>' in row
+    sessions_root = tmp_path / "sessions"
+    assert not (sessions_root / "doc_numbers.json").exists()
+    assert not (sessions_root / session_id / "doc_no.txt").exists()

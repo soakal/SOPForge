@@ -2704,7 +2704,6 @@ def create_app(
         library index plus in-flight ones (staged, queued, processing,
         failed) from memory, newest first. Read-only over existing files --
         see webui/library_view.py."""
-        prefix = load_models_config(resolved_config_path).document.doc_no_prefix
         rows, seen = [], set()
 
         def add(session_id, title, date):
@@ -2713,7 +2712,7 @@ def create_app(
             manifest = entry[0] if entry else None
             session_dir = entry[3] if entry else sessions_root / session_id
             status = _status_of(session_id) if entry else "done"
-            rows.append(session_row(session_id, title, date, session_dir, manifest, status, prefix))
+            rows.append(session_row(session_id, title, date, session_dir, manifest, status))
 
         for e in library_search(sessions_root):
             add(e["session_id"], e["title"], e.get("date", ""))
