@@ -103,7 +103,10 @@ from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
 from pipeline.transcription import Transcriber
 from pipeline.vision import caption_images
+from pipeline.resource_path import resource_path
+from pipeline.webui.library_view import library_stats, matches_query, session_row
 from pipeline.webui.pages import (
+    FONT_FILES,
     render_config_page,
     render_library_page,
     render_session_page,
@@ -2397,7 +2400,7 @@ def create_app(
     def ui_config(saved: str | None = None):
         cfg = load_models_config(resolved_config_path)
         return HTMLResponse(
-            render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved))
+            render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved), nav=_nav())
         )
 
     _CONFIG_TEST_SECTIONS = {
@@ -2529,20 +2532,85 @@ def create_app(
     def get_version():
         return {"version": __version__}
 
+    def _library_rows():
+        """Every session the library table shows: finished ones from the
+        library index plus in-flight ones (staged, queued, processing,
+        failed) from memory, newest first. Read-only over existing files --
+        see webui/library_view.py."""
+        prefix = load_models_config(resolved_config_path).document.doc_no_prefix
+        rows, seen = [], set()
+
+        def add(session_id, title, date):
+            seen.add(session_id)
+            entry = sessions.get(session_id)
+            manifest = entry[0] if entry else None
+            session_dir = entry[3] if entry else sessions_root / session_id
+            status = _status_of(session_id) if entry else "done"
+            rows.append(session_row(session_id, title, date, session_dir, manifest, status, prefix))
+
+        for e in library_search(sessions_root):
+            add(e["session_id"], e["title"], e.get("date", ""))
+        for session_id, (manifest, *_rest) in list(sessions.items()):
+            if session_id not in seen:
+                add(session_id, manifest.session.title or "", manifest.session.started_utc)
+        # In-flight and failed sessions first (they need attention), then newest.
+        rows.sort(
+            key=lambda r: (r["state"] not in ("staged", "generating", "error"), -r["sort_ts"])
+        )
+        return rows
+
+    def _nav():
+        """Sidebar context for every UI page: the review-queue count."""
+        return {"review_count": sum(1 for r in _library_rows() if r["needs_review"])}
+
+    @app.get("/ui/assets/fonts/{filename}")
+    def ui_font(filename: str):
+        """The vendored IBM Plex webfonts (assets/fonts/ibm-plex/, OFL) --
+        served from the repo in dev and from the PyInstaller bundle when
+        frozen (resource_path), so the UI never needs a font CDN. Only the
+        exact files pages.py declares are servable."""
+        if filename not in FONT_FILES:
+            raise HTTPException(status_code=404, detail="file not found")
+        path = resource_path("assets", "fonts", "ibm-plex", filename)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="file not found")
+        return Response(
+            path.read_bytes(),
+            media_type="font/woff2",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     @app.get("/")
     @app.get("/ui")
-    def ui_library(q: str | None = None):
-        return HTMLResponse(render_library_page(library_search(sessions_root, q), q))
+    def ui_library(q: str | None = None, view: str | None = None):
+        all_rows = _library_rows()
+        rows = [r for r in all_rows if matches_query(r, q)]
+        nav = {"review_count": sum(1 for r in all_rows if r["needs_review"])}
+        return HTMLResponse(
+            render_library_page(
+                library_search(sessions_root, q),
+                q,
+                rows=rows,
+                stats=library_stats(all_rows),
+                nav=nav,
+                view=view,
+            )
+        )
 
     @app.get("/ui/sessions/{session_id}")
     def ui_session(session_id: str):
         _require_known_session(session_id)
         if session_id in staged:
             manifest = sessions[session_id][0]
-            return HTMLResponse(render_steps_review_page(session_id, manifest))
+            return HTMLResponse(render_steps_review_page(session_id, manifest, nav=_nav()))
         status = jobs.status(session_id)
         if status["status"] != "done":
-            return HTMLResponse(render_session_processing_page(session_id, status))
+            manifest = sessions[session_id][0]
+            return HTMLResponse(
+                render_session_processing_page(
+                    session_id, status, nav=_nav(), title=manifest.session.title or None
+                )
+            )
         manifest = sessions[session_id][0]
         session_dir = sessions[session_id][3]
         report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
@@ -2558,6 +2626,7 @@ def create_app(
                 config,
                 steps=_load_step_index(session_dir),
                 can_regenerate=not _is_photo_mode(session_dir),
+                nav=_nav(),
             )
         )
 

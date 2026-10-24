@@ -1,0 +1,47 @@
+[
+  {
+    "session_id": "d11fd2d9-f4e4-4557-a75b-7950f770290e",
+    "title": "Buy Microsoft 365 Licenses Through Thrive",
+    "date": "2026-07-03T14:22:00Z",
+    "formats": [
+      "docx",
+      "pdf",
+      "html",
+      "single_html",
+      "md"
+    ],
+    "template_fallback_count": 3,
+    "verify_claims_count": 4,
+    "empty_metadata_count": 1
+  },
+  {
+    "session_id": "44cafa97-b721-4a26-ac43-69efad8efc12",
+    "title": "Reset Local Password and Disable Duo",
+    "date": "2026-10-24T00:51:55.942938Z",
+    "formats": [
+      "docx",
+      "pdf",
+      "html",
+      "single_html",
+      "md"
+    ],
+    "template_fallback_count": 0,
+    "verify_claims_count": 0,
+    "empty_metadata_count": 0
+  },
+  {
+    "session_id": "81392041-a93b-44dd-8d72-f94decfcc2f6",
+    "title": "MFS Job Creation",
+    "date": "2026-01-01T00:00:00Z",
+    "formats": [
+      "docx",
+      "pdf",
+      "html",
+      "single_html",
+      "md"
+    ],
+    "template_fallback_count": 3,
+    "verify_claims_count": 4,
+    "empty_metadata_count": 1
+  }
+]

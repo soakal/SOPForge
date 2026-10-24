@@ -43,6 +43,11 @@ a = Analysis(
         ("assets/fonts/dejavu-sans/DejaVuSans-Oblique.ttf", "assets/fonts/dejavu-sans"),
         ("assets/fonts/dejavu-sans/DejaVuSans-BoldOblique.ttf", "assets/fonts/dejavu-sans"),
         ("assets/fonts/dejavu-sans/LICENSE", "assets/fonts/dejavu-sans"),
+        # IBM Plex Sans + Mono (SIL OFL 1.1, assets/fonts/ibm-plex/LICENSE) --
+        # the review UI's webfonts, served by GET /ui/assets/fonts/{file}
+        # via resource_path() so the frozen EXE needs no font CDN (6h).
+        ("assets/fonts/ibm-plex/*.woff2", "assets/fonts/ibm-plex"),
+        ("assets/fonts/ibm-plex/LICENSE", "assets/fonts/ibm-plex"),
     ],
     # SOP Factory 2's sop_lib.py is bundled as a *data* file (imported
     # dynamically at runtime via sys.path, not a real import statement
