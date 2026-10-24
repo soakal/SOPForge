@@ -10,6 +10,21 @@ through without a click marker and uses the transcript text verbatim (no LLM --
 there's no recorded action to phrase)."""
 
 
+def is_synthetic_step(step):
+    """True for a step synthetic_manifest_dict() made: no window, no process,
+    no element, click at 0,0. A captured click always has a foreground
+    window, so this never matches a real step -- even one whose UIA
+    metadata came back empty."""
+    return (
+        not step.window.title
+        and not step.window.process
+        and not step.element.name
+        and not step.element.control_type
+        and step.screen.x == 0
+        and step.screen.y == 0
+    )
+
+
 def synthetic_manifest_dict(title, screenshot_names, started_iso):
     """A schema-valid manifest with one step per screenshot. Steps carry no
     real action metadata (empty window/element, a placeholder click at 0,0) --

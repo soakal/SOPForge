@@ -10,11 +10,12 @@ import mimetypes
 from pathlib import Path
 
 from pipeline.assembler import step_heading
-from pipeline.render import narrative_html_blocks
+from pipeline.render import narrative_html_blocks, review_note_html
 
 _STYLE = (
     "body{font-family:sans-serif;max-width:800px;margin:2em auto;padding:0 1em;}"
     "img{max-width:100%;}"
+    ".review-needed{color:#c00000;}"
     "blockquote{color:#a00;border-left:3px solid #a00;padding-left:1em;margin-left:0;}"
 )
 
@@ -46,6 +47,7 @@ def render_single_file_html(manifest, step_results, annotated_paths, narrative_t
         heading = step_heading(n, step)
         parts.append(f"<h2>{html.escape(heading)}</h2>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
+        parts.extend(review_note_html(step))
         # Guard a missing annotated image (like render_pdf does) so one absent
         # file doesn't crash the job after docx/pdf were already written.
         if shot is not None and Path(shot).exists():

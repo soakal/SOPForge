@@ -6,6 +6,8 @@ the manifest's own element metadata) — no re-deriving or re-scanning
 rendered text, so there's nothing here that can drift out of sync with the
 formats those stages actually use."""
 
+from pipeline.review_notes import has_uncaptured_value
+
 
 def _step_has_empty_uia_metadata(step):
     return not step.element.name and not step.element.control_type
@@ -38,6 +40,9 @@ def build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id=
             step.id for step in manifest.steps if _step_has_empty_uia_metadata(step)
         ],
     }
+    uncaptured = [step.id for step in manifest.steps if has_uncaptured_value(step)]
+    if uncaptured:
+        report["uncaptured_value_steps"] = uncaptured
     manually_edited = [r["step_id"] for r in step_results if r.get("manually_edited")]
     if manually_edited:
         report["manually_edited_steps"] = manually_edited

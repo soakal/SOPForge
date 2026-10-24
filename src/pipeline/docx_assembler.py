@@ -18,6 +18,7 @@ from pipeline.assembler import step_heading, toc_lines
 from pipeline.claim_coverage import parse_verify_line
 from pipeline.docx_fields import add_toc_field, enable_update_fields_on_open, set_outline_level
 from pipeline.resource_path import resource_path
+from pipeline.review_notes import step_review_notes
 
 DEFAULT_SOP_FACTORY_2_DIR = resource_path("vendor", "sop_factory_2")
 
@@ -132,7 +133,17 @@ def assemble_docx(
         heading = step_heading(n, step)
         sop.heading2(heading)
         set_outline_level(sop.doc.paragraphs[-1], 1)
+        # SOPBuilder.image() keeps only the paragraph directly before the
+        # image with it; the step bullet and any markers between must also
+        # keep with next, or the step text can strand on the previous page.
         _step_bullet(sop, step, result)
+        sop.doc.paragraphs[-1].paragraph_format.keep_with_next = True
+        for note in step_review_notes(step):
+            p = sop.bullet(note, sub=True)
+            p.paragraph_format.keep_with_next = True
+            for run in p.runs[1:]:  # runs[0] is the bullet marker
+                run.bold = True
+                run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
         if result.get("narration"):
             sop.bullet(f"Narration: {result['narration']}", sub=True)
         sop.image(step.screenshot, caption=heading)

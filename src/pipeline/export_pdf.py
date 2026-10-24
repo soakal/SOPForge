@@ -15,6 +15,7 @@ from fpdf import FPDF
 from pipeline.assembler import format_doc_date, step_heading, toc_lines
 from pipeline.claim_coverage import parse_verify_line
 from pipeline.resource_path import resource_path
+from pipeline.review_notes import step_review_notes
 
 _INK = (33, 37, 41)
 _MUTED = (110, 116, 124)
@@ -250,6 +251,14 @@ def render_pdf(
         pdf.multi_cell(0, 9, _safe_text(heading, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
 
         _bullet(pdf, result["text"])
+
+        for note in step_review_notes(step):
+            pdf.set_font(pdf._font_family, "B", 10)
+            pdf.set_text_color(0xC0, 0x00, 0x00)
+            pdf.multi_cell(
+                0, 5.5, _safe_text(note, pdf._font_family), new_x="LMARGIN", new_y="NEXT"
+            )
+            pdf.set_text_color(*_INK)
 
         if result.get("narration"):
             pdf.ln(1)

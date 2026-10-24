@@ -19,6 +19,7 @@ import html
 from pipeline.annotate import annotate_click, crop_to_element
 from pipeline.assembler import assemble_steps, step_heading
 from pipeline.generation import generate_all_steps
+from pipeline.review_notes import step_review_notes
 from pipeline.template import render_step_template
 
 
@@ -111,12 +112,24 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
         lines.append("")
         lines.append(result["text"])
         lines.append("")
+        for note in step_review_notes(step):
+            lines.append(f"**{note}**")
+            lines.append("")
         if result.get("narration"):
             lines.append(f"> **Narration:** {result['narration']}")
             lines.append("")
         lines.append(f"![{_escape_md_alt_text(heading)}]({_image_ref(shot, base_dir)})")
         lines.append("")
     return "\n".join(lines)
+
+
+def review_note_html(step):
+    """step_review_notes() as HTML paragraphs, shared by render_html and the
+    single-file export so both show the same markers."""
+    return [
+        f'<p class="review-needed"><strong>{html.escape(note)}</strong></p>'
+        for note in step_review_notes(step)
+    ]
 
 
 def narrative_html_blocks(narrative_text):
@@ -164,6 +177,7 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
         # straight to it.
         parts.append(f'<h2 id="{html.escape(step.id)}">{html.escape(heading)}</h2>')
         parts.append(f"<p>{html.escape(result['text'])}</p>")
+        parts.extend(review_note_html(step))
         if result.get("narration"):
             parts.append(
                 '<blockquote class="narration"><strong>Narration:</strong> '

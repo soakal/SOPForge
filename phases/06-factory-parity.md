@@ -21,10 +21,15 @@ writes to it. Code is copied into this repo, never imported from that folder.
   (`template/sop_lib.py`). Adds `keep_with_next` on headings, bullets before an
   image, and image paragraphs, plus `code_block()`. The template docx is
   content-identical (only zip metadata differs) and is not re-copied.
-- **6b — Richer step rendering.** `**bold**` UI names in step text render via
-  `bullet_rich`; text typed in `type` steps renders via `code_block`; steps with
-  uncaptured values render an inline `[REVIEW NEEDED — value not captured]`
-  marker in the document (not only in the sidecar report).
+- **6b — Inline review markers.** Steps with an uncaptured typed value, and
+  real (non-photo) steps with empty UIA metadata, render an inline red
+  `[REVIEW NEEDED — …]` marker under the step in all five formats (docx, pdf,
+  html, single-file html, md), derived from the manifest after polish so no LLM
+  pass can drop it. The sidecar gains `uncaptured_value_steps`. Scoped down from
+  the first draft: bold UI names already render deterministically from
+  `element.name` (generation.py strips LLM `**bold**` on purpose), and capture
+  never records typed content, so there is no typed text to put in a
+  `code_block`.
 - **6c — Phase grouping.** Steps are grouped into lettered phases
   (`heading2("A)  Sign in")`, steps as bullets under them). The LLM may
   *propose* groups; code accepts a proposal only if it is a contiguous,
@@ -69,9 +74,11 @@ PowerPoint installed), and degrades quietly instead of asking.
 1. 6a: in the golden-fixture docx, every heading paragraph and every bullet
    immediately followed by an image carries `keep_with_next`; `code_block`
    exists on `SOPBuilder`. All pre-existing pipeline tests pass.
-2. 6b: a fixture step with `**Save**` renders a bold run "Save"; a `type` step
-   renders a Consolas shaded paragraph; a step with empty captured text renders
-   the `[REVIEW NEEDED` marker in the docx body and is listed in the sidecar.
+2. 6b: in the golden fixture, the uncaptured `type` step and the empty-metadata
+   step each show their `[REVIEW NEEDED` marker in all five formats; photo-mode
+   synthetic steps show none; an edited `text_summary` clears the marker; the
+   sidecar lists `uncaptured_value_steps`; the step bullet and markers keep
+   with the step's image.
 3. 6c: `set(doc.step_ids) == set(manifest.step_ids)` and order is preserved for
    every grouping path (LLM-accepted, LLM-rejected → fallback, fallback only).
    Property test (hypothesis): any proposed grouping that is non-contiguous,
