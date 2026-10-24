@@ -1,0 +1,47 @@
+{#- Shared pieces for the review UI pages. Everything a template prints is
+    autoescaped; markup only comes from these templates or from Markup
+    values the Python side builds from trusted constants. -#}
+
+{% macro page_header(eyebrow, heading, lede=none, actions=none) -%}
+<div class="top"><div><div class="eyebrow">{{ eyebrow }}</div>
+<h1>{{ heading }}</h1>
+{%- if lede %}<p class="lede">{{ lede }}</p>{% endif %}</div>
+{%- if actions %}<div class="toolbar">{{ actions }}</div>{% endif %}</div>
+{%- endmacro %}
+
+{#- data-status + <h2> immediately after the section open tag is a contract
+    the review tests assert against: keep the heading first, no nested tag
+    between the attribute and the <h2>. #}
+{% macro section(title, color, items) -%}
+<section class="card" data-status="{{ color }}"><h2>{{ title }}</h2>
+{%- if items %}<ul>{% for item in items %}<li>{{ item }}</li>{% endfor %}</ul>
+{%- else %}<p class="muted">None.</p>{% endif %}</section>
+{%- endmacro %}
+
+{% macro shot(sid, screenshot, alt) -%}
+{% if screenshot %}<img class="shot" loading="lazy" src="/sessions/{{ sid }}/{{ screenshot }}" alt="{{ alt }}">{% endif %}
+{%- endmacro %}
+
+{#- One report finding: thumbnail + generated text + a link into the doc
+    preview at that step's anchor and to the step's editor. #}
+{% macro finding_row(sid, step_id, entry) -%}
+<div class="finding">{{ shot(sid, entry.get('screenshot'), step_id) }}
+<div><a class="sid" href="/sessions/{{ sid }}/doc.html#{{ step_id }}" target="docpreview"><strong>{{ step_id }}</strong></a>
+<a class="muted" href="#edit-{{ step_id }}">Edit</a>
+{%- if entry.get('manually_edited') %} <span class="pill edited">edited</span>{% endif %}
+{%- if entry.get('text') %}<div class="muted">{{ entry.get('text') }}</div>{% endif %}</div></div>
+{%- endmacro %}
+
+{#- section()'s counterpart for step-id findings: thumbnail rows when a
+    per-step index (steps.json) exists, else section()'s plain list. #}
+{% macro step_section(title, color, step_ids, sid, steps_by_id) -%}
+{% if steps_by_id is none %}{{ section(title, color, step_ids) }}{% else -%}
+<section class="card" data-status="{{ color }}"><h2>{{ title }}</h2>
+{%- for step_id in step_ids %}{{ finding_row(sid, step_id, steps_by_id.get(step_id) or {}) }}
+{%- else %}<p class="muted">None.</p>{% endfor %}</section>
+{%- endif %}
+{%- endmacro %}
+
+{% macro pill(state, label, spin=false) -%}
+<span class="pill {{ state }}">{% if spin %}<span class="spin" aria-hidden="true"></span>{% endif %}{{ label }}</span>
+{%- endmacro %}

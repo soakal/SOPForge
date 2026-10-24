@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% from "_macros.html" import page_header, pill %}
+{% block head_extra %}{% if pending %}<meta http-equiv="refresh" content="3">{% endif %}{% endblock %}
+{% block body %}
+{% set lede %}<span class="mono">{{ session_id }}</span>{% endset %}
+{{ page_header(back, page_title or heading, lede) }}
+<div class="card{% if state == 'error' %} note bad{% endif %}" style="max-width:640px">
+<h2>{{ heading }}</h2>
+<p data-status="{{ state }}">{{ pill(state, "Status: " ~ state, pending) }}</p>
+{% if progress %}<label style="font-weight:400;margin:0"><progress value="{{ progress.current }}" max="{{ progress.total }}"></progress><span class="muted mono">{{ progress.current }} / {{ progress.total }} steps ({{ progress.pct }}%)</span></label>{% endif %}
+{% if pending %}<p class="muted">Generating your SOP&hellip; this page updates automatically when it&rsquo;s ready.</p>{% endif %}
+{% if state == "error" %}<p class="muted">{{ error }}</p>{% endif %}
+</div>
+{% endblock %}

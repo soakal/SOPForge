@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% from "_macros.html" import page_header, section, step_section, shot %}
+
+{#- A div, deliberately NOT a <section data-status=...>: the review page's
+    UI-smoke test counts exactly the fixed sidecar-report sections, so extra
+    notices sit alongside them as plain cards. #}
+{% macro note(color) -%}
+<div class="card" style="border-left:4px solid var({{ color }})">{{ caller() }}</div>
+{%- endmacro %}
+
+{% block body %}
+{% set lede %}<span class="meta"><span>{{ date }}</span><span>{{ sid }}</span></span>{% endset %}
+{% set actions %}<form method="post" action="/ui/sessions/{{ sid }}/rerender"><button type="submit" class="secondary">Re-render</button></form>
+{%- if manually_edited %}<form method="post" action="/ui/sessions/{{ sid }}/rerender?discard_edits=1"><button type="submit" class="secondary">Re-render from scratch (discard my edits)</button></form>{% endif -%}
+<form method="post" action="/ui/sessions/{{ sid }}/delete"><button type="submit" class="danger">Delete</button></form>{% endset %}
+{{ page_header(back, page_title, lede, actions) }}
+<div class="layout">
+<div class="preview"><div class="card"><div class="bar"><span>Document preview</span><a href="/sessions/{{ sid }}/doc.html" target="_blank" rel="noopener">Open in new tab</a></div><iframe name="docpreview" src="/sessions/{{ sid }}/doc.html" title="Document preview"></iframe></div></div>
+<div>
+<div class="card"><h2>Downloads</h2><ul class="dl">
+{%- for path, label in doc_downloads %}<li><a href="/sessions/{{ sid }}/{{ path }}" data-download="{{ label }}">{{ icon("download") }}{{ label }}</a></li>{% endfor %}
+{%- if walkthrough %}<li><a href="/sessions/{{ sid }}/walkthrough.html" title="Click-through walkthrough (single HTML file)">{{ icon("download") }}walkthrough</a></li>{% endif %}
+{%- if spl_deck %}<li><a href="/sessions/{{ sid }}/spl.pptx" title="Single Point Lesson deck (PowerPoint)">{{ icon("download") }}SPL deck</a></li>{% endif -%}
+</ul></div>
+{% if document %}
+<div class="card"><h2>Document details</h2><p class="help" style="margin:-4px 0 10px">Shown on the title page, revision table and SPL footer, and used to name downloads. Clear a field to go back to the inferred value. Saving re-exports every format without calling the AI.</p>
+<form method="post" action="/ui/sessions/{{ sid }}/metadata" class="cfg"><div class="row">
+{%- for key, label in meta_fields %}<div class="field{% if key == 'title' %} wide{% endif %}"><label for="meta-{{ key }}">{{ label }}</label><input type="text" name="{{ key }}" id="meta-{{ key }}" maxlength="120" value="{{ document.get(key) or '' }}"{% if key == "revision" %} pattern="\d{1,3}(\.\d{1,3}){0,2}" placeholder="1.0"{% endif %}></div>{% endfor -%}
+</div><div class="actions" style="margin-bottom:0"><button type="submit" class="secondary">Save details</button></div></form></div>
+{% endif %}
+<p class="help" style="margin:0 0 16px">Every recorded step is included &mdash; the document has one step per captured action, nothing skipped. The report below only flags steps worth a second look: <em>template-fallback</em> steps are still complete and factually correct, just written from the captured data rather than the language model.</p>
+{% if preflight %}{% call note(preflight.color) %}<strong>LLM preflight</strong> &mdash; {{ preflight.provider }}/{{ preflight.model }}: {{ preflight.status }}{% if preflight.latency is not none %} ({{ preflight.latency }}ms){% endif %} &mdash; {{ preflight.detail }}{% endcall %}{% endif %}
+{% if manually_edited %}{% call note("--warn") %}<strong>Manually edited steps</strong> &mdash; these steps carry human-written text, not gated by the round-trip check: {{ manually_edited | join(", ") }}{% endcall %}{% endif %}
+{% if regenerate_declined %}{% call note("--warn") %}<strong>Regenerate didn&rsquo;t produce a result</strong> &mdash; the AI attempt fell back to the template wording, so your manual edit was kept instead: {{ regenerate_declined | join(", ") }}{% endcall %}{% endif %}
+{% if transcript_warning %}<section class="card" data-status="yellow"><h2>Transcript placement</h2><p>{{ transcript }}</p></section>
+{% elif transcript %}<p class="muted">Transcript: {{ transcript }}</p>{% endif %}
+{% if narration_warning %}<section class="card" data-status="yellow"><h2>Narration transcription</h2><p>{{ narration_transcription }}</p></section>
+{% elif narration_transcription %}<p class="muted">{{ narration_transcription }}</p>{% endif %}
+{% if uncaptured %}{% call note("--warn") %}<strong>Values not captured</strong> &mdash; these steps typed a value the capture couldn&rsquo;t record; the document marks each one [REVIEW NEEDED]: {{ uncaptured | join(", ") }}{% endcall %}{% endif %}
+{% if spl_error %}{% call note("--bad") %}<strong>SPL deck not built</strong> &mdash; the other exports are fine: {{ spl_error }}{% endcall %}
+{% elif spl_overflow %}{% call note("--warn") %}<strong>SPL deck: text still too long at 12pt</strong> &mdash; the deck ships, but check these boxes in PowerPoint:<ul>{% for t in spl_overflow %}<li>{{ t }}</li>{% endfor %}</ul>{% endcall %}{% endif %}
+{{ step_section("Template-fallback steps", colors.template, template_fallback, sid, steps_by_id) }}
+{% if caption_fallback is not none %}{{ section("Caption-fallback steps", colors.caption, caption_fallback) }}{% endif %}
+{{ section("Verify claims", colors.verify, verify_items) }}
+{{ step_section("Empty-metadata steps", colors.empty, empty_metadata, sid, steps_by_id) }}
+{% if phases %}
+<div class="card"><h2>Phases</h2><p class="help" style="margin:-4px 0 8px">Renaming a phase re-exports every format without calling the AI.</p><ol class="phases">
+{% for phase in phases %}<li><form method="post" action="/ui/sessions/{{ sid }}/phases/{{ phase.index }}"><span class="letter">{{ phase.letter }})</span><input type="text" name="name" value="{{ phase.name }}" maxlength="60" required aria-label="Name of phase {{ phase.index + 1 }}"><button type="submit" class="secondary">Rename</button></form><div class="phase-steps">
+{%- for step_id, hint in phase.steps %}<a class="sid" href="#edit-{{ step_id }}" title="{{ hint }}">{{ step_id }}</a>{% endfor -%}
+</div></li>
+{% endfor %}</ol></div>
+{% endif %}
+{% if omitted %}
+<div class="card"><h2>Omitted screenshots</h2><p class="help" style="margin:-4px 0 8px">Left out because they repeat the previous screen exactly. Show one to put it back in every export.</p><ul class="restore">
+{%- for step_id in omitted %}<li><a class="sid" href="#edit-{{ step_id }}">{{ step_id }}</a><form method="post" action="/ui/sessions/{{ sid }}/steps/{{ step_id }}/keep-screenshot"><button type="submit" class="secondary">Show screenshot</button></form></li>{% endfor -%}
+</ul></div>
+{% endif %}
+{% if steps is not none %}
+<div class="card" id="edit-steps"><h2>Edit steps</h2><p class="help" style="margin:-4px 0 6px">Edits are saved immediately and survive a later re-render. Regenerating a step discards its manual edit and asks the AI again.{% if not can_regenerate %} Regenerate isn't available for this build mode.{% endif %}</p>
+{% for entry in steps %}
+<details class="stepedit" id="edit-{{ entry.step_id }}"><summary><strong class="sid">{{ entry.step_id }}</strong>{% if entry.get("manually_edited") %} <span class="pill edited">edited</span>{% endif %} <span class="muted">{{ entry.preview }}</span></summary>
+<div class="finding">{{ shot(sid, entry.get("screenshot"), entry.step_id) }}<div><form method="post" action="/ui/sessions/{{ sid }}/steps/{{ entry.step_id }}"><div class="field"><label for="text-{{ entry.step_id }}">Step text</label><textarea name="text" id="text-{{ entry.step_id }}" rows="4" required>{{ entry.get("text") or "" }}</textarea></div>
+{#- Regenerate posts this same form to its own route (formaction): a
+    <form> nested inside the edit form is dropped by the HTML parser, which
+    made the button submit the edit instead. #}
+<div class="actions"><button type="submit">Save &amp; re-export</button>
+{%- if can_regenerate %}<button type="submit" class="secondary" formaction="/ui/sessions/{{ sid }}/steps/{{ entry.step_id }}/regenerate" formnovalidate>Regenerate with AI</button>{% endif -%}
+</div></form></div></div></details>
+{% endfor %}
+</div>
+{% endif %}
+<div class="card"><h2>Narration transcript</h2><form method="post" action="/ui/sessions/{{ sid }}/transcript" enctype="multipart/form-data"><div class="field"><label for="transcript_file">Add or replace a transcript (.txt or .md), then re-render</label><input type="file" name="transcript_file" id="transcript_file" accept=".txt,.md,.json" required><p class="help">Label blocks &ldquo;Step 1:&rdquo;, &ldquo;1.&rdquo; or &ldquo;## Step 1&rdquo; to place each under its step, or one line (or paragraph) per step, in order.</p></div><button type="submit" class="secondary">Add transcript &amp; re-render</button></form></div>
+<div class="card"><h2>Config (read-only)</h2><ul class="sessions">
+{%- for name, text in config_rows %}<li><b>{{ name }}</b>: {{ text }}</li>{% endfor -%}
+</ul></div>
+</div>
+</div>
+{% include "assets/lightbox.html" %}
+{% endblock %}

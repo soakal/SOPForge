@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% from "_macros.html" import page_header %}
+
+{% macro model_row(key, heading, values, providers, suggestions) -%}
+<div class="card"><h2>{{ heading }}</h2><div class="row">
+<div class="field"><label for="{{ key }}_provider">Provider</label><select name="{{ key }}_provider" id="{{ key }}_provider" onchange="(function(s){var t=document.getElementById('{{ key }}_model_suggestions');var d=document.getElementById('{{ key }}_model_suggestions_'+s.value);if(d)t.innerHTML=d.innerHTML;})(this)">
+{%- for p in providers %}<option value="{{ p }}"{% if p == values.provider %} selected{% endif %}>{{ p }}</option>{% endfor -%}
+</select></div>
+<div class="field"><label for="{{ key }}_model">Model</label><input type="text" name="{{ key }}_model" id="{{ key }}_model" value="{{ values.model }}" list="{{ key }}_model_suggestions" onfocus="this.dataset.prev=this.value;this.value=''" onblur="if(!this.value)this.value=this.dataset.prev||''">
+<datalist id="{{ key }}_model_suggestions">{% for m in suggestions.get(values.provider, []) %}<option value="{{ m }}">{% endfor %}</datalist>
+{%- for p, models in suggestions.items() %}<datalist id="{{ key }}_model_suggestions_{{ p }}">{% for m in models %}<option value="{{ m }}">{% endfor %}</datalist>{% endfor -%}
+</div></div>
+<div class="field"><label for="{{ key }}_endpoint">Endpoint <small>(Ollama / custom only)</small></label><input type="text" name="{{ key }}_endpoint" id="{{ key }}_endpoint" value="{{ values.endpoint }}"></div>
+<div class="field test"><button type="button" class="secondary" data-test-section="{{ key }}">Test connection</button> <span class="muted" id="{{ key }}_test_result" role="status"></span></div>
+{{ caller() }}</div>
+{%- endmacro %}
+
+{% block body %}
+{% set lede %}Pick the AI provider and model for each task. <strong>Ollama</strong> is local and private (no key, nothing leaves your network). Other providers use an API key from an environment variable.{% endset %}
+{{ page_header("System", "Configuration", lede) }}
+{% if saved %}<div class="card note ok" data-status="green" role="status"><strong>Saved.</strong> Changes take effect on the next generation.</div>{% endif %}
+<form method="post" action="/ui/config" class="cfg"><div class="grid2">
+{% call model_row("steps", "Steps", steps, providers, suggestions.get("steps", {})) %}
+<div class="field"><label for="steps_max_concurrency">Max concurrency</label><input type="text" name="steps_max_concurrency" id="steps_max_concurrency" value="{{ steps.get('max_concurrency', 1) }}"><p class="help">Concurrent LLM calls — see config/models.toml's comment; raising this only helps against an Ollama server tuned for parallel requests.</p></div>
+{% endcall %}
+{% call model_row("narrative", "Narration", narrative, providers, suggestions.get("narrative", {})) %}
+<div class="field"><label for="narrative_passes">Passes</label><input type="text" name="narrative_passes" id="narrative_passes" value="{{ narrative.get('passes', 1) }}"></div>
+{% endcall %}
+{% call model_row("vision", "Vision (screenshot captions)", vision, vision_providers, suggestions.get("vision", {})) %}
+<div class="field"><label class="check"><input type="checkbox" name="vision_enabled"{% if vision.get("enabled") %} checked{% endif %}> Enable vision captioning</label></div>
+<div class="field"><label for="vision_max_concurrency">Max concurrency <small>(concurrent vision calls)</small></label><input type="text" name="vision_max_concurrency" id="vision_max_concurrency" value="{{ vision.get('max_concurrency', 4) }}"></div>
+{% endcall %}
+{% call model_row("polish", "Polish (optional 4th stage)", polish, providers, suggestions.get("polish", {})) %}
+<div class="field"><label class="check"><input type="checkbox" name="polish_enabled"{% if polish.get("enabled") %} checked{% endif %}> Enable polish pass</label><p class="help">A single formatting/tone pass over the finished document. Off by default: the local backend only produces a usable rewrite roughly a quarter to half of the time (falls back to the original text otherwise, never wrong, just unchanged) — review its output on a real document before relying on it. Covers all six export formats identically. Can also be overridden per-job via <code>?polish=off|local|haiku</code> on the rerender endpoint.</p></div>
+{% endcall %}
+<div class="card"><h2>Document</h2>
+<div class="field"><label for="document_author">Author <small>(shown on the title page / revision table)</small></label><input type="text" name="document_author" id="document_author" value="{{ document.get('author', 'SOPForge') }}"></div>
+<div class="field"><label for="document_doc_no_prefix">Document number prefix <small>(e.g. "SOP" — blank omits the document number entirely)</small></label><input type="text" name="document_doc_no_prefix" id="document_doc_no_prefix" value="{{ document.get('doc_no_prefix', '') }}"></div>
+</div>
+<div class="card"><h2>Narration transcription</h2>
+<div class="field"><label class="check"><input type="checkbox" name="transcription_enabled"{% if transcription.get("enabled") %} checked{% endif %}> Transcribe recorded narration audio</label><p class="help">On by default. When a capture session's optional tray "Record narration (mic)" toggle produced a narration.wav, and no transcript was uploaded by hand, enabling this runs it through a local speech-to-text model (faster-whisper) before generation — nothing leaves your network. A missing model or unavailable hardware just skips transcription for that session; the document still generates from the steps alone.</p></div>
+<div class="row"><div class="field"><label for="transcription_model_size">Model size</label><input type="text" name="transcription_model_size" id="transcription_model_size" value="{{ transcription.get('model_size', 'base') }}"></div>
+<div class="field"><label for="transcription_device">Device</label><select name="transcription_device" id="transcription_device">
+{%- for d in ("cpu", "cuda", "auto") %}<option value="{{ d }}"{% if d == transcription.get("device", "cpu") %} selected{% endif %}>{{ d }}</option>{% endfor -%}
+</select></div></div>
+<div class="field"><label for="transcription_compute_type">Compute type</label><input type="text" name="transcription_compute_type" id="transcription_compute_type" value="{{ transcription.get('compute_type', 'int8') }}"></div>
+</div>
+</div>
+<div class="stickybar"><span class="muted">Saved to your per-user models.toml.</span><button type="submit">Save configuration</button></div></form>
+<div style="margin-top:24px"><div class="card"><h2>Recommended models</h2><div class="tablewrap" style="box-shadow:none"><table class="rec"><thead><tr><th scope="col">Task</th>
+{%- for p in providers %}<th scope="col">{{ p }}</th>{% endfor %}</tr></thead><tbody>
+{%- for task in ("steps", "narrative", "vision", "polish") %}<tr><td>{{ task }}</td>{% for p in providers %}<td>{{ recommended[task].get(p, "—") }}</td>{% endfor %}</tr>{% endfor -%}
+</tbody></table></div></div>
+<div class="card"><h2>API keys</h2><p class="help" style="margin-top:0">Keys are read from environment variables and never stored in the config — this page can only show whether one is set, never edit or reveal it. To set one: PowerShell <code>setx ANTHROPIC_API_KEY &quot;sk-ant-...&quot;</code> (swap in the variable name below for your provider), or Windows Settings → search &quot;Environment Variables&quot; → Edit environment variables for your account → New. Then restart the server.</p><ul class="sessions">
+{%- for name, ok in key_rows %}<li>{{ name }}: {% if ok %}<span class="pill ok">set</span>{% else %}<span class="pill">not set</span>{% endif %}</li>
+{%- else %}<li>All chosen providers are local (Ollama) — no key needed.</li>{% endfor -%}
+</ul></div></div>
+{% include "assets/config_test_script.html" %}
+{% endblock %}

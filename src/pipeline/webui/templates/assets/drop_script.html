@@ -1,0 +1,127 @@
+<script>
+(function(){
+  var zone = document.getElementById('new');
+  if (!zone) return;
+  var plan = zone.querySelector('.plan'), err = zone.querySelector('.err');
+  var go = zone.querySelector('[data-go]'), kind = zone.querySelector('[data-kind]');
+  var list = zone.querySelector('[data-files]'), titleRow = zone.querySelector('[data-title]');
+  var IMG = /\.(png|jpe?g|gif|bmp|webp)$/i, TXT = /\.(txt|md|json)$/i, picked = null;
+
+  function walk(entry){
+    return new Promise(function(done){
+      if (entry.isFile) return entry.file(function(f){ done([f]); }, function(){ done([]); });
+      if (!entry.isDirectory) return done([]);
+      var reader = entry.createReader(), all = [];
+      (function more(){
+        reader.readEntries(function(batch){
+          if (!batch.length){
+            return Promise.all(all.map(walk)).then(function(l){ done([].concat.apply([], l)); });
+          }
+          all = all.concat([].slice.call(batch)); more();
+        }, function(){ done([]); });
+      })();
+    });
+  }
+  function classify(files){
+    var p = {manifest: null, images: [], texts: [], wav: null, skipped: []};
+    files.forEach(function(f){
+      var n = f.name.toLowerCase();
+      if (n === 'manifest.json' && !p.manifest) p.manifest = f;
+      else if (IMG.test(n)) p.images.push(f);
+      else if (TXT.test(n)) p.texts.push(f);
+      else if (/\.wav$/.test(n) && !p.wav) p.wav = f;
+      else p.skipped.push(f);
+    });
+    p.images.sort(function(a, b){
+      return a.name.localeCompare(b.name, undefined, {numeric: true});
+    });
+    p.mode = p.manifest ? 'capture' : 'photo';
+    p.transcript = p.texts[0] || null;
+    return p;
+  }
+  function chip(text){ var li = document.createElement('li'); li.textContent = text; return li; }
+  function show(files){
+    picked = classify(files);
+    err.textContent = '';
+    list.innerHTML = '';
+    var p = picked, n = p.images.length;
+    kind.innerHTML = '';
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + (p.mode === 'capture' ? 'run' : 'warn');
+    pill.textContent = p.mode === 'capture' ? 'Capture session' : 'Screenshots build';
+    var what = document.createElement('span');
+    what.className = 'muted';
+    what.textContent = p.mode === 'capture'
+      ? 'manifest.json found \u2014 steps come from the recorded clicks.'
+      : 'No manifest.json \u2014 each image becomes one step, in filename order.';
+    kind.appendChild(pill); kind.appendChild(what);
+    if (p.manifest) list.appendChild(chip('manifest.json'));
+    list.appendChild(chip(n + (n === 1 ? ' screenshot' : ' screenshots')));
+    if (p.transcript) list.appendChild(chip('transcript: ' + p.transcript.name));
+    if (p.texts.length > 1) list.appendChild(chip((p.texts.length - 1) + ' other text file(s) ignored'));
+    if (p.wav && p.mode === 'capture') list.appendChild(chip('narration: ' + p.wav.name));
+    if (p.skipped.length) list.appendChild(chip(p.skipped.length + ' other file(s) ignored'));
+    titleRow.hidden = p.mode !== 'photo';
+    plan.hidden = false;
+    go.disabled = false;
+    if (!n && p.mode === 'photo'){ err.textContent = 'No screenshots found \u2014 drop PNG/JPG images or a capture folder.'; go.disabled = true; }
+    go.focus();
+  }
+  function submit(){
+    var p = picked, fd = new FormData(), url;
+    if (!p) return;
+    if (p.mode === 'capture'){
+      url = '/ui/upload';
+      fd.append('manifest_file', p.manifest, 'manifest.json');
+      if (p.wav) fd.append('narration_wav_file', p.wav, p.wav.name);
+    } else {
+      url = '/ui/build';
+      fd.append('title', zone.querySelector('[name=title]').value);
+    }
+    p.images.forEach(function(f){ fd.append('files', f, f.name); });
+    if (p.transcript) fd.append('transcript_file', p.transcript, p.transcript.name);
+    go.disabled = true; go.textContent = 'Uploading\u2026'; err.textContent = '';
+    fetch(url, {method: 'POST', body: fd}).then(function(r){
+      if (r.ok){ location.href = r.url; return; }
+      return r.json().catch(function(){ return {}; }).then(function(d){
+        var detail = d && d.detail;
+        err.textContent = 'Upload failed: ' + (typeof detail === 'string' ? detail : 'HTTP ' + r.status);
+        go.disabled = false; go.textContent = 'Build document';
+      });
+    }).catch(function(){
+      err.textContent = 'Upload failed: the server could not be reached.';
+      go.disabled = false; go.textContent = 'Build document';
+    });
+  }
+  ['dragenter', 'dragover'].forEach(function(t){
+    zone.addEventListener(t, function(e){ e.preventDefault(); zone.classList.add('over'); });
+  });
+  zone.addEventListener('dragleave', function(e){
+    if (!zone.contains(e.relatedTarget)) zone.classList.remove('over');
+  });
+  zone.addEventListener('drop', function(e){
+    e.preventDefault(); zone.classList.remove('over');
+    var items = e.dataTransfer.items, files = [].slice.call(e.dataTransfer.files);
+    var entries = items && items.length && items[0].webkitGetAsEntry
+      ? [].slice.call(items).map(function(i){ return i.webkitGetAsEntry(); }).filter(Boolean)
+      : [];
+    // Entries let a dropped folder be walked; a drop without them (or a
+    // synthetic one) still carries plain files.
+    if (!entries.length) return show(files);
+    Promise.all(entries.map(walk)).then(function(l){ show([].concat.apply([], l)); });
+  });
+  zone.querySelectorAll('input[type=file]').forEach(function(input){
+    input.addEventListener('change', function(){
+      if (input.files.length) show([].slice.call(input.files));
+      input.value = '';
+    });
+  });
+  zone.querySelectorAll('[data-pick]').forEach(function(b){
+    b.addEventListener('click', function(){ document.getElementById(b.dataset.pick).click(); });
+  });
+  go.addEventListener('click', submit);
+  zone.querySelector('[data-cancel]').addEventListener('click', function(){
+    picked = null; plan.hidden = true;
+  });
+})();
+</script>

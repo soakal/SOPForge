@@ -54,6 +54,9 @@ a = Analysis(
         # via resource_path() so the frozen EXE needs no font CDN (6h).
         ("assets/fonts/ibm-plex/*.woff2", "assets/fonts/ibm-plex"),
         ("assets/fonts/ibm-plex/LICENSE", "assets/fonts/ibm-plex"),
+        # Review UI templates (Jinja2, loaded via resource_path() from the same
+        # repo-relative path in dev and in the frozen bundle).
+        ("src/pipeline/webui/templates", "src/pipeline/webui/templates"),
     ],
     # SOP Factory 2's sop_lib.py is bundled as a *data* file (imported
     # dynamically at runtime via sys.path, not a real import statement
