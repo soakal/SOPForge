@@ -109,10 +109,10 @@ _POLISH_DEFAULT_MODEL = "gemma3:12b"  # see comment above for why not gemma3n:e4
 
 PolishMode = Literal["off", "local", "haiku"]
 
-# Claude Haiku 4.5. Using the floating alias (not the dated snapshot) per
+# Claude Haiku 5.5. Using the floating alias (not the dated snapshot) per
 # Anthropic's guidance for configs -- it tracks the current Haiku 4.5
 # snapshot rather than pinning to one.
-_POLISH_HAIKU_MODEL = "claude-haiku-4-5"
+_POLISH_HAIKU_MODEL = "claude-haiku-5-5"
 
 
 def resolve_polish_config(mode: PolishMode, cfg: "ModelsConfig") -> "PolishConfig | None":
@@ -120,7 +120,7 @@ def resolve_polish_config(mode: PolishMode, cfg: "ModelsConfig") -> "PolishConfi
     saved [polish].enabled toggle: 'off' skips polish for this job entirely
     (returns None, regardless of [polish].enabled); 'local' forces the
     existing [polish] section onto the local ollama provider (keeping its
-    configured endpoint/model); 'haiku' forces Anthropic's Claude Haiku 4.5,
+    configured endpoint/model); 'haiku' forces Anthropic's Claude Haiku 5.5,
     so a single job can use a stronger model without editing models.toml.
     Both 'local' and 'haiku' return a section with enabled=True -- once a
     mode is explicitly requested, [polish].enabled is no longer consulted

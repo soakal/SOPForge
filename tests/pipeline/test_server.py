@@ -795,7 +795,7 @@ def test_rerender_polish_query_param_overrides_config(tmp_path):
     _wait_for_terminal_status(client, session_id)
     assert len(calls) == 1
     assert calls[0].provider == "anthropic"
-    assert calls[0].model == "claude-haiku-4-5"
+    assert calls[0].model == "claude-haiku-5-5"
     assert calls[0].enabled is True
 
     calls.clear()

@@ -1093,62 +1093,70 @@ _KEY_ENV = {
 _RECOMMENDED = {
     "steps": {
         "ollama": "qwen3:32b",
-        "openrouter": "anthropic/claude-haiku-4.5",
+        "openrouter": "anthropic/claude-sonnet-5.5",
         "openai": "gpt-5.4-mini",
-        "anthropic": "claude-haiku-4-5-20251001",
+        "anthropic": "claude-sonnet-5-5",
     },
     "narrative": {
         "ollama": "qwen3.6:27b",
-        "openrouter": "anthropic/claude-sonnet-5",
+        "openrouter": "anthropic/claude-opus-5.5",
         "openai": "gpt-5.5",
-        "anthropic": "claude-sonnet-5",
+        "anthropic": "claude-opus-5-5",
     },
     "vision": {
         "ollama": "qwen2.5vl:7b",
-        "openrouter": "anthropic/claude-sonnet-5",
+        "openrouter": "anthropic/claude-sonnet-5.5",
         "openai": "gpt-4o",
     },
     "polish": {
         "ollama": "gemma3:12b",
-        "openrouter": "anthropic/claude-haiku-4.5",
+        "openrouter": "anthropic/claude-sonnet-5.5",
         "openai": "gpt-5.4-mini",
-        "anthropic": "claude-haiku-4-5",
+        "anthropic": "claude-sonnet-5-5",
     },
 }
 _MODEL_SUGGESTIONS = {
     "steps": {
         "ollama": ["qwen3:32b", "qwen3:14b"],
         "openrouter": [
-            "anthropic/claude-haiku-4.5",
-            "anthropic/claude-sonnet-5",
-            "anthropic/claude-opus-4.8",
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-haiku-5.5",
+            "anthropic/claude-opus-5.5",
             "openai/gpt-5.4-mini",
         ],
         "openai": ["gpt-5.4-mini", "gpt-5.4-nano"],
         "anthropic": [
-            "claude-haiku-4-5-20251001",
-            "claude-sonnet-5",
-            "claude-opus-4-8",
-            "claude-fable-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-opus-5-5",
+            "claude-fable-5-1",
         ],
     },
     "narrative": {
         "ollama": ["qwen3.6:27b", "qwen3:32b"],
-        "openrouter": ["anthropic/claude-sonnet-5", "openai/gpt-5.5"],
+        "openrouter": [
+            "anthropic/claude-opus-5.5",
+            "anthropic/claude-sonnet-5.5",
+            "openai/gpt-5.5",
+        ],
         "openai": ["gpt-5.5", "gpt-5.4"],
-        "anthropic": ["claude-sonnet-5", "claude-opus-4-8", "claude-fable-5"],
+        "anthropic": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"],
     },
     "vision": {
         "ollama": ["qwen2.5vl:7b"],
-        "openrouter": ["anthropic/claude-sonnet-5", "openai/gpt-5.5"],
+        "openrouter": [
+            "anthropic/claude-sonnet-5.5",
+            "anthropic/claude-opus-5.5",
+            "openai/gpt-5.5",
+        ],
         "openai": ["gpt-5.5", "gpt-4o"],
         # deliberately no "anthropic" key -- vision excludes bare anthropic (see _VISION_PROVIDERS)
     },
     "polish": {
         "ollama": ["gemma3:12b", "gemma3:27b"],
-        "openrouter": ["anthropic/claude-haiku-4.5", "anthropic/claude-sonnet-5"],
+        "openrouter": ["anthropic/claude-sonnet-5.5", "anthropic/claude-haiku-5.5"],
         "openai": ["gpt-5.4-mini", "gpt-5.4-nano"],
-        "anthropic": ["claude-haiku-4-5", "claude-sonnet-5"],
+        "anthropic": ["claude-sonnet-5-5", "claude-haiku-5-5"],
     },
 }
 

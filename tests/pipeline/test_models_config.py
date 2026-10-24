@@ -206,7 +206,7 @@ def test_resolve_polish_config_haiku_forces_anthropic_claude_haiku():
     resolved = resolve_polish_config("haiku", config)
     assert resolved is not None
     assert resolved.provider == "anthropic"
-    assert resolved.model == "claude-haiku-4-5"
+    assert resolved.model == "claude-haiku-5-5"
     assert resolved.enabled is True
 
 

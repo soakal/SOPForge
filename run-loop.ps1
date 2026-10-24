@@ -23,6 +23,10 @@
     Give up after this many relaunches (default 40 — roughly a week of 5-hour
     windows; raise it if you expect a long run).
 
+.PARAMETER Model
+    Model for the main executor loop (default claude-opus-5-5). Passed to
+    `claude --model` on every launch and relaunch.
+
 .EXAMPLE
     .\run-loop.ps1                 # run all phases
 .EXAMPLE
@@ -35,6 +39,10 @@ param(
 
     [ValidateRange(1, 500)]
     [int]$MaxRestarts = 40,
+
+    # Executor model for the main loop (CLAUDE.md "Models"); planner/reviewer
+    # subagents set their own in .claude/agents/.
+    [string]$Model = 'claude-opus-5-5',
 
     [string]$LogPath = "$PSScriptRoot\loop-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
 )
@@ -92,13 +100,13 @@ while ($true) {
     }
 
     if ($firstRun) {
-        Write-Log "Launching: claude /goal $Phase"
-        & claude --permission-mode acceptEdits -p "/goal $Phase"
+        Write-Log "Launching: claude --model $Model /goal $Phase"
+        & claude --model $Model --permission-mode acceptEdits -p "/goal $Phase"
         $firstRun = $false
     }
     else {
         Write-Log "Relaunching with --continue (restart #$restarts)"
-        & claude --permission-mode acceptEdits --continue -p "Resume the /goal loop exactly where the committed task files say you left off. Re-read CLAUDE.md first."
+        & claude --model $Model --permission-mode acceptEdits --continue -p "Resume the /goal loop exactly where the committed task files say you left off. Re-read CLAUDE.md first."
     }
     $code = $LASTEXITCODE
     $restarts++

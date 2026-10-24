@@ -2118,7 +2118,7 @@ def create_app(
         `polish` (optional query param) overrides the polish stage for this
         job only, via resolve_polish_config -- "off" forces it skipped
         even if [polish].enabled=true, "local" forces the local ollama
-        provider, "haiku" forces Anthropic's Claude Haiku 4.5. Omitted
+        provider, "haiku" forces Anthropic's Claude Haiku 5.5. Omitted
         (the default) leaves the current [polish].enabled/provider/model
         behavior untouched.
 
