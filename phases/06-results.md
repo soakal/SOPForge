@@ -66,3 +66,26 @@
   duplicate check treated a moved click marker as a repeat.
 - Not yet done: editing phase names and restoring an omitted screenshot from
   the review page; both belong with the 6h UI work.
+
+## AC4 (6d, walkthrough export) — PASS
+
+- `src/pipeline/export_walkthrough.py`: `walkthrough.html` written with every
+  export and served at `GET /sessions/{id}/walkthrough.html`. One
+  self-contained page (screenshots inlined), engine ported from SOP Factory's
+  `walkthrough_template.html`: Back/Next, arrow keys, Enter/Space on the
+  hotspot, clickable phase chips, progress bar, resume position, `?shot=N`.
+- Hotspots come from the manifest: the element's `bounding_rect` mapped into
+  the annotated crop via the same `compute_crop_box` call that made the crop;
+  a square around the click when there is no usable rect; none for photo-mode
+  steps. An omitted duplicate screenshot reuses the previous step's picture.
+- Review markers and narration show on each step, same as the document.
+- `tests/pipeline/test_export_walkthrough.py` (8): hotspot math vs.
+  `compute_crop_box`, click-centred fallback, photo/unknown frame, one entry per
+  step in order, omitted-screenshot reuse, no external references, `node
+  --check`, and a `ui`-marked playwright test that clicks Start, the hotspot,
+  a phase chip and ArrowRight and loads `?shot=3` (passes here with
+  `SOPFORGE_TEST_CHROMIUM` pointing at the container's chromium).
+  `test_server_exports.py::test_walkthrough_endpoint` covers the route.
+- Found by the tests and fixed: step text embedded as JSON escaped only `</`,
+  so a title containing `<script` reached the HTML parser; all `<`, `>`, `&`
+  are now `\u`-escaped.

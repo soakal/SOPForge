@@ -77,6 +77,7 @@ from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import _slugify, export_markdown_bundle
 from pipeline.export_pdf import render_pdf
+from pipeline.export_walkthrough import render_walkthrough
 from pipeline.generation import generate_step_text
 from pipeline.grouping import (
     MIN_STEPS_TO_GROUP,
@@ -1504,6 +1505,16 @@ def create_app(
         )
         (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
 
+        walkthrough = render_walkthrough(
+            manifest,
+            md_step_results,
+            annotated_paths,
+            narrative_text=md_narrative_text,
+            screenshot_dir=sessions[session_id][1],
+            **layout,
+        )
+        (session_dir / "walkthrough.html").write_text(walkthrough, encoding="utf-8")
+
         md_bundle_dir = session_dir / "md_bundle"
         export_markdown_bundle(
             manifest,
@@ -2371,6 +2382,19 @@ def create_app(
         filename = _download_filename(sessions[session_id][0], "html")
         return Response(
             (session_dir / "doc.single.html").read_text(encoding="utf-8"),
+            media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/sessions/{session_id}/walkthrough.html")
+    def get_walkthrough_html(session_id: str):
+        session_dir = _require_done(session_id)
+        path = session_dir / "walkthrough.html"
+        if not path.exists():  # a session generated before 6d
+            raise HTTPException(status_code=404, detail="walkthrough not generated; re-render")
+        filename = _download_filename(sessions[session_id][0], "walkthrough.html")
+        return Response(
+            path.read_text(encoding="utf-8"),
             media_type="text/html",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
