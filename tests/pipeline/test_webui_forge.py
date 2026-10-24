@@ -196,7 +196,8 @@ def test_session_page_lists_uncaptured_values_and_omitted_screenshots():
     report = {"uncaptured_value_steps": ["step-002"], "omitted_screenshot_steps": ["step-005"]}
     page = render_session_page("sid", "Title", "date", report, {})
     assert "Values not captured" in page and "step-002" in page
-    assert "exact repeats" in page and "step-005" in page
+    assert "Omitted screenshots" in page and "step-005" in page
+    assert 'action="/ui/sessions/sid/steps/step-005/keep-screenshot"' in page
     # Still exactly the three fixed sidecar sections (UI-smoke contract).
     assert page.count('<section class="card" data-status="') == 3
     assert "Values not captured" not in render_session_page("sid", "T", "d", {}, {})
@@ -223,3 +224,104 @@ def test_config_page_posts_exactly_the_existing_fields(tmp_path):
     page = client.get("/ui/config").text
     form = page.split('<form method="post" action="/ui/config"', 1)[1].split("</form>", 1)[0]
     assert set(re.findall(r'name="([^"]+)"', form)) == CONFIG_FIELDS
+
+
+def _wait_done(client, session_id):
+    deadline = time.monotonic() + 10
+    while client.get(f"/sessions/{session_id}/status").json()["status"] != "done":
+        assert time.monotonic() < deadline, "re-export never finished"
+        time.sleep(0.05)
+
+
+def test_session_page_lists_phases_with_rename_forms(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, _ = _create_and_wait(client, tmp_path)
+    report = client.get(f"/sessions/{session_id}/report").json()
+    page = client.get(f"/ui/sessions/{session_id}").text
+    assert "<h2>Phases</h2>" in page
+    for index, phase in enumerate(report["phases"]):
+        assert f'action="/ui/sessions/{session_id}/phases/{index}"' in page
+        for step_id in phase["step_ids"]:
+            assert f'href="#edit-{step_id}"' in page
+
+
+def test_rename_phase_rewrites_phases_json_and_reexports(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, _ = _create_and_wait(client, tmp_path)
+    phases_path = tmp_path / "sessions" / session_id / "phases.json"
+    before = json.loads(phases_path.read_text(encoding="utf-8"))
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/phases/0",
+        data={"name": "  Sign   in  "},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _wait_done(client, session_id)
+
+    after = json.loads(phases_path.read_text(encoding="utf-8"))
+    assert after["source"] == "user"
+    assert after["phases"][0]["name"] == "Sign in"
+    assert [p["step_ids"] for p in after["phases"]] == [p["step_ids"] for p in before["phases"]]
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["phases"][0]["name"] == "Sign in"
+    assert "Sign in" in client.get(f"/sessions/{session_id}/doc.html").text
+
+
+def test_rename_phase_rejects_bad_input(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, _ = _create_and_wait(client, tmp_path)
+    url = f"/ui/sessions/{session_id}/phases"
+    assert client.post(f"{url}/0", data={"name": "   "}).status_code == 400
+    assert client.post(f"{url}/0", data={"name": "x" * 61}).status_code == 400
+    assert client.post(f"{url}/99", data={"name": "Fine"}).status_code == 404
+    assert client.post("/ui/sessions/nope/phases/0", data={"name": "Fine"}).status_code == 404
+
+
+def test_keep_screenshot_adds_to_keep_list_and_preserves_names(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, _ = _create_and_wait(client, tmp_path)
+    phases_path = tmp_path / "sessions" / session_id / "phases.json"
+    client.post(f"/ui/sessions/{session_id}/phases/0", data={"name": "Renamed"})
+    _wait_done(client, session_id)
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/steps/step-002/keep-screenshot", follow_redirects=False
+    )
+    assert resp.status_code == 303
+    _wait_done(client, session_id)
+    data = json.loads(phases_path.read_text(encoding="utf-8"))
+    assert data["keep_screenshots"] == ["step-002"]
+    assert data["phases"][0]["name"] == "Renamed"  # a restore never loses a rename
+
+    # ...and a later rename never loses a restore.
+    client.post(f"/ui/sessions/{session_id}/phases/0", data={"name": "Again"})
+    _wait_done(client, session_id)
+    assert json.loads(phases_path.read_text(encoding="utf-8"))["keep_screenshots"] == ["step-002"]
+
+    bad = client.post(f"/ui/sessions/{session_id}/steps/step-999/keep-screenshot")
+    assert bad.status_code == 404
+
+
+def test_phase_routes_refuse_sessions_without_phases(tmp_path):
+    client = _make_client(tmp_path)
+    resp = client.post(
+        "/ui/build",
+        files=[("files", ("a.png", _png(), "image/png"))],
+        follow_redirects=False,
+    )
+    session_id = resp.headers["location"].rsplit("/", 1)[-1]
+    client.post(f"/ui/sessions/{session_id}/confirm-steps", data={"keep": ["step-001"]})
+    _wait_done(client, session_id)
+    assert client.post(f"/ui/sessions/{session_id}/phases/0", data={"name": "X"}).status_code == 409
+    assert (
+        client.post(f"/ui/sessions/{session_id}/steps/step-001/keep-screenshot").status_code == 409
+    )
+
+
+def _png():
+    import io
+
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 48), (255, 255, 255)).save(buf, format="PNG")
+    return buf.getvalue()

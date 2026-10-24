@@ -23,6 +23,7 @@ from pipeline.grouping import (
     default_phases,
     duplicate_screenshot_steps,
     group_by_window,
+    load_keep_screenshots,
     load_phases,
     parse_proposal,
     phases_to_json,
@@ -354,3 +355,17 @@ def test_server_falls_back_to_window_grouping_on_a_bad_proposal(tmp_path):
         "Sign in - SmartDeploy Console",
         "Answer File Editor - SmartDeploy Console",
     ]
+
+
+def test_restored_screenshots_round_trip_through_phases_json(tmp_path):
+    m = _manifest(SIX)
+    path = tmp_path / "phases.json"
+    path.write_text(
+        json.dumps(phases_to_json(default_phases(m), "user", keep_screenshots={"step-004"})),
+        encoding="utf-8",
+    )
+    assert load_keep_screenshots(path) == {"step-004"}
+    assert load_phases(path, m) == default_phases(m)
+    path.write_text("{broken", encoding="utf-8")
+    assert load_keep_screenshots(path) == frozenset()
+    assert "keep_screenshots" not in phases_to_json(default_phases(m), "llm")

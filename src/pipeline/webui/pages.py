@@ -250,6 +250,16 @@ details.stepedit summary{cursor:pointer;display:flex;gap:8px;align-items:baselin
 details.stepedit summary .muted{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 details.stepedit[open] summary{margin-bottom:6px}
 .sid{font:600 12.5px var(--mono);white-space:nowrap}
+ol.phases,ul.restore{list-style:none;margin:0;padding:0}
+ol.phases li{padding:10px 0;border-bottom:1px solid var(--border)}
+ol.phases li:last-child,ul.restore li:last-child{border-bottom:0}
+ol.phases form{display:flex;gap:8px;align-items:center}
+ol.phases .letter{font:600 13px var(--mono);color:var(--muted);min-width:2ch}
+ol.phases input{max-width:none;flex:1}
+.phase-steps{display:flex;flex-wrap:wrap;gap:4px 10px;margin:6px 0 0 calc(2ch + 8px)}
+ul.restore li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:6px 0;
+border-bottom:1px solid var(--border)}
+ul.restore form{margin:0}
 img.shot{cursor:zoom-in}
 #lightbox{position:fixed;inset:0;background:rgba(10,10,12,.82);display:flex;align-items:center;
 justify-content:center;z-index:100}
@@ -530,6 +540,39 @@ def _step_editor(session_id, step_id, entry, can_regenerate):
         f"{regenerate_form}</div>"
         "</form>"
         "</div></div></details>"
+    )
+
+
+def _phases_card(sid, phases, steps_by_id):
+    """The document's phases (6c), each with a rename form and the steps
+    under it. Rendered from report.json's "phases"; capture sessions only.
+    `sid` is already escaped."""
+    if not isinstance(phases, list) or not phases:
+        return ""
+    rows = []
+    for index, phase in enumerate(phases):
+        if not isinstance(phase, dict):
+            continue
+        name = html.escape(str(phase.get("name") or ""))
+        step_links = "".join(
+            f'<a class="sid" href="#edit-{html.escape(str(i))}" title="'
+            f'{html.escape(((steps_by_id or {}).get(i) or {}).get("text") or "")}">'
+            f"{html.escape(str(i))}</a>"
+            for i in phase.get("step_ids") or []
+        )
+        rows.append(
+            f'<li><form method="post" action="/ui/sessions/{sid}/phases/{index}">'
+            f'<span class="letter">{chr(65 + index) if index < 26 else index + 1})</span>'
+            f'<input type="text" name="name" value="{name}" maxlength="60" required '
+            f'aria-label="Name of phase {index + 1}">'
+            '<button type="submit" class="secondary">Rename</button></form>'
+            f'<div class="phase-steps">{step_links}</div></li>'
+        )
+    return (
+        '<div class="card"><h2>Phases</h2>'
+        '<p class="help" style="margin:-4px 0 8px">Renaming a phase re-exports every format '
+        "without calling the AI.</p>"
+        f'<ol class="phases">{"".join(rows)}</ol></div>'
     )
 
 
@@ -1514,12 +1557,23 @@ def render_session_page(
     else:
         uncaptured_note = ""
     omitted_ids = report.get("omitted_screenshot_steps") or []
-    omitted_note = (
-        '<p class="help" style="margin:0 0 16px">Screenshots left out as exact repeats of '
-        f"the previous screen: {html.escape(', '.join(omitted_ids))}</p>"
-        if omitted_ids
-        else ""
-    )
+    if omitted_ids:
+        restore_rows = "".join(
+            f'<li><a class="sid" href="#edit-{html.escape(i)}">{html.escape(i)}</a>'
+            f'<form method="post" action="/ui/sessions/{sid}/steps/{html.escape(i)}'
+            '/keep-screenshot"><button type="submit" class="secondary">Show screenshot'
+            "</button></form></li>"
+            for i in omitted_ids
+        )
+        omitted_note = (
+            '<div class="card"><h2>Omitted screenshots</h2>'
+            '<p class="help" style="margin:-4px 0 8px">Left out because they repeat the '
+            "previous screen exactly. Show one to put it back in every export.</p>"
+            f'<ul class="restore">{restore_rows}</ul></div>'
+        )
+    else:
+        omitted_note = ""
+    phases_card = _phases_card(sid, report.get("phases"), steps_by_id)
     downloads = "".join(
         f'<li><a href="/sessions/{sid}/{path}" data-download="{label}">'
         f"{_icon('download')}{label}</a></li>"
@@ -1565,6 +1619,7 @@ def render_session_page(
         f"{narration_transcription_note}"
         f"{uncaptured_note}"
         f"{sections}"
+        f"{phases_card}"
         f"{omitted_note}"
         f"{_edit_steps_card(session_id, steps, can_regenerate)}"
         '<div class="card"><h2>Narration transcript</h2>'

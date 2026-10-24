@@ -90,6 +90,23 @@
   so a title containing `<script` reached the HTML parser; all `<`, `>`, `&`
   are now `\u`-escaped.
 
+## AC5 (6e, labelled redaction) — PASS (Linux, OCR stubbed); real OCR path pending Windows run
+
+- `src/capture/redact.py`: OCR pattern hits and password fields are now covered
+  with a solid graphite box labelled by type (`email`, `IP address`,
+  `password`; other pattern names shown as-is) instead of a Gaussian blur. A
+  solid cover leaves nothing of the text to reconstruct, which a blur of short
+  text can. OCR word boxes are padded 2 px for anti-aliased edges; UIA control
+  rects are not. Labels are dropped (box stays) when they don't fit.
+- Still applied once, in place, on the raw screenshot at capture time, so every
+  export (and the walkthrough) gets the same pixels. Manifest `reason` values
+  are unchanged (`pattern`, `password_heuristic`): no schema change.
+- `tests/test_redaction_cover.py` (5, OCR stubbed so they run off Windows): no
+  pixel of the seeded secret colour survives, label drawn, neighbouring text
+  untouched, exact password rect, tiny box unlabelled, clamping and degenerate
+  boxes. `tests/test_redaction.py` (real Windows OCR) renamed blur → cover; its
+  assertions still hold by construction but have not been run on Windows yet.
+
 ## 6h — Forge UI redesign
 
 Rebuilt every page in `src/pipeline/webui/pages.py` (library, review queue,
@@ -125,6 +142,15 @@ page in both themes: `phases/06-screenshots/6h/`.
     as a "Values not captured" card (counted toward need-review) and
     `omitted_screenshot_steps` as a read-only note. Both are cards, not
     `<section data-status>`, so the three-section UI-smoke contract holds.
+  - 6c review-page edits: a **Phases** card lists each phase with its
+    steps and a rename form (`POST /ui/sessions/{id}/phases/{index}`; whitespace
+    collapsed, blank or > `MAX_PHASE_NAME_LEN` → 400, unknown index/session →
+    404). An **Omitted screenshots** card has a "Show screenshot" button per
+    omitted step (`POST /ui/sessions/{id}/steps/{step_id}/keep-screenshot`;
+    unknown step → 404). Both rewrite `phases.json` via `phases_to_json(...,
+    "user", keep_screenshots=...)`, which preserves whichever of name/keep-list
+    the call didn't change, then run the existing no-LLM re-export. A session
+    without phases.json (screenshot build, pre-6c) gets 409. No config keys.
   - 6d's walkthrough (`walkthrough.html`) is the WALK chip in the Exports
     column and a "walkthrough" download on the session page, shown only when
     the file exists (sessions generated before 6d have none).
@@ -150,7 +176,7 @@ page in both themes: `phases/06-screenshots/6h/`.
 
 | Criterion | Result |
 |---|---|
-| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **699 passed** (after merging `factory-parity` @ `60839a0`), 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (11). |
+| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **710 passed** (after merging `factory-parity` @ `5017898`), 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (16). |
 | Playwright `-m ui` | **5 passed** (2 existing + 3 new). `test_ui_smoke_upload_to_docx_download` was already failing on `factory-parity` before this change: F-02 (`28287b5`) made "Verify claims" yellow and updated the unit-test twin (`test_session_page_colors_sidecar_sections_correctly`) but not this browser test. Its assertion now matches the unit test (`yellow`); nothing else in it changed. `_launch()` honours `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for containers whose browser revision differs from the pip package. |
 | Served pages make no external network requests | PASS. Browser-level: every request recorded on `/ui`, `/ui?view=review`, a session page, `/ui/config`, and through both drop-zone flows is same-origin (`_assert_local_only`). Markup-level: `test_pages_reference_no_external_resources` (no absolute `src`/`href`/`url()`, no `@import`, no CDN). |
 | Plex fonts load from the frozen bundle | PASS. `test_font_route_reads_from_the_frozen_bundle` (sys.frozen + `_MEIPASS` monkeypatched → bytes come from the bundle dir); `test_server_spec_bundles_the_plex_fonts`; in-browser `document.fonts.check()` true for Plex Sans 600 and Plex Mono on all four page types, body font resolves to `"IBM Plex Sans"`, every font response 200. A real PyInstaller build is not runnable on this Linux container (spec is Windows-targeted; CLAUDE.md runs it for phases 1 & 3 only). |

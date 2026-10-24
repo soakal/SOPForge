@@ -80,8 +80,11 @@ from pipeline.export_pdf import render_pdf
 from pipeline.export_walkthrough import render_walkthrough
 from pipeline.generation import generate_step_text
 from pipeline.grouping import (
+    MAX_PHASE_NAME_LEN,
     MIN_STEPS_TO_GROUP,
+    Phase,
     duplicate_screenshot_steps,
+    load_keep_screenshots,
     load_phases,
     phases_to_json,
     propose_phases,
@@ -1444,6 +1447,8 @@ def create_app(
         phases_path = session_dir / "phases.json"
         phases = load_phases(phases_path, manifest) if phases_path.exists() else None
         omitted = duplicate_screenshot_steps(manifest, annotated_paths, phases) if phases else []
+        kept = load_keep_screenshots(phases_path) if phases else frozenset()
+        omitted = [step_id for step_id in omitted if step_id not in kept]
         report.pop("phases", None)
         report.pop("omitted_screenshot_steps", None)
         if phases:
@@ -2176,6 +2181,62 @@ def create_app(
         _save_edit(session_dir, step_id, text)
         jobs.submit(session_id, lambda: _reexport_session(session_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    def _save_phases_and_reexport(session_id, edit):
+        """Shared by the phase-rename and screenshot-restore routes: load the
+        saved phases.json (capture sessions only), apply `edit(phases, kept)`
+        -> (phases, kept), write it back keeping every other field's value,
+        then run the same no-LLM re-export the step-edit route uses."""
+        session_dir = _require_done(session_id)
+        manifest = sessions[session_id][0]
+        phases_path = session_dir / "phases.json"
+        if not phases_path.exists():
+            raise HTTPException(
+                status_code=409, detail="this session has no phases (screenshot build or pre-6c)"
+            )
+        _load_reexportable_state(session_id)
+        phases = load_phases(phases_path, manifest)
+        kept = load_keep_screenshots(phases_path)
+        phases, kept = edit(phases, kept)
+        phases_path.write_text(
+            json.dumps(phases_to_json(phases, "user", keep_screenshots=kept)), encoding="utf-8"
+        )
+        jobs.submit(session_id, lambda: _reexport_session(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    @app.post("/ui/sessions/{session_id}/phases/{index}")
+    async def ui_rename_phase(session_id: str, index: int, request: Request):
+        """Renames one phase (by its 0-based position -- names may repeat).
+        Whitespace is collapsed; blank or over-long names are a 400."""
+        _require_known_session(session_id)
+        form = await request.form()
+        name = " ".join(str(form.get("name") or "").split())
+        if not name:
+            raise HTTPException(status_code=400, detail="phase name must not be blank")
+        if len(name) > MAX_PHASE_NAME_LEN:
+            raise HTTPException(
+                status_code=400, detail=f"phase name is too long (max {MAX_PHASE_NAME_LEN} chars)"
+            )
+
+        def rename(phases, kept):
+            if not 0 <= index < len(phases):
+                raise HTTPException(status_code=404, detail=f"unknown phase: {index}")
+            phases = list(phases)
+            phases[index] = Phase(name, phases[index].step_ids)
+            return phases, kept
+
+        return _save_phases_and_reexport(session_id, rename)
+
+    @app.post("/ui/sessions/{session_id}/steps/{step_id}/keep-screenshot")
+    def ui_keep_screenshot(session_id: str, step_id: str):
+        """Restores a screenshot the duplicate check left out: the step id
+        joins phases.json's keep_screenshots, so every export shows it."""
+        _require_known_session(session_id)
+        if step_id not in sessions[session_id][0].step_ids():
+            raise HTTPException(status_code=404, detail=f"unknown step: {step_id!r}")
+        return _save_phases_and_reexport(
+            session_id, lambda phases, kept: (phases, kept | {step_id})
+        )
 
     @app.post("/ui/sessions/{session_id}/steps/{step_id}/regenerate")
     def ui_regenerate_step(session_id: str, step_id: str):

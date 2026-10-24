@@ -1,7 +1,8 @@
 # SOPForge redaction config: regex patterns run against OCR'd screenshot text
 # (see src/capture/redact.py), plus a UIA-metadata heuristic for password
 # fields (which never show real content as visible text, so OCR can't catch
-# them — the whole element's bounding box is blurred instead).
+# them — the whole element's bounding box is covered instead). Each hit is
+# covered with a solid box labelled by type: "email", "IP address", "password".
 
 [patterns]
 email = '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
