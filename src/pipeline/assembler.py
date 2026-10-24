@@ -7,6 +7,8 @@ anything that could drop, duplicate, or reorder entries."""
 
 import datetime as dt
 
+from pipeline.grouping import DEFAULT_PHASE_NAME, default_phases
+
 
 def step_heading(n, step):
     """A short, descriptive per-step heading built purely from manifest
@@ -30,7 +32,25 @@ def step_heading(n, step):
     return f"Step {n} — {verb} {target}"
 
 
-def toc_lines(manifest, narrative_text):
+def resolve_phases(manifest, phases=None):
+    """phases, or the single default "Procedure" phase -- the pre-6c layout."""
+    return phases or default_phases(manifest)
+
+
+def is_grouped(phases):
+    """True when phases differ from the single default "Procedure" phase.
+    Markdown/HTML only add phase headings (and demote step headings) then,
+    so an ungrouped doc renders exactly as before."""
+    return bool(phases) and (len(phases) > 1 or phases[0].name != DEFAULT_PHASE_NAME)
+
+
+def phase_starts(manifest, phases=None):
+    """{first step id of each phase: phase name}, for renderers that emit a
+    phase heading just before that step."""
+    return {p.step_ids[0]: p.name for p in resolve_phases(manifest, phases) if p.step_ids}
+
+
+def toc_lines(manifest, narrative_text, phases=None):
     """The document outline as a flat list of display strings: an optional
     numbered "N.  Overview" line, a numbered "N.  Procedure" line followed
     by each step's indented heading, and a closing "N.  Revision History"
@@ -42,9 +62,15 @@ def toc_lines(manifest, narrative_text):
     if narrative_text:
         section += 1
         lines.append(f"{section}.  Overview")
-    section += 1
-    lines.append(f"{section}.  Procedure")
-    lines.extend(f"      {step_heading(n, step)}" for n, step in enumerate(manifest.steps, 1))
+    starts = phase_starts(manifest, phases)
+    if not starts:
+        section += 1
+        lines.append(f"{section}.  {DEFAULT_PHASE_NAME}")
+    for n, step in enumerate(manifest.steps, 1):
+        if step.id in starts:
+            section += 1
+            lines.append(f"{section}.  {starts[step.id]}")
+        lines.append(f"      {step_heading(n, step)}")
     section += 1
     lines.append(f"{section}.  Revision History")
     return lines

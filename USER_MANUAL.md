@@ -467,16 +467,36 @@ just runs without that diagnostic card.
 
 Open **http://127.0.0.1:<port>/** (or `/ui`):
 
-The web UI uses one modern, self-contained stylesheet (light/dark aware,
-system fonts, no external assets — works fully offline).
+The web UI ("Forge") is one self-contained stylesheet with a graphite
+sidebar (**Library**, **New SOP**, **Review queue** with a count,
+**Configuration**; the sidebar footer shows whether the Steps model's
+provider — normally Ollama — is reachable, plus the version). Light and dark
+follow your OS setting. Its IBM Plex fonts ship inside the app
+(`assets/fonts/ibm-plex/`, SIL OFL) — no CDN or external assets, it works
+fully offline.
 
-- **Library page**: every past session, searchable by title/date substring,
-  plus an **upload form** for the fallback path — if the server wasn't
-  running when you stopped a recording (§3), pick that capture's
-  `manifest.json` and its screenshots here, hit Upload, and it lands you on
-  that session's **steps-review page** (see below). The form also has an
-  **optional narration transcript** field (see below). No `curl`/API calls
-  needed (§4's API walkthrough still works too, e.g. for scripting).
+- **Library page**: a table of every session — thumbnail, title, document
+  number (when a doc-number prefix is configured, §7), step count, a status
+  pill (*Ready*, *N to review*, *Review steps*, *Generating*, *Failed*), the
+  exports available to download, and when it was last updated — searchable
+  by title, date or document number. Four tiles above it count procedures,
+  how many need review, steps captured, and the share of steps written by
+  the AI (steps not on template fallback, read from each document's own
+  review report). Below the tiles is **one drop zone** for both ways of
+  building a document: drop (or **Browse files** / **Choose folder**) a
+  capture folder — `manifest.json` + its PNGs, optionally a transcript — and
+  it goes in as a capture upload (the fallback path if the server wasn't
+  running when you stopped a recording, §3); drop screenshots with no
+  `manifest.json` (optionally plus a `.txt`/`.md`/`.json` transcript) and it
+  becomes a screenshots build (see "Building without a capture" below). The
+  zone shows which one it detected before you hit **Build document**, and
+  either way you land on the **steps-review page** (see below). With
+  JavaScript off, the two classic upload forms appear instead. No
+  `curl`/API calls needed (§4's API walkthrough still works too, e.g. for
+  scripting).
+- **Review queue**: the same table filtered to sessions that need you —
+  steps waiting for your check, finished documents whose review report
+  flags something (§6), and failed builds.
 - **Steps-review page**: shown once, right after a recording is uploaded (or
   a screenshots+transcript build is submitted), before any document is
   generated. A checklist of every captured step — a thumbnail, the action,
@@ -527,7 +547,7 @@ system fonts, no external assets — works fully offline).
   words.
 
 No JavaScript is required for the core workflow — the search box, upload
-form, transcript form, re-render button, and delete button are all plain
+forms (shown in place of the drop zone when JavaScript is off), transcript form, re-render button, and delete button are all plain
 HTML forms. Two pages use a small, deliberate amount of JS as a
 progressive enhancement (documented "considered exceptions," not a
 framework or build step): the Configuration page's model-suggestion
@@ -578,10 +598,11 @@ Configuration page (§7), not the Steps row.
 
 ### Building without a capture — screenshots + transcript
 
-You don't need the capture agent at all if you already have screenshots. The
-library page has a second form, **"Build from screenshots + transcript (no
-capture)"** (`POST /ui/build`): give it an optional title, your images (each
-image becomes one step, in the order you select them), and an optional
+You don't need the capture agent at all if you already have screenshots.
+Drop them on the library page's drop zone without a `manifest.json` and it
+builds from screenshots (`POST /ui/build`): an optional title, your images
+(each image becomes one step, in filename order — `shot-2` before `shot-10`),
+and an optional
 `.txt`/`.md` transcript that supplies each step's text (same label/order rules
 as above). Like the capture flow, this lands on the steps-review checklist
 first (see §5) — uncheck any images you don't want as a step — then produces
@@ -690,15 +711,17 @@ Recommended models per provider are shown on the page. Sensible defaults:
 
 | Task | ollama | openrouter | openai | anthropic |
 |---|---|---|---|---|
-| Steps | `qwen3:32b` | `anthropic/claude-haiku-4.5` | `gpt-5.4-mini` | `claude-haiku-4-5-20251001` |
-| Narration | `qwen3.6:27b` | `anthropic/claude-sonnet-5` | `gpt-5.5` | `claude-sonnet-5` |
-| Vision | `qwen2.5vl:7b` | `anthropic/claude-sonnet-5` | `gpt-4o` | — |
+| Steps | `qwen3:32b` | `anthropic/claude-sonnet-5.5` | `gpt-5.4-mini` | `claude-sonnet-5-5` |
+| Narration | `qwen3.6:27b` | `anthropic/claude-opus-5.5` | `gpt-5.5` | `claude-opus-5-5` |
+| Vision | `qwen2.5vl:7b` | `anthropic/claude-sonnet-5.5` | `gpt-4o` | — |
+| Polish | `gemma3:12b` | `anthropic/claude-sonnet-5.5` | `gpt-5.4-mini` | `claude-sonnet-5-5` |
 
 The model box's suggestion dropdown offers more than just the recommended
 default per provider — e.g. Steps' ollama suggestions include both `qwen3:32b`
 and `qwen3:14b` (faster, lower quality), and its openrouter/anthropic
-suggestions include higher-tier options (Sonnet 5, Opus 4.8, Fable 5) if you
-want more consistent phrasing than a local model reliably gives.
+suggestions include Haiku 5.5 (cheapest) and Opus 5.5 / Fable 5.1 (most
+capable). Use the page's **Test connection** button after changing a model:
+cloud model IDs change faster than this manual.
 
 Saving writes to a **per-user** config at `%USERPROFILE%\SOPForge\models.toml`
 (seeded from the bundled default). Changes take effect on the next generation —

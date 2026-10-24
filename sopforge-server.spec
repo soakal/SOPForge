@@ -34,6 +34,12 @@ a = Analysis(
             "vendor/sop_factory_2/SOP_TEMPLATE_WITH_PHOTOS.docx",
             "vendor/sop_factory_2",
         ),
+        # Phase 6f SPL deck engine + its VRSI template (pipeline/export_spl.py).
+        ("vendor/sop_factory_2/spl_lib.py", "vendor/sop_factory_2"),
+        (
+            "vendor/sop_factory_2/Single Point Lesson Template V4.potm",
+            "vendor/sop_factory_2",
+        ),
         # DejaVu Sans (Bitstream Vera license -- freely redistributable/
         # embeddable, see assets/fonts/dejavu-sans/LICENSE) gives export_pdf.py
         # a real Unicode font instead of core-font Latin-1 + a transliteration
@@ -43,6 +49,11 @@ a = Analysis(
         ("assets/fonts/dejavu-sans/DejaVuSans-Oblique.ttf", "assets/fonts/dejavu-sans"),
         ("assets/fonts/dejavu-sans/DejaVuSans-BoldOblique.ttf", "assets/fonts/dejavu-sans"),
         ("assets/fonts/dejavu-sans/LICENSE", "assets/fonts/dejavu-sans"),
+        # IBM Plex Sans + Mono (SIL OFL 1.1, assets/fonts/ibm-plex/LICENSE) --
+        # the review UI's webfonts, served by GET /ui/assets/fonts/{file}
+        # via resource_path() so the frozen EXE needs no font CDN (6h).
+        ("assets/fonts/ibm-plex/*.woff2", "assets/fonts/ibm-plex"),
+        ("assets/fonts/ibm-plex/LICENSE", "assets/fonts/ibm-plex"),
     ],
     # SOP Factory 2's sop_lib.py is bundled as a *data* file (imported
     # dynamically at runtime via sys.path, not a real import statement
@@ -50,7 +61,9 @@ a = Analysis(
     # can't see that it needs python-docx, so its import must be declared
     # explicitly. Found by running the actual built EXE end-to-end
     # (task-11), which failed with "No module named 'docx'"; not assumed.
-    hiddenimports=["docx"],
+    # spl_lib.py is loaded the same way and needs python-pptx; its optional
+    # PowerPoint text-fit pass needs win32com (pywin32).
+    hiddenimports=["docx", "pptx", "win32com.client"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

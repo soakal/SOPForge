@@ -12,9 +12,11 @@ from pathlib import Path
 
 from fpdf import FPDF
 
-from pipeline.assembler import format_doc_date, step_heading, toc_lines
+from pipeline.assembler import format_doc_date, phase_starts, step_heading, toc_lines
+from pipeline.grouping import DEFAULT_PHASE_NAME
 from pipeline.claim_coverage import parse_verify_line
 from pipeline.resource_path import resource_path
+from pipeline.review_notes import step_review_notes
 
 _INK = (33, 37, 41)
 _MUTED = (110, 116, 124)
@@ -147,6 +149,14 @@ def _narrative_body(pdf, narrative_text):
             pdf.multi_cell(0, 6, _safe_text(line, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
 
 
+def _section_heading(pdf, text):
+    pdf.set_font(pdf._font_family, "B", 18)
+    pdf.set_text_color(*_ACCENT)
+    pdf.multi_cell(0, 12, _safe_text(text, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_text_color(*_INK)
+    pdf.ln(2)
+
+
 def render_pdf(
     manifest,
     step_results,
@@ -157,6 +167,9 @@ def render_pdf(
     date=None,
     author="SOPForge",
     doc_no=None,
+    phases=None,
+    omitted_screenshots=(),
+    subtitle=None,
 ):
     """Builds a PDF mirroring the docx layout (docx_assembler.py): a title
     page (with doc number/author/revision when given), a table of contents,
@@ -184,7 +197,14 @@ def render_pdf(
     pdf.ln(6)
     pdf.set_font(pdf._font_family, "", 12)
     pdf.set_text_color(*_MUTED)
-    pdf.multi_cell(0, 7, "Standard Operating Procedure", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(
+        0,
+        7,
+        _safe_text(subtitle or "Standard Operating Procedure", pdf._font_family),
+        align="C",
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
     pdf.ln(10)
     meta_lines = []
     if doc_no:
@@ -213,7 +233,7 @@ def render_pdf(
     # out of sync. Indented step entries (the "      " prefix that same
     # helper produces) get the smaller/muted styling; numbered section
     # lines get the larger plain one.
-    for line in toc_lines(manifest, narrative_text):
+    for line in toc_lines(manifest, narrative_text, phases):
         if line.startswith("      "):
             pdf.set_font(pdf._font_family, "", 10)
             pdf.set_text_color(*_MUTED)
@@ -233,23 +253,33 @@ def render_pdf(
         pdf.ln(2)
         _narrative_body(pdf, narrative_text)
 
-    # --- Procedure ---
+    # --- Procedure: one section per phase (6c); ungrouped, just "Procedure" ---
+    starts = phase_starts(manifest, phases)
     pdf.add_page()
-    pdf.set_font(pdf._font_family, "B", 18)
-    pdf.set_text_color(*_ACCENT)
-    pdf.cell(0, 12, "Procedure", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(*_INK)
-    pdf.ln(2)
+    if not starts:
+        _section_heading(pdf, DEFAULT_PHASE_NAME)
 
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
+        if step.id in starts:
+            if n > 1:
+                pdf.ln(4)
+            _section_heading(pdf, starts[step.id])
         heading = step_heading(n, step)
         pdf.set_font(pdf._font_family, "BI", 13)
         pdf.set_text_color(*_INK)
         pdf.multi_cell(0, 9, _safe_text(heading, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
 
         _bullet(pdf, result["text"])
+
+        for note in step_review_notes(step):
+            pdf.set_font(pdf._font_family, "B", 10)
+            pdf.set_text_color(0xC0, 0x00, 0x00)
+            pdf.multi_cell(
+                0, 5.5, _safe_text(note, pdf._font_family), new_x="LMARGIN", new_y="NEXT"
+            )
+            pdf.set_text_color(*_INK)
 
         if result.get("narration"):
             pdf.ln(1)
@@ -264,7 +294,7 @@ def render_pdf(
             )
             pdf.set_text_color(*_INK)
 
-        if shot is not None and Path(shot).exists():
+        if step.id not in omitted_screenshots and shot is not None and Path(shot).exists():
             pdf.ln(2)
             pdf.image(str(shot), w=130)
             pdf.set_font(pdf._font_family, "I", 9)

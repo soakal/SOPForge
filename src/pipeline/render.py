@@ -17,8 +17,10 @@ from pathlib import Path
 import html
 
 from pipeline.annotate import annotate_click, crop_to_element
-from pipeline.assembler import assemble_steps, step_heading
+from pipeline.assembler import assemble_steps, is_grouped, phase_starts, step_heading
+from pipeline.claim_coverage import parse_verify_line
 from pipeline.generation import generate_all_steps
+from pipeline.review_notes import step_review_notes
 from pipeline.template import render_step_template
 
 
@@ -96,9 +98,22 @@ def _image_ref(shot, base_dir):
     return Path(shot).relative_to(base_dir).as_posix()
 
 
-def render_markdown(manifest, step_results, annotated_paths, narrative_text=None, base_dir=None):
+def render_markdown(
+    manifest,
+    step_results,
+    annotated_paths,
+    narrative_text=None,
+    base_dir=None,
+    phases=None,
+    omitted_screenshots=(),
+):
     """Assembles a Markdown document: title, optional narrative section,
-    then one section per step with its text and annotated screenshot."""
+    then one section per step with its text and annotated screenshot. When
+    steps are grouped into phases (6c), each phase gets a `##` heading and
+    step headings drop to `###`; ungrouped output is unchanged."""
+    grouped = is_grouped(phases)
+    starts = phase_starts(manifest, phases) if grouped else {}
+    step_level = "###" if grouped else "##"
     lines = [f"# {manifest.session.title or manifest.session.id}", ""]
     if narrative_text:
         lines.append(narrative_text)
@@ -106,24 +121,54 @@ def render_markdown(manifest, step_results, annotated_paths, narrative_text=None
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
+        if step.id in starts:
+            lines.append(f"## {starts[step.id]}")
+            lines.append("")
         heading = step_heading(n, step)
-        lines.append(f"## {heading}")
+        lines.append(f"{step_level} {heading}")
         lines.append("")
         lines.append(result["text"])
         lines.append("")
+        for note in step_review_notes(step):
+            lines.append(f"**{note}**")
+            lines.append("")
         if result.get("narration"):
             lines.append(f"> **Narration:** {result['narration']}")
             lines.append("")
-        lines.append(f"![{_escape_md_alt_text(heading)}]({_image_ref(shot, base_dir)})")
-        lines.append("")
+        if step.id not in omitted_screenshots:
+            lines.append(f"![{_escape_md_alt_text(heading)}]({_image_ref(shot, base_dir)})")
+            lines.append("")
     return "\n".join(lines)
+
+
+def review_note_html(step):
+    """step_review_notes() as HTML paragraphs, shared by render_html and the
+    single-file export so both show the same markers."""
+    return [
+        f'<p class="review-needed"><strong>{html.escape(note)}</strong></p>'
+        for note in step_review_notes(step)
+    ]
+
+
+# Inline so the callout looks right in every HTML export, including
+# render_html's style-less page.
+_VERIFY_STYLE = (
+    "border-left:3px solid #c00000;margin:.75em 0;padding:.4em .9em;"
+    "background:#fdf2f2;color:#7a1414"
+)
 
 
 def narrative_html_blocks(narrative_text):
     """Splits narrative text into HTML blocks, rendering '> '-prefixed
     lines (task-08's [verify] blockquotes) as <blockquote> elements instead
     of flattening them into a single escaped paragraph — otherwise the
-    blockquote marker and its newlines collapse into unreadable inline text."""
+    blockquote marker and its newlines collapse into unreadable inline text.
+
+    A [verify] line renders as a styled "Needs verification:" callout, the
+    way the docx and PDF already show it, instead of raw "[verify]
+    (claim-001): ..." text. The claim id stays on the element (data-claim)
+    and in the sidecar report; claim coverage is validated on the narrative
+    text itself, never on this HTML."""
     blocks = []
     paragraph = []
 
@@ -135,7 +180,16 @@ def narrative_html_blocks(narrative_text):
     for line in narrative_text.splitlines():
         if line.startswith("> "):
             flush_paragraph()
-            blocks.append(f"<blockquote>{html.escape(line[2:])}</blockquote>")
+            claim_text = parse_verify_line(line)
+            if claim_text is None:
+                blocks.append(f"<blockquote>{html.escape(line[2:])}</blockquote>")
+            else:
+                claim_id = line[len("> [verify] (") :].split(")", 1)[0]
+                blocks.append(
+                    f'<blockquote class="verify" data-claim="{html.escape(claim_id)}" '
+                    f'style="{_VERIFY_STYLE}"><strong>Needs verification:</strong> '
+                    f"{html.escape(claim_text)}</blockquote>"
+                )
         elif line.strip():
             paragraph.append(line)
         else:
@@ -144,9 +198,20 @@ def narrative_html_blocks(narrative_text):
     return blocks
 
 
-def render_html(manifest, step_results, annotated_paths, narrative_text=None, base_dir=None):
+def render_html(
+    manifest,
+    step_results,
+    annotated_paths,
+    narrative_text=None,
+    base_dir=None,
+    phases=None,
+    omitted_screenshots=(),
+):
     """Assembles a minimal HTML document mirroring render_markdown's
     structure — plain string building, no templating engine dependency."""
+    grouped = is_grouped(phases)
+    starts = phase_starts(manifest, phases) if grouped else {}
+    tag = "h3" if grouped else "h2"
     title = manifest.session.title or manifest.session.id
     parts = [
         "<!doctype html>",
@@ -158,18 +223,22 @@ def render_html(manifest, step_results, annotated_paths, narrative_text=None, ba
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
+        if step.id in starts:
+            parts.append(f"<h2>{html.escape(starts[step.id])}</h2>")
         heading = step_heading(n, step)
         # id=step.id anchors each step so a link like doc.html#step-003 (the
         # session page's report rows, webui/pages.py's _finding_row) jumps
         # straight to it.
-        parts.append(f'<h2 id="{html.escape(step.id)}">{html.escape(heading)}</h2>')
+        parts.append(f'<{tag} id="{html.escape(step.id)}">{html.escape(heading)}</{tag}>')
         parts.append(f"<p>{html.escape(result['text'])}</p>")
+        parts.extend(review_note_html(step))
         if result.get("narration"):
             parts.append(
                 '<blockquote class="narration"><strong>Narration:</strong> '
                 f"{html.escape(result['narration'])}</blockquote>"
             )
-        img_ref = _image_ref(shot, base_dir)
-        parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(heading)}">')
+        if step.id not in omitted_screenshots:
+            img_ref = _image_ref(shot, base_dir)
+            parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(heading)}">')
     parts.append("</body></html>")
     return "\n".join(parts)

@@ -175,9 +175,10 @@ def test_render_markdown_includes_verify_blockquotes():
 def test_render_html_includes_verify_blockquotes_as_blockquote_elements():
     """The HTML renderer must not flatten [verify] lines into one escaped
     paragraph (which would collapse the newline and render the '>' marker
-    as inline text) — it must emit a distinct <blockquote> per marker,
-    still containing the literal [verify] (claim-id) text so
-    validate_claim_coverage keeps matching."""
+    as inline text) — it must emit a distinct <blockquote> per marker, shown
+    as a "Needs verification:" callout with the claim id kept on the element
+    (claim coverage itself is validated on the narrative text, not this
+    HTML)."""
     manifest = load_manifest(FIXTURES / "sample-manifest.json")
     claims = [
         {"claim_id": "claim-001", "text": "Something not in the narrative at all.", "ts": 0.0}
@@ -187,10 +188,9 @@ def test_render_html_includes_verify_blockquotes_as_blockquote_elements():
     step_results = [{"step_id": s.id, "text": ""} for s in manifest.steps]
     annotated = [None] * len(manifest.steps)
     doc = render_html(manifest, step_results, annotated, narrative_text=final_text)
-    assert (
-        "<blockquote>[verify] (claim-001): Something not in the narrative at all.</blockquote>"
-        in doc
-    )
+    assert '<blockquote class="verify" data-claim="claim-001"' in doc
+    assert "<strong>Needs verification:</strong> Something not in the narrative at all." in doc
+    assert "[verify]" not in doc
     assert "<p>Unrelated narrative text.</p>" in doc
 
 

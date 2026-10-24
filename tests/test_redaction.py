@@ -1,5 +1,5 @@
 """Redaction pass: PIL-rendered screenshot with known email/IP text (seeded),
-OCR'd via Windows OCR and blurred; a password-field heuristic (driven by
+OCR'd via Windows OCR and covered; a password-field heuristic (driven by
 manifest element metadata, not OCR — masked password text has no plaintext
 to recognize) is tested separately."""
 
@@ -44,14 +44,14 @@ def test_ocr_matches_email_and_ipv4(tmp_path):
     assert len(regions) >= 2
 
 
-def test_matched_regions_blurred_others_untouched(tmp_path):
+def test_matched_regions_covered_others_untouched(tmp_path):
     png = tmp_path / "shot.png"
     _render(png, ["Contact: test@example.com", "Server: 192.168.1.1", "Hello World"])
     original = Image.open(png).convert("RGB")
 
     # A real, non-matching word's OCR box — a blank corner wouldn't prove
-    # anything, since blurring uniform white pixels leaves them unchanged
-    # even if the whole image were (wrongly) blurred.
+    # anything, since a wrongly applied redaction pass could leave uniform
+    # white pixels looking unchanged.
     words = ocr_words(png)
     hello_box = next(box for text, box in words if text.lower().startswith("hello"))
 
@@ -94,7 +94,7 @@ def test_in_place_redaction_without_out_path(tmp_path):
     assert _mean_abs_diff(original, redacted, regions[0]) > 5
 
 
-def test_password_field_blurs_whole_element_regardless_of_ocr(tmp_path):
+def test_password_field_covers_whole_element_regardless_of_ocr(tmp_path):
     png = tmp_path / "shot.png"
     _render(png, ["Hello World"])  # nothing OCR-matchable here at all
     original = Image.open(png).convert("RGB")

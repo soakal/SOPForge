@@ -153,6 +153,7 @@ class SOPBuilder:
         r.font.size = Pt(13)
         p.paragraph_format.space_before = Pt(12)
         p.paragraph_format.space_after  = Pt(6)
+        p.paragraph_format.keep_with_next = True
 
     def heading2(self, text: str):
         """Bold italic — VRSI subsection style."""
@@ -163,6 +164,7 @@ class SOPBuilder:
         r.font.size = Pt(11)
         p.paragraph_format.space_before = Pt(8)
         p.paragraph_format.space_after  = Pt(3)
+        p.paragraph_format.keep_with_next = True
 
     def paragraph(self, text: str):
         self.doc.add_paragraph(text)
@@ -226,6 +228,8 @@ class SOPBuilder:
             self.doc.add_paragraph(f"[IMAGE NOT FOUND: {filename}]")
             self.warnings.append(f"image not found: {filename} (looked in {self.active_dir})")
             return
+        if self.doc.paragraphs:
+            self.doc.paragraphs[-1].paragraph_format.keep_with_next = True  # bullet stays with its image
         p = self.doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         run = p.add_run()
@@ -249,6 +253,34 @@ class SOPBuilder:
             r.italic = True
             r.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    def code_block(self, text: str):
+        """Shaded, bordered Consolas paragraph holding one command — no bullet glyph
+        and straight quotes, so it copy/pastes cleanly into a terminal."""
+        if self.doc.paragraphs:
+            self.doc.paragraphs[-1].paragraph_format.keep_with_next = True
+        p = self.doc.add_paragraph()
+        p.paragraph_format.left_indent = Inches(0.5)
+        p.paragraph_format.keep_with_next = True  # stay on the page with what follows
+        r = p.add_run(text)
+        r.font.name = "Consolas"
+        r.font.size = Pt(10)
+        rFonts = r._element.get_or_add_rPr().get_or_add_rFonts()
+        for attr in ("w:ascii", "w:hAnsi", "w:cs"):
+            rFonts.set(qn(attr), "Consolas")
+        pPr = p._p.get_or_add_pPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:fill"), "F2F2F2")
+        pPr.append(shd)
+        bdr = OxmlElement("w:pBdr")
+        for side in ("top", "left", "bottom", "right"):
+            b = OxmlElement(f"w:{side}")
+            for k, v in (("val", "single"), ("sz", "4"), ("space", "4"), ("color", "BFBFBF")):
+                b.set(qn(f"w:{k}"), v)
+            bdr.append(b)
+        pPr.append(bdr)
+        return p
 
     # ---- tables --------------------------------------------------------------
 

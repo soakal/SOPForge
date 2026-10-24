@@ -51,7 +51,7 @@ from fastapi.responses import (
 from PIL import Image
 
 from pipeline import __version__
-from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
+from pipeline.assembler import check_1to1_mapping, format_doc_date
 from pipeline.claim_coverage import (
     _claim_covered,
     ensure_claim_coverage,
@@ -73,11 +73,24 @@ from pipeline.config import (
     runtime_config_path,
     save_models_config,
 )
+from pipeline.doc_meta import download_basename, resolve_meta, save_overrides, validate_overrides
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
-from pipeline.export_md import _slugify, export_markdown_bundle
+from pipeline.export_md import export_markdown_bundle
 from pipeline.export_pdf import render_pdf
+from pipeline.export_spl import build_spl_deck
+from pipeline.export_walkthrough import render_walkthrough
 from pipeline.generation import generate_step_text
+from pipeline.grouping import (
+    MAX_PHASE_NAME_LEN,
+    MIN_STEPS_TO_GROUP,
+    Phase,
+    duplicate_screenshot_steps,
+    load_keep_screenshots,
+    load_phases,
+    phases_to_json,
+    propose_phases,
+)
 from pipeline.jobs import JobRunner
 from pipeline.library import remove_entry
 from pipeline.library import search as library_search
@@ -96,7 +109,10 @@ from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
 from pipeline.transcription import Transcriber
 from pipeline.vision import caption_images
+from pipeline.resource_path import resource_path
+from pipeline.webui.library_view import library_stats, matches_query, session_row
 from pipeline.webui.pages import (
+    FONT_FILES,
     render_config_page,
     render_library_page,
     render_session_page,
@@ -173,14 +189,12 @@ def _assert_1to1_mapping(manifest, step_results):
         )
 
 
-def _download_filename(manifest, ext):
-    """The filename a browser saves a downloaded doc as -- derived from the
-    session's title (or id, if untitled) so it reads as what the SOP is
-    about instead of the generic "doc.docx" every session otherwise shares.
-    Reuses export_md.py's own slug so the whole app has one naming
-    convention, not two."""
-    slug = _slugify(manifest.session.title or manifest.session.id)
-    return f"{slug}.{ext}"
+def _download_filename(meta, suffix):
+    """The filename a browser saves a downloaded doc as, SOP Factory style:
+    the title and revision ("Create_a_SmartDeploy_Answer_File_v1.0") plus
+    a format suffix (".docx", "_SPL.pptx", ...), instead of the generic
+    "doc.docx" every session otherwise shares (doc_meta.download_basename)."""
+    return f"{download_basename(meta)}{suffix}"
 
 
 def _load_step_state(session_dir):
@@ -983,6 +997,25 @@ def create_app(
         verify_claim_ids += [
             c["claim_id"] for c in verify_claims if c["claim_id"] not in verify_claim_ids
         ]
+        # Phase grouping (6c, grouping.py): the LLM may only propose phase
+        # boundaries and names; anything it gets wrong falls back to grouping
+        # by window. Saved so a later re-export (no LLM) keeps the same layout.
+        phase_llm = None
+        try:
+            if len(manifest.steps) >= MIN_STEPS_TO_GROUP:
+                phase_llm = make_llm_client()
+            phases, phase_source = propose_phases(manifest, step_results, phase_llm)
+        except Exception:  # noqa: BLE001 - grouping is layout only, never blocks the doc
+            logger.exception("phase grouping failed for session %s", session_id)
+            phases, phase_source = propose_phases(manifest, step_results, None)
+        finally:
+            close = getattr(phase_llm, "close", None)
+            if callable(close):
+                close()
+        (session_dir / "phases.json").write_text(
+            json.dumps(phases_to_json(phases, phase_source)), encoding="utf-8"
+        )
+
         report = build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)
         if transcript_note:
             report["transcript"] = transcript_note
@@ -1409,12 +1442,28 @@ def create_app(
                 report["polish_rejected_claim_coverage"] = missing
                 md_narrative_text = narrative_text
 
+        # Phases exist only for capture sessions (phases.json, written at
+        # generation); photo builds and pre-6c sessions render ungrouped.
+        phases_path = session_dir / "phases.json"
+        phases = load_phases(phases_path, manifest) if phases_path.exists() else None
+        omitted = duplicate_screenshot_steps(manifest, annotated_paths, phases) if phases else []
+        kept = load_keep_screenshots(phases_path) if phases else frozenset()
+        omitted = [step_id for step_id in omitted if step_id not in kept]
+        report.pop("phases", None)
+        report.pop("omitted_screenshot_steps", None)
+        if phases:
+            report["phases"] = [{"name": p.name, "step_ids": list(p.step_ids)} for p in phases]
+        if omitted:
+            report["omitted_screenshot_steps"] = omitted
+        layout = {"phases": phases, "omitted_screenshots": frozenset(omitted)}
+
         md = render_markdown(
             manifest,
             md_step_results,
             annotated_paths,
             narrative_text=md_narrative_text,
             base_dir=annotated_dir,
+            **layout,
         )
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
 
@@ -1424,12 +1473,22 @@ def create_app(
             annotated_paths,
             narrative_text=md_narrative_text,
             base_dir=annotated_dir,
+            **layout,
         )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
 
         doc_cfg = load_models_config(resolved_config_path).document
         doc_date = format_doc_date(manifest.session.started_utc)
-        doc_no = doc_number(doc_cfg.doc_no_prefix, manifest.session.id)
+        # 6g: inferred metadata + this session's overrides (doc_meta.py).
+        meta = resolve_meta(manifest, doc_cfg, session_dir)
+        doc_no = meta.doc_no
+        report["document"] = {
+            "title": meta.title,
+            "subtitle": meta.subtitle,
+            "doc_no": meta.doc_no,
+            "author": meta.author,
+            "revision": meta.revision,
+        }
 
         docx_path = session_dir / "doc.docx"
         _out, docx_warnings = assemble_docx(
@@ -1437,10 +1496,13 @@ def create_app(
             md_step_results,
             annotated_dir,
             docx_path,
+            revision=meta.revision,
             date=doc_date,
-            author=doc_cfg.author,
+            author=meta.author,
             doc_no=doc_no,
             narrative_text=md_narrative_text,
+            subtitle=meta.subtitle,
+            **layout,
         )
         report["docx_warnings"] = docx_warnings
 
@@ -1451,15 +1513,50 @@ def create_app(
             annotated_paths,
             pdf_path,
             narrative_text=md_narrative_text,
+            revision=meta.revision,
             date=doc_date,
-            author=doc_cfg.author,
+            author=meta.author,
             doc_no=doc_no,
+            subtitle=meta.subtitle,
+            **layout,
         )
 
         single_html = render_single_file_html(
-            manifest, md_step_results, annotated_paths, narrative_text=md_narrative_text
+            manifest, md_step_results, annotated_paths, narrative_text=md_narrative_text, **layout
         )
         (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
+
+        walkthrough = render_walkthrough(
+            manifest,
+            md_step_results,
+            annotated_paths,
+            narrative_text=md_narrative_text,
+            screenshot_dir=sessions[session_id][1],
+            **layout,
+        )
+        (session_dir / "walkthrough.html").write_text(walkthrough, encoding="utf-8")
+
+        # SPL deck (6f): measured in PowerPoint when installed, else by the
+        # font-metric estimate. Best-effort: a deck failure never costs the
+        # session its document, it's reported instead.
+        spl_path = session_dir / "spl.pptx"
+        report.pop("spl_text_overflow", None)
+        report.pop("spl_error", None)
+        try:
+            _spl, spl_problems = build_spl_deck(
+                manifest,
+                md_step_results,
+                annotated_paths,
+                spl_path,
+                author=meta.author,
+                **layout,
+            )
+            if spl_problems:
+                report["spl_text_overflow"] = spl_problems
+        except Exception as exc:  # noqa: BLE001 - optional export, never blocks the doc
+            logger.exception("SPL deck export failed for session %s", session_id)
+            report["spl_error"] = str(exc)
+            spl_path.unlink(missing_ok=True)
 
         md_bundle_dir = session_dir / "md_bundle"
         export_markdown_bundle(
@@ -1468,6 +1565,7 @@ def create_app(
             annotated_paths,
             md_bundle_dir,
             narrative_text=md_narrative_text,
+            **layout,
         )
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
 
@@ -2032,7 +2130,7 @@ def create_app(
         `polish` (optional query param) overrides the polish stage for this
         job only, via resolve_polish_config -- "off" forces it skipped
         even if [polish].enabled=true, "local" forces the local ollama
-        provider, "haiku" forces Anthropic's Claude Haiku 4.5. Omitted
+        provider, "haiku" forces Anthropic's Claude Haiku 5.5. Omitted
         (the default) leaves the current [polish].enabled/provider/model
         behavior untouched.
 
@@ -2116,6 +2214,96 @@ def create_app(
         # "error" (server.py's _load_reexportable_state docstring).
         _load_reexportable_state(session_id)
         _save_edit(session_dir, step_id, text)
+        jobs.submit(session_id, lambda: _reexport_session(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    def _save_phases_and_reexport(session_id, edit):
+        """Shared by the phase-rename and screenshot-restore routes: load the
+        saved phases.json (capture sessions only), apply `edit(phases, kept)`
+        -> (phases, kept), write it back keeping every other field's value,
+        then run the same no-LLM re-export the step-edit route uses."""
+        session_dir = _require_done(session_id)
+        manifest = sessions[session_id][0]
+        phases_path = session_dir / "phases.json"
+        if not phases_path.exists():
+            raise HTTPException(
+                status_code=409, detail="this session has no phases (screenshot build or pre-6c)"
+            )
+        _load_reexportable_state(session_id)
+        phases = load_phases(phases_path, manifest)
+        kept = load_keep_screenshots(phases_path)
+        phases, kept = edit(phases, kept)
+        phases_path.write_text(
+            json.dumps(phases_to_json(phases, "user", keep_screenshots=kept)), encoding="utf-8"
+        )
+        jobs.submit(session_id, lambda: _reexport_session(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
+    @app.post("/ui/sessions/{session_id}/phases/{index}")
+    async def ui_rename_phase(session_id: str, index: int, request: Request):
+        """Renames one phase (by its 0-based position -- names may repeat).
+        Whitespace is collapsed; blank or over-long names are a 400."""
+        _require_known_session(session_id)
+        form = await request.form()
+        name = " ".join(str(form.get("name") or "").split())
+        if not name:
+            raise HTTPException(status_code=400, detail="phase name must not be blank")
+        if len(name) > MAX_PHASE_NAME_LEN:
+            raise HTTPException(
+                status_code=400, detail=f"phase name is too long (max {MAX_PHASE_NAME_LEN} chars)"
+            )
+
+        def rename(phases, kept):
+            if not 0 <= index < len(phases):
+                raise HTTPException(status_code=404, detail=f"unknown phase: {index}")
+            phases = list(phases)
+            phases[index] = Phase(name, phases[index].step_ids)
+            return phases, kept
+
+        return _save_phases_and_reexport(session_id, rename)
+
+    @app.post("/ui/sessions/{session_id}/steps/{step_id}/keep-screenshot")
+    def ui_keep_screenshot(session_id: str, step_id: str):
+        """Restores a screenshot the duplicate check left out: the step id
+        joins phases.json's keep_screenshots, so every export shows it."""
+        _require_known_session(session_id)
+        if step_id not in sessions[session_id][0].step_ids():
+            raise HTTPException(status_code=404, detail=f"unknown step: {step_id!r}")
+        return _save_phases_and_reexport(
+            session_id, lambda phases, kept: (phases, kept | {step_id})
+        )
+
+    def _session_meta(session_id):
+        """This session's resolved document metadata (doc_meta.py) -- the
+        same values its exports were stamped with."""
+        manifest, _shots, _annotated, session_dir = sessions[session_id]
+        doc_cfg = load_models_config(resolved_config_path).document
+        return resolve_meta(manifest, doc_cfg, session_dir)
+
+    @app.post("/ui/sessions/{session_id}/metadata")
+    async def ui_edit_metadata(session_id: str, request: Request):
+        """Overrides this document's title, subtitle, document number, author
+        or revision (6g), then re-exports every format with no LLM call. Any
+        field left out is unchanged; a blank one goes back to its inferred
+        default (doc_meta.py). The title is written to the manifest so the
+        library shows it too."""
+        session_dir = _require_done(session_id)
+        manifest = sessions[session_id][0]
+        form = await request.form()
+        values = {
+            k: form[k] for k in ("title", "subtitle", "doc_no", "author", "revision") if k in form
+        }
+        try:
+            cleaned = validate_overrides(values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _load_reexportable_state(session_id)
+        save_overrides(session_dir, cleaned)
+        if "title" in cleaned:
+            manifest.session.title = cleaned["title"]
+            (session_dir / "manifest.json").write_text(
+                json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
+            )
         jobs.submit(session_id, lambda: _reexport_session(session_id))
         return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
 
@@ -2304,7 +2492,7 @@ def create_app(
     @app.get("/sessions/{session_id}/doc.docx")
     def get_doc_docx(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "docx")
+        filename = _download_filename(_session_meta(session_id), ".docx")
         return Response(
             (session_dir / "doc.docx").read_bytes(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -2314,7 +2502,7 @@ def create_app(
     @app.get("/sessions/{session_id}/doc.pdf")
     def get_doc_pdf(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "pdf")
+        filename = _download_filename(_session_meta(session_id), ".pdf")
         return Response(
             (session_dir / "doc.pdf").read_bytes(),
             media_type="application/pdf",
@@ -2324,17 +2512,43 @@ def create_app(
     @app.get("/sessions/{session_id}/doc.single.html")
     def get_doc_single_html(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "html")
+        filename = _download_filename(_session_meta(session_id), ".html")
         return Response(
             (session_dir / "doc.single.html").read_text(encoding="utf-8"),
             media_type="text/html",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    @app.get("/sessions/{session_id}/walkthrough.html")
+    def get_walkthrough_html(session_id: str):
+        session_dir = _require_done(session_id)
+        path = session_dir / "walkthrough.html"
+        if not path.exists():  # a session generated before 6d
+            raise HTTPException(status_code=404, detail="walkthrough not generated; re-render")
+        filename = _download_filename(_session_meta(session_id), "_Walkthrough.html")
+        return Response(
+            path.read_text(encoding="utf-8"),
+            media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/sessions/{session_id}/spl.pptx")
+    def get_spl_pptx(session_id: str):
+        session_dir = _require_done(session_id)
+        path = session_dir / "spl.pptx"
+        if not path.exists():  # generated before 6f, or the deck export failed
+            raise HTTPException(status_code=404, detail="SPL deck not available; re-render")
+        filename = _download_filename(_session_meta(session_id), "_SPL.pptx")
+        return Response(
+            path.read_bytes(),
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @app.get("/sessions/{session_id}/export.md.zip")
     def get_export_md_zip(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "zip")
+        filename = _download_filename(_session_meta(session_id), "_Markdown.zip")
         return Response(
             (session_dir / "export.md.zip").read_bytes(),
             media_type="application/zip",
@@ -2353,7 +2567,7 @@ def create_app(
     def ui_config(saved: str | None = None):
         cfg = load_models_config(resolved_config_path)
         return HTMLResponse(
-            render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved))
+            render_config_page(cfg.model_dump(), key_status(cfg), saved=bool(saved), nav=_nav())
         )
 
     _CONFIG_TEST_SECTIONS = {
@@ -2485,20 +2699,84 @@ def create_app(
     def get_version():
         return {"version": __version__}
 
+    def _library_rows():
+        """Every session the library table shows: finished ones from the
+        library index plus in-flight ones (staged, queued, processing,
+        failed) from memory, newest first. Read-only over existing files --
+        see webui/library_view.py."""
+        rows, seen = [], set()
+
+        def add(session_id, title, date):
+            seen.add(session_id)
+            entry = sessions.get(session_id)
+            manifest = entry[0] if entry else None
+            session_dir = entry[3] if entry else sessions_root / session_id
+            status = _status_of(session_id) if entry else "done"
+            rows.append(session_row(session_id, title, date, session_dir, manifest, status))
+
+        for e in library_search(sessions_root):
+            add(e["session_id"], e["title"], e.get("date", ""))
+        for session_id, (manifest, *_rest) in list(sessions.items()):
+            if session_id not in seen:
+                add(session_id, manifest.session.title or "", manifest.session.started_utc)
+        # In-flight and failed sessions first (they need attention), then newest.
+        rows.sort(
+            key=lambda r: (r["state"] not in ("staged", "generating", "error"), -r["sort_ts"])
+        )
+        return rows
+
+    def _nav():
+        """Sidebar context for every UI page: the review-queue count."""
+        return {"review_count": sum(1 for r in _library_rows() if r["needs_review"])}
+
+    @app.get("/ui/assets/fonts/{filename}")
+    def ui_font(filename: str):
+        """The vendored IBM Plex webfonts (assets/fonts/ibm-plex/, OFL) --
+        served from the repo in dev and from the PyInstaller bundle when
+        frozen (resource_path), so the UI never needs a font CDN. Only the
+        exact files pages.py declares are servable."""
+        if filename not in FONT_FILES:
+            raise HTTPException(status_code=404, detail="file not found")
+        path = resource_path("assets", "fonts", "ibm-plex", filename)
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="file not found")
+        return Response(
+            path.read_bytes(),
+            media_type="font/woff2",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     @app.get("/")
     @app.get("/ui")
-    def ui_library(q: str | None = None):
-        return HTMLResponse(render_library_page(library_search(sessions_root, q), q))
+    def ui_library(q: str | None = None, view: str | None = None):
+        all_rows = _library_rows()
+        rows = [r for r in all_rows if matches_query(r, q)]
+        nav = {"review_count": sum(1 for r in all_rows if r["needs_review"])}
+        return HTMLResponse(
+            render_library_page(
+                library_search(sessions_root, q),
+                q,
+                rows=rows,
+                stats=library_stats(all_rows),
+                nav=nav,
+                view=view,
+            )
+        )
 
     @app.get("/ui/sessions/{session_id}")
     def ui_session(session_id: str):
         _require_known_session(session_id)
         if session_id in staged:
             manifest = sessions[session_id][0]
-            return HTMLResponse(render_steps_review_page(session_id, manifest))
+            return HTMLResponse(render_steps_review_page(session_id, manifest, nav=_nav()))
         status = jobs.status(session_id)
         if status["status"] != "done":
-            return HTMLResponse(render_session_processing_page(session_id, status))
+            manifest = sessions[session_id][0]
+            return HTMLResponse(
+                render_session_processing_page(
+                    session_id, status, nav=_nav(), title=manifest.session.title or None
+                )
+            )
         manifest = sessions[session_id][0]
         session_dir = sessions[session_id][3]
         report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
@@ -2514,6 +2792,9 @@ def create_app(
                 config,
                 steps=_load_step_index(session_dir),
                 can_regenerate=not _is_photo_mode(session_dir),
+                nav=_nav(),
+                walkthrough=(session_dir / "walkthrough.html").is_file(),
+                spl_deck=(session_dir / "spl.pptx").is_file(),
             )
         )
 

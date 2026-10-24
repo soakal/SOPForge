@@ -1,7 +1,7 @@
 ---
 name: reviewer
 description: Reviews each commit's diff against the SOPForge contract. Use after every task commit.
-model: claude-fable-5
+model: claude-fable-5-1
 tools: Read, Grep, Glob, Bash
 ---
 

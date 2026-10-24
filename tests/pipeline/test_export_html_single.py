@@ -93,7 +93,6 @@ def test_contains_every_step_text_and_verify_blockquote(tmp_path):
     manifest, step_results, doc = _build(tmp_path, narrative_text=final_text)
     for result in step_results:
         assert html_module.escape(result["text"]) in doc
-    assert (
-        "<blockquote>[verify] (claim-001): Something not in the narrative at all.</blockquote>"
-        in doc
-    )
+    assert '<blockquote class="verify" data-claim="claim-001"' in doc
+    assert "<strong>Needs verification:</strong> Something not in the narrative at all." in doc
+    assert "[verify]" not in doc
