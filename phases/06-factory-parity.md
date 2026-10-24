@@ -95,11 +95,16 @@ PowerPoint installed), and degrades quietly instead of asking.
    to the displayed crop.
 5. 6e: a labelled redaction region in the fixture is fully covered in every
    exported image (pixel check), and the label text is not OCR'd from the source.
-6. 6f: with PowerPoint absent, the golden fixture still produces a pptx whose
-   estimated text fit passes; with PowerPoint present, `save()` measures in
-   PowerPoint and raises `TextOverflow` rather than shipping cut-off text.
-7. 6g: download filenames derive from the title, with filesystem-unsafe
-   characters removed; a doc builds with no metadata entered.
+6. 6f: with PowerPoint absent, a deck still builds and its text is shrunk by
+   the font-metric estimate; with PowerPoint present, `spl_lib.fit_text`
+   measures in PowerPoint. Either way step text is never truncated, and any
+   box still too long at the 12pt floor is listed in the report
+   (`spl_text_overflow`) instead of blocking the export. (Changed from "raises
+   TextOverflow": SOPForge must ship a deck on every export with no one to
+   ask, so it reports rather than refuses.)
+7. 6g: download filenames derive from the title and revision, SOP Factory
+   style, with filesystem-unsafe characters removed; a doc builds with no
+   metadata entered; an override reaches every format and the library.
 8. 6h: every existing UI route still renders and every existing UI test
    passes; served pages make no external network requests; Plex fonts load
    from the frozen bundle; both drop-zone paths reach a built document in the

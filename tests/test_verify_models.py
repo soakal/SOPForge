@@ -3,7 +3,7 @@ import httpx
 import scripts.verify_models as vm
 from pipeline.config import load_models_config
 
-TAGS = {"qwen3:32b", "qwen2.5vl:7b", "gemma3:12b", "qwen3:14b", "qwen3.6:27b"}
+TAGS = {"qwen3:32b", "qwen2.5vl:7b", "gemma3:12b", "qwen3:14b", "qwen3.6:27b", "qwen3-vl:8b"}
 
 
 def _transport(names):

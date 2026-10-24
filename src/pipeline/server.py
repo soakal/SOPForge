@@ -51,7 +51,7 @@ from fastapi.responses import (
 from PIL import Image
 
 from pipeline import __version__
-from pipeline.assembler import check_1to1_mapping, doc_number, format_doc_date
+from pipeline.assembler import check_1to1_mapping, format_doc_date
 from pipeline.claim_coverage import (
     _claim_covered,
     ensure_claim_coverage,
@@ -73,9 +73,10 @@ from pipeline.config import (
     runtime_config_path,
     save_models_config,
 )
+from pipeline.doc_meta import download_basename, resolve_meta, save_overrides, validate_overrides
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
-from pipeline.export_md import _slugify, export_markdown_bundle
+from pipeline.export_md import export_markdown_bundle
 from pipeline.export_pdf import render_pdf
 from pipeline.export_spl import build_spl_deck
 from pipeline.export_walkthrough import render_walkthrough
@@ -188,14 +189,12 @@ def _assert_1to1_mapping(manifest, step_results):
         )
 
 
-def _download_filename(manifest, ext):
-    """The filename a browser saves a downloaded doc as -- derived from the
-    session's title (or id, if untitled) so it reads as what the SOP is
-    about instead of the generic "doc.docx" every session otherwise shares.
-    Reuses export_md.py's own slug so the whole app has one naming
-    convention, not two."""
-    slug = _slugify(manifest.session.title or manifest.session.id)
-    return f"{slug}.{ext}"
+def _download_filename(meta, suffix):
+    """The filename a browser saves a downloaded doc as, SOP Factory style:
+    the title and revision ("Create_a_SmartDeploy_Answer_File_v1.0") plus
+    a format suffix (".docx", "_SPL.pptx", ...), instead of the generic
+    "doc.docx" every session otherwise shares (doc_meta.download_basename)."""
+    return f"{download_basename(meta)}{suffix}"
 
 
 def _load_step_state(session_dir):
@@ -1480,7 +1479,16 @@ def create_app(
 
         doc_cfg = load_models_config(resolved_config_path).document
         doc_date = format_doc_date(manifest.session.started_utc)
-        doc_no = doc_number(doc_cfg.doc_no_prefix, manifest.session.id)
+        # 6g: inferred metadata + this session's overrides (doc_meta.py).
+        meta = resolve_meta(manifest, doc_cfg, session_dir)
+        doc_no = meta.doc_no
+        report["document"] = {
+            "title": meta.title,
+            "subtitle": meta.subtitle,
+            "doc_no": meta.doc_no,
+            "author": meta.author,
+            "revision": meta.revision,
+        }
 
         docx_path = session_dir / "doc.docx"
         _out, docx_warnings = assemble_docx(
@@ -1488,10 +1496,12 @@ def create_app(
             md_step_results,
             annotated_dir,
             docx_path,
+            revision=meta.revision,
             date=doc_date,
-            author=doc_cfg.author,
+            author=meta.author,
             doc_no=doc_no,
             narrative_text=md_narrative_text,
+            subtitle=meta.subtitle,
             **layout,
         )
         report["docx_warnings"] = docx_warnings
@@ -1503,9 +1513,11 @@ def create_app(
             annotated_paths,
             pdf_path,
             narrative_text=md_narrative_text,
+            revision=meta.revision,
             date=doc_date,
-            author=doc_cfg.author,
+            author=meta.author,
             doc_no=doc_no,
+            subtitle=meta.subtitle,
             **layout,
         )
 
@@ -1536,7 +1548,7 @@ def create_app(
                 md_step_results,
                 annotated_paths,
                 spl_path,
-                author=doc_cfg.author,
+                author=meta.author,
                 **layout,
             )
             if spl_problems:
@@ -2261,6 +2273,40 @@ def create_app(
             session_id, lambda phases, kept: (phases, kept | {step_id})
         )
 
+    def _session_meta(session_id):
+        """This session's resolved document metadata (doc_meta.py) -- the
+        same values its exports were stamped with."""
+        manifest, _shots, _annotated, session_dir = sessions[session_id]
+        doc_cfg = load_models_config(resolved_config_path).document
+        return resolve_meta(manifest, doc_cfg, session_dir)
+
+    @app.post("/ui/sessions/{session_id}/metadata")
+    async def ui_edit_metadata(session_id: str, request: Request):
+        """Overrides this document's title, subtitle, document number, author
+        or revision (6g), then re-exports every format with no LLM call. Any
+        field left out is unchanged; a blank one goes back to its inferred
+        default (doc_meta.py). The title is written to the manifest so the
+        library shows it too."""
+        session_dir = _require_done(session_id)
+        manifest = sessions[session_id][0]
+        form = await request.form()
+        values = {
+            k: form[k] for k in ("title", "subtitle", "doc_no", "author", "revision") if k in form
+        }
+        try:
+            cleaned = validate_overrides(values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _load_reexportable_state(session_id)
+        save_overrides(session_dir, cleaned)
+        if "title" in cleaned:
+            manifest.session.title = cleaned["title"]
+            (session_dir / "manifest.json").write_text(
+                json.dumps(manifest_to_schema_dict(manifest)), encoding="utf-8"
+            )
+        jobs.submit(session_id, lambda: _reexport_session(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}", status_code=303)
+
     @app.post("/ui/sessions/{session_id}/steps/{step_id}/regenerate")
     def ui_regenerate_step(session_id: str, step_id: str):
         """One fresh LLM call for exactly this step (generate_step_text --
@@ -2446,7 +2492,7 @@ def create_app(
     @app.get("/sessions/{session_id}/doc.docx")
     def get_doc_docx(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "docx")
+        filename = _download_filename(_session_meta(session_id), ".docx")
         return Response(
             (session_dir / "doc.docx").read_bytes(),
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -2456,7 +2502,7 @@ def create_app(
     @app.get("/sessions/{session_id}/doc.pdf")
     def get_doc_pdf(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "pdf")
+        filename = _download_filename(_session_meta(session_id), ".pdf")
         return Response(
             (session_dir / "doc.pdf").read_bytes(),
             media_type="application/pdf",
@@ -2466,7 +2512,7 @@ def create_app(
     @app.get("/sessions/{session_id}/doc.single.html")
     def get_doc_single_html(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "html")
+        filename = _download_filename(_session_meta(session_id), ".html")
         return Response(
             (session_dir / "doc.single.html").read_text(encoding="utf-8"),
             media_type="text/html",
@@ -2479,7 +2525,7 @@ def create_app(
         path = session_dir / "walkthrough.html"
         if not path.exists():  # a session generated before 6d
             raise HTTPException(status_code=404, detail="walkthrough not generated; re-render")
-        filename = _download_filename(sessions[session_id][0], "walkthrough.html")
+        filename = _download_filename(_session_meta(session_id), "_Walkthrough.html")
         return Response(
             path.read_text(encoding="utf-8"),
             media_type="text/html",
@@ -2492,7 +2538,7 @@ def create_app(
         path = session_dir / "spl.pptx"
         if not path.exists():  # generated before 6f, or the deck export failed
             raise HTTPException(status_code=404, detail="SPL deck not available; re-render")
-        filename = _download_filename(sessions[session_id][0], "SPL.pptx")
+        filename = _download_filename(_session_meta(session_id), "_SPL.pptx")
         return Response(
             path.read_bytes(),
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -2502,7 +2548,7 @@ def create_app(
     @app.get("/sessions/{session_id}/export.md.zip")
     def get_export_md_zip(session_id: str):
         session_dir = _require_done(session_id)
-        filename = _download_filename(sessions[session_id][0], "zip")
+        filename = _download_filename(_session_meta(session_id), "_Markdown.zip")
         return Response(
             (session_dir / "export.md.zip").read_bytes(),
             media_type="application/zip",

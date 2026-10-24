@@ -92,6 +92,7 @@ def assemble_docx(
     doc_no=None,
     narrative_text=None,
     phases=None,
+    subtitle=None,
     omitted_screenshots=(),
 ):
     """Builds a complete docx from a manifest's steps (already rendered via
@@ -116,7 +117,7 @@ def assemble_docx(
         date=date,
     )
     title = manifest.session.title or manifest.session.id
-    sop.title_page(title.upper(), author=author, doc_no=doc_no)
+    sop.title_page(title.upper(), author=author, doc_no=doc_no, subtitle=subtitle)
 
     # A real Word TOC field (docx_fields.py), not SOPBuilder's own
     # plain-text toc() -- the cached text is the same toc_lines() would

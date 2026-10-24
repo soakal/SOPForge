@@ -129,6 +129,36 @@
 - Not verified here: the PowerPoint COM path, and how long PowerPoint takes
   on each step-edit re-export (SOP Factory runs it once per build).
 
+## AC7 (6g, metadata and packaging) — PASS
+
+- `src/pipeline/doc_meta.py`: title (capture/auto title), author (configured,
+  else the Windows user, else "SOPForge"), doc number (always present,
+  `SOP-XXXX` when no prefix is configured), revision 1.0, optional subtitle.
+  Overrides in the session's `metadata.json`; the title goes to the manifest
+  so the library agrees. `POST /ui/sessions/{id}/metadata` validates (revision
+  like 1.0, ≤120 chars) and re-exports with no LLM call. Resolved values are
+  in `report["document"]` for the review page.
+- Docx title page and PDF cover use the subtitle; author, doc number and
+  revision reach docx, PDF and the SPL deck.
+- Downloads: `<Title_Words>_v<rev>` + `.docx` / `.pdf` / `.html` /
+  `_Walkthrough.html` / `_SPL.pptx` / `_Markdown.zip`.
+- `tests/pipeline/test_doc_meta.py` (7, incl. an end-to-end edit through the
+  server); download-name assertions in `test_server_exports.py` updated.
+
+## Model review (2026-10-24)
+
+- Fixed: the Anthropic provider read `content[0].text`, but current Claude
+  models return a thinking block first, so every Anthropic call fell back to
+  the template; `max_tokens` 1024 → 16000; refusals and empty replies raise.
+  No code sends temperature/top_p/top_k (rejected by the API since
+  2026-10-21).
+- Claude IDs moved to the current generation (Sonnet/Opus/Haiku 5.5, Fable
+  5.1); planner/reviewer → `claude-fable-5-1`; `run-loop.ps1 -Model` pins the
+  executor (`claude-opus-5-5`).
+- Local: `qwen3.6:27b` confirmed as an official Ollama tag. Candidates
+  `qwen3.6:27b` (steps) and `qwen3-vl:8b` (vision) added to suggestions;
+  shipped defaults unchanged until measured on the Ollama host.
+
 ## 6h — Forge UI redesign
 
 Rebuilt every page in `src/pipeline/webui/pages.py` (library, review queue,
@@ -173,6 +203,11 @@ page in both themes: `phases/06-screenshots/6h/`.
     "user", keep_screenshots=...)`, which preserves whichever of name/keep-list
     the call didn't change, then run the existing no-LLM re-export. A session
     without phases.json (screenshot build, pre-6c) gets 409. No config keys.
+  - 6g: a **Document details** card (title, subtitle, document no., author,
+    revision) prefilled from `report["document"]` posts to the existing
+    `/ui/sessions/{id}/metadata`; blank resets a field to its inferred value.
+    The library's Doc no. column now shows that same resolved number (falling
+    back to doc_meta's inferred `SOP-XXXX` before a first export).
   - 6f's SPL deck (`spl.pptx`) is the SPL chip and an "SPL deck" download,
     shown only when the file exists; `spl_text_overflow` renders as a review
     note listing the over-long boxes, `spl_error` as a "deck not built" note.
@@ -201,7 +236,7 @@ page in both themes: `phases/06-screenshots/6h/`.
 
 | Criterion | Result |
 |---|---|
-| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **723 passed** (after merging `factory-parity` @ `e5557d1`), 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (17). |
+| Every existing UI route still renders; every existing UI test passes | PASS. No route or form field removed/renamed. `pytest` (Linux container, pinned ruff 0.15.20 clean): **731 passed** (after merging `factory-parity` @ `fc74f9b`), 6 skipped; the 7 failures/errors are the pre-existing Windows-only set (`winsdk` OCR ×5 in `test_redaction.py`, live UIA, elevated-hotkey probe), identical to the pre-change baseline on `factory-parity` @ `6f49217` (680 passed + same 7). New: `tests/pipeline/test_webui_forge.py` (19). |
 | Playwright `-m ui` | **5 passed** (2 existing + 3 new). `test_ui_smoke_upload_to_docx_download` was already failing on `factory-parity` before this change: F-02 (`28287b5`) made "Verify claims" yellow and updated the unit-test twin (`test_session_page_colors_sidecar_sections_correctly`) but not this browser test. Its assertion now matches the unit test (`yellow`); nothing else in it changed. `_launch()` honours `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for containers whose browser revision differs from the pip package. |
 | Served pages make no external network requests | PASS. Browser-level: every request recorded on `/ui`, `/ui?view=review`, a session page, `/ui/config`, and through both drop-zone flows is same-origin (`_assert_local_only`). Markup-level: `test_pages_reference_no_external_resources` (no absolute `src`/`href`/`url()`, no `@import`, no CDN). |
 | Plex fonts load from the frozen bundle | PASS. `test_font_route_reads_from_the_frozen_bundle` (sys.frozen + `_MEIPASS` monkeypatched → bytes come from the bundle dir); `test_server_spec_bundles_the_plex_fonts`; in-browser `document.fonts.check()` true for Plex Sans 600 and Plex Mono on all four page types, body font resolves to `"IBM Plex Sans"`, every font response 200. A real PyInstaller build is not runnable on this Linux container (spec is Windows-targeted; CLAUDE.md runs it for phases 1 & 3 only). |
@@ -218,8 +253,7 @@ the grid column grew to the table's width and scrolled the whole page (now
 `minmax(0,1fr)`, table scrolls inside its own wrapper); doc numbers stay on
 one line (`white-space:nowrap`, the wrap visible in the mockup). Known and
 left: the per-session doc number is the existing `doc_number(prefix,
-manifest.session.id)` — blank (—) when no prefix is configured, until 6g
-auto-generates one.
+manifest.session.id)`; superseded by 6g's resolved number (see above).
 
 ### AC9 — PASS
 

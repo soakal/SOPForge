@@ -339,3 +339,27 @@ def test_session_page_shows_spl_overflow_and_error_notes():
     assert "SPL deck not built" in page and "boom" in page
     assert page.count('<section class="card" data-status="') == 3
     assert "SPL deck" not in render_session_page("sid", "T", "d", {}, {})
+
+
+def test_document_details_card_round_trips_through_metadata_route(tmp_path):
+    client = _make_client(tmp_path)
+    session_id, _ = _create_and_wait(client, tmp_path)
+    report = client.get(f"/sessions/{session_id}/report").json()
+    page = client.get(f"/ui/sessions/{session_id}").text
+    assert f'action="/ui/sessions/{session_id}/metadata"' in page
+    for key in ("title", "subtitle", "doc_no", "author", "revision"):
+        assert f'name="{key}" id="meta-{key}"' in page
+    assert f'value="{report["document"]["doc_no"]}"' in page
+    # The library shows the same doc number the exports were stamped with.
+    assert f'<td class="num">{report["document"]["doc_no"]}</td>' in client.get("/ui").text
+
+    resp = client.post(
+        f"/ui/sessions/{session_id}/metadata",
+        data={"doc_no": "SOP-IT-777", "revision": "2.1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    _wait_done(client, session_id)
+    assert '<td class="num">SOP-IT-777</td>' in client.get("/ui").text
+    page = client.get(f"/ui/sessions/{session_id}").text
+    assert 'value="SOP-IT-777"' in page and 'value="2.1"' in page

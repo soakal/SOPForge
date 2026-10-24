@@ -292,6 +292,7 @@ border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 -6px 20p
 .cfg .card h2{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .cfg .row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
 .cfg .field input[type=text],.cfg .field select{max-width:none}
+.cfg .row .wide{grid-column:1/-1}
 .test{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .test .muted{font-size:12.5px;overflow-wrap:anywhere}
 table.rec td,table.rec th{white-space:nowrap}
@@ -573,6 +574,42 @@ def _phases_card(sid, phases, steps_by_id):
         '<p class="help" style="margin:-4px 0 8px">Renaming a phase re-exports every format '
         "without calling the AI.</p>"
         f'<ol class="phases">{"".join(rows)}</ol></div>'
+    )
+
+
+_META_FIELDS = (
+    ("title", "Title"),
+    ("subtitle", "Subtitle"),
+    ("doc_no", "Document no."),
+    ("author", "Author"),
+    ("revision", "Revision"),
+)
+
+
+def _document_card(sid, document):
+    """6g's resolved title/subtitle/doc no./author/revision, editable. Posts
+    to /ui/sessions/{id}/metadata; a blank field returns to its inferred
+    default. Rendered only when report.json carries "document"."""
+    if not isinstance(document, dict):
+        return ""
+    fields = "".join(
+        f'<div class="field{" wide" if key == "title" else ""}">'
+        f'<label for="meta-{key}">{label}</label>'
+        f'<input type="text" name="{key}" id="meta-{key}" maxlength="120" '
+        f'value="{html.escape(str(document.get(key) or ""))}"'
+        + (' pattern="\\d{1,3}(\\.\\d{1,3}){0,2}" placeholder="1.0"' if key == "revision" else "")
+        + "></div>"
+        for key, label in _META_FIELDS
+    )
+    return (
+        '<div class="card"><h2>Document details</h2>'
+        '<p class="help" style="margin:-4px 0 10px">Shown on the title page, revision table '
+        "and SPL footer, and used to name downloads. Clear a field to go back to the "
+        "inferred value. Saving re-exports every format without calling the AI.</p>"
+        f'<form method="post" action="/ui/sessions/{sid}/metadata" class="cfg">'
+        f'<div class="row">{fields}</div>'
+        '<div class="actions" style="margin-bottom:0"><button type="submit" class="secondary">'
+        "Save details</button></div></form></div>"
     )
 
 
@@ -1117,7 +1154,7 @@ _RECOMMENDED = {
 }
 _MODEL_SUGGESTIONS = {
     "steps": {
-        "ollama": ["qwen3:32b", "qwen3:14b"],
+        "ollama": ["qwen3:32b", "qwen3.6:27b", "qwen3:14b"],
         "openrouter": [
             "anthropic/claude-sonnet-5.5",
             "anthropic/claude-haiku-5.5",
@@ -1143,7 +1180,7 @@ _MODEL_SUGGESTIONS = {
         "anthropic": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"],
     },
     "vision": {
-        "ollama": ["qwen2.5vl:7b"],
+        "ollama": ["qwen2.5vl:7b", "qwen3-vl:8b", "qwen3.6:27b"],
         "openrouter": [
             "anthropic/claude-sonnet-5.5",
             "anthropic/claude-opus-5.5",
@@ -1583,6 +1620,7 @@ def render_session_page(
     else:
         omitted_note = ""
     phases_card = _phases_card(sid, report.get("phases"), steps_by_id)
+    document_card = _document_card(sid, report.get("document"))
     spl_overflow = [str(t) for t in report.get("spl_text_overflow") or []]
     spl_note = ""
     if report.get("spl_error"):
@@ -1637,6 +1675,7 @@ def render_session_page(
     report_col = (
         '<div class="card"><h2>Downloads</h2>'
         f'<ul class="dl">{downloads}</ul></div>'
+        f"{document_card}"
         '<p class="help" style="margin:0 0 16px">Every recorded step is included &mdash; the '
         "document has one step per captured action, nothing skipped. The report below only "
         "flags steps worth a second look: <em>template-fallback</em> steps are still complete "

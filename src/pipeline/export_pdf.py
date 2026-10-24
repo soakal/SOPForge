@@ -169,6 +169,7 @@ def render_pdf(
     doc_no=None,
     phases=None,
     omitted_screenshots=(),
+    subtitle=None,
 ):
     """Builds a PDF mirroring the docx layout (docx_assembler.py): a title
     page (with doc number/author/revision when given), a table of contents,
@@ -196,7 +197,14 @@ def render_pdf(
     pdf.ln(6)
     pdf.set_font(pdf._font_family, "", 12)
     pdf.set_text_color(*_MUTED)
-    pdf.multi_cell(0, 7, "Standard Operating Procedure", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(
+        0,
+        7,
+        _safe_text(subtitle or "Standard Operating Procedure", pdf._font_family),
+        align="C",
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
     pdf.ln(10)
     meta_lines = []
     if doc_no:

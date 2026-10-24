@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from pipeline.assembler import doc_number
+from pipeline.doc_meta import DEFAULT_DOC_PREFIX
 
 # (file on disk, chip label) -- the download routes server.py serves.
 EXPORTS = (
@@ -125,7 +126,10 @@ def session_row(session_id, title, date, session_dir, manifest, status, doc_no_p
         "title": title or session_id,
         "date": str(date or ""),
         "mode": "Screenshots" if is_photo else "Capture",
-        "doc_no": doc_number(doc_no_prefix, doc_id) if doc_id else None,
+        # 6g: the number the exports were stamped with (overrides included);
+        # before a first export, the same inferred default doc_meta uses.
+        "doc_no": (report.get("document") or {}).get("doc_no")
+        or (doc_number(doc_no_prefix or DEFAULT_DOC_PREFIX, doc_id) if doc_id else None),
         "steps": steps,
         "ai_steps": ai_written_count(session_dir, report, steps) if status == "done" else None,
         "state": state,
