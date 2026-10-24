@@ -37,14 +37,32 @@ writes to it. Code is copied into this repo, never imported from that folder.
   `walkthrough_template.html` (step navigation, keyboard, clickable phase chips,
   `?shot=N`). Each step shows its real screenshot with a clickable hotspot over
   `element.bounding_rect`. Built from the same `step_results` as the docx.
-- **6e — Labelled redaction.** Cover-box redactions with a generic label
-  ("Your Company") alongside the existing blur, applied before crop/annotate so
-  every export gets identical pixels.
-- **6f — SPL deck (optional).** `.pptx` export via a ported `spl_lib`, only when
-  PowerPoint is detected; otherwise the export is absent, never broken.
-- **6g — Packaging.** Per-doc metadata (title, subtitle, doc number, revision,
-  author) set in the review UI; exports download as `<Name>_v<rev>.<ext>` named
-  after the procedure.
+- **6e — Labelled redaction.** The existing OCR/password redaction hits are
+  covered with a box labelled by detected type (`email`, `IP address`,
+  `password`) instead of only blurred, applied before crop/annotate so every
+  export gets identical pixels.
+- **6f — SPL deck.** `.pptx` export via a ported `spl_lib`. Text fit is measured
+  in PowerPoint when it is installed; otherwise estimated with Pillow font
+  metrics plus a safety margin. The deck always builds.
+- **6g — Packaging.** Per-doc metadata inferred, never required: title from the
+  capture, author from the Windows username, doc number auto-generated; all
+  editable in the review UI. Exports download as `<Name>_v<rev>.<ext>`.
+- **6h — UI redesign ("Forge").** Rebuild `src/pipeline/webui/` pages: graphite
+  sidebar (Library, New SOP, Review queue, Configuration; Ollama status +
+  version in the footer), warm off-white surface, ember-orange accent, IBM Plex
+  Sans + Mono bundled under `assets/fonts/` (OFL, offline, in the PyInstaller
+  spec). Library as a table (thumbnail, doc no., steps, status pill, available
+  exports, updated) with four stat tiles (procedures, need review, steps
+  captured, steps AI-written = steps not on template fallback, from the sidecar
+  reports). One drop zone replaces both upload forms and auto-detects capture
+  (`manifest.json` + PNGs) vs. screenshots + transcript. Light and dark themes.
+  Plain HTML/CSS/JS, no build step, no CDN.
+
+## Rule: zero new configuration
+
+Phase 6 adds no new config keys, settings, or toggles. Every feature is on by
+default, picks its behaviour from what is available (Ollama reachable,
+PowerPoint installed), and degrades quietly instead of asking.
 
 ## Acceptance criteria (record in phases/06-results.md)
 
@@ -66,10 +84,17 @@ writes to it. Code is copied into this repo, never imported from that folder.
    to the displayed crop.
 5. 6e: a labelled redaction region in the fixture is fully covered in every
    exported image (pixel check), and the label text is not OCR'd from the source.
-6. 6f: with PowerPoint absent the server starts, the pptx export is not offered,
-   and nothing errors.
+6. 6f: with PowerPoint absent, the golden fixture still produces a pptx whose
+   estimated text fit passes; with PowerPoint present, `save()` measures in
+   PowerPoint and raises `TextOverflow` rather than shipping cut-off text.
 7. 6g: download filenames derive from the title, with filesystem-unsafe
-   characters removed.
+   characters removed; a doc builds with no metadata entered.
+8. 6h: every existing UI route still renders and every existing UI test
+   passes; served pages make no external network requests; Plex fonts load
+   from the frozen bundle; both drop-zone paths reach a built document in the
+   playwright smoke test; `design:accessibility-review` finds no WCAG AA
+   contrast failures.
+9. No new keys in `config/models.toml` or any settings page (diff check).
 
 ## Invariant notes
 
