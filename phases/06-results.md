@@ -89,3 +89,20 @@
 - Found by the tests and fixed: step text embedded as JSON escaped only `</`,
   so a title containing `<script` reached the HTML parser; all `<`, `>`, `&`
   are now `\u`-escaped.
+
+## AC5 (6e, labelled redaction) — PASS (Linux, OCR stubbed); real OCR path pending Windows run
+
+- `src/capture/redact.py`: OCR pattern hits and password fields are now covered
+  with a solid graphite box labelled by type (`email`, `IP address`,
+  `password`; other pattern names shown as-is) instead of a Gaussian blur. A
+  solid cover leaves nothing of the text to reconstruct, which a blur of short
+  text can. OCR word boxes are padded 2 px for anti-aliased edges; UIA control
+  rects are not. Labels are dropped (box stays) when they don't fit.
+- Still applied once, in place, on the raw screenshot at capture time, so every
+  export (and the walkthrough) gets the same pixels. Manifest `reason` values
+  are unchanged (`pattern`, `password_heuristic`): no schema change.
+- `tests/test_redaction_cover.py` (5, OCR stubbed so they run off Windows): no
+  pixel of the seeded secret colour survives, label drawn, neighbouring text
+  untouched, exact password rect, tiny box unlabelled, clamping and degenerate
+  boxes. `tests/test_redaction.py` (real Windows OCR) renamed blur → cover; its
+  assertions still hold by construction but have not been run on Windows yet.

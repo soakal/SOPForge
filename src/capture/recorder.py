@@ -13,7 +13,13 @@ from capture.dpi import monitor_scale
 from capture.hooks import InputRecorder
 from capture.manifest import ManifestBuilder
 from capture.narration import NarrationRecorder
-from capture.redact import OcrUnavailableError, blur_regions, is_password_field, load_config
+from capture.redact import (
+    PASSWORD_LABEL,
+    OcrUnavailableError,
+    cover_regions,
+    is_password_field,
+    load_config,
+)
 from capture.redact import redact_screenshot_tagged as _redact_screenshot_tagged
 from capture.shots import ScreenshotWriter
 from capture.uia import resolve_at
@@ -136,7 +142,7 @@ class Recorder:
 
     def _redact(self, screenshot_path, element):
         """Returns the manifest `redactions` list (region+reason) for the
-        regions actually blurred."""
+        regions actually covered."""
         try:
             return _redact_screenshot_tagged(
                 screenshot_path, element=element, config=self._redact_config
@@ -150,7 +156,7 @@ class Recorder:
             if element is not None and is_password_field(element, self._redact_config):
                 rect = element.get("bounding_rect")
                 if rect:
-                    applied = blur_regions(screenshot_path, [tuple(rect)])
+                    applied = cover_regions(screenshot_path, [tuple(rect)], labels=[PASSWORD_LABEL])
                     return [{"region": list(r), "reason": "password_heuristic"} for r in applied]
             return []
 
