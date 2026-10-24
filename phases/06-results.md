@@ -128,3 +128,33 @@
   Rendered a 9-step sample through LibreOffice and checked the slides by eye.
 - Not verified here: the PowerPoint COM path, and how long PowerPoint takes
   on each step-edit re-export (SOP Factory runs it once per build).
+
+## AC7 (6g, metadata and packaging) — PASS
+
+- `src/pipeline/doc_meta.py`: title (capture/auto title), author (configured,
+  else the Windows user, else "SOPForge"), doc number (always present,
+  `SOP-XXXX` when no prefix is configured), revision 1.0, optional subtitle.
+  Overrides in the session's `metadata.json`; the title goes to the manifest
+  so the library agrees. `POST /ui/sessions/{id}/metadata` validates (revision
+  like 1.0, ≤120 chars) and re-exports with no LLM call. Resolved values are
+  in `report["document"]` for the review page.
+- Docx title page and PDF cover use the subtitle; author, doc number and
+  revision reach docx, PDF and the SPL deck.
+- Downloads: `<Title_Words>_v<rev>` + `.docx` / `.pdf` / `.html` /
+  `_Walkthrough.html` / `_SPL.pptx` / `_Markdown.zip`.
+- `tests/pipeline/test_doc_meta.py` (7, incl. an end-to-end edit through the
+  server); download-name assertions in `test_server_exports.py` updated.
+
+## Model review (2026-10-24)
+
+- Fixed: the Anthropic provider read `content[0].text`, but current Claude
+  models return a thinking block first, so every Anthropic call fell back to
+  the template; `max_tokens` 1024 → 16000; refusals and empty replies raise.
+  No code sends temperature/top_p/top_k (rejected by the API since
+  2026-10-21).
+- Claude IDs moved to the current generation (Sonnet/Opus/Haiku 5.5, Fable
+  5.1); planner/reviewer → `claude-fable-5-1`; `run-loop.ps1 -Model` pins the
+  executor (`claude-opus-5-5`).
+- Local: `qwen3.6:27b` confirmed as an official Ollama tag. Candidates
+  `qwen3.6:27b` (steps) and `qwen3-vl:8b` (vision) added to suggestions;
+  shipped defaults unchanged until measured on the Ollama host.
