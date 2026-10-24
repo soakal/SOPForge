@@ -135,3 +135,19 @@ def test_walkthrough_endpoint(tmp_path):
     assert f'filename="{slug}.walkthrough.html"' in resp.headers["content-disposition"]
     for step in manifest.steps:
         assert f'"id": "{step.id}"' in resp.text
+
+
+def test_spl_endpoint(tmp_path):
+    """Phase 6f: every session also ships the SPL PowerPoint deck."""
+    client, session_id, manifest = _create_session(tmp_path)
+    resp = client.get(f"/sessions/{session_id}/spl.pptx")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
+    slug = _slugify(manifest.session.title or manifest.session.id)
+    assert f'filename="{slug}.SPL.pptx"' in resp.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
+        assert "ppt/presentation.xml" in zf.namelist()
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert "spl_error" not in report

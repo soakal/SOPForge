@@ -106,3 +106,25 @@
   untouched, exact password rect, tiny box unlabelled, clamping and degenerate
   boxes. `tests/test_redaction.py` (real Windows OCR) renamed blur → cover; its
   assertions still hold by construction but have not been run on Windows yet.
+
+## AC6 (6f, SPL deck) — PASS (estimate path); PowerPoint path pending Windows run
+
+- `vendor/sop_factory_2/spl_lib.py` + `Single Point Lesson Template V4.potm`
+  vendored unmodified from sop-factory-local `e4a00e5`; bundled in
+  `sopforge-server.spec` (datas + `pptx`/`win32com.client` hidden imports);
+  `python-pptx==1.0.2` pinned.
+- `src/pipeline/export_spl.py`: `spl.pptx` written with every export, served at
+  `GET /sessions/{id}/spl.pptx`. Title slide + phase-labelled step slides
+  ("(cont.)" on later ones), up to 2 screenshots each, SOP step numbers
+  continued via `startAt`, review markers on the red notes line.
+- Fit: PowerPoint (`spl_lib.fit_text`, COM initialised per worker thread) when
+  `PowerPoint.Application` is registered; otherwise, or if COM fails, a
+  font-metric estimate (Calibri when installed, else the wider DejaVu Sans)
+  shrinks 1pt at a time to the 12pt floor. Slides are planned with the same
+  estimate so each fits at ≥12pt. Step text is never truncated; anything that
+  still overflows goes to the report as `spl_text_overflow`, and a deck
+  failure as `spl_error`, without blocking the other exports.
+- `tests/pipeline/test_export_spl.py` (8) + `test_server_exports.py::test_spl_endpoint`.
+  Rendered a 9-step sample through LibreOffice and checked the slides by eye.
+- Not verified here: the PowerPoint COM path, and how long PowerPoint takes
+  on each step-edit re-export (SOP Factory runs it once per build).

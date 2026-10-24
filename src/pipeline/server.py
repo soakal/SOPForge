@@ -77,6 +77,7 @@ from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import _slugify, export_markdown_bundle
 from pipeline.export_pdf import render_pdf
+from pipeline.export_spl import build_spl_deck
 from pipeline.export_walkthrough import render_walkthrough
 from pipeline.generation import generate_step_text
 from pipeline.grouping import (
@@ -1518,6 +1519,28 @@ def create_app(
         )
         (session_dir / "walkthrough.html").write_text(walkthrough, encoding="utf-8")
 
+        # SPL deck (6f): measured in PowerPoint when installed, else by the
+        # font-metric estimate. Best-effort: a deck failure never costs the
+        # session its document, it's reported instead.
+        spl_path = session_dir / "spl.pptx"
+        report.pop("spl_text_overflow", None)
+        report.pop("spl_error", None)
+        try:
+            _spl, spl_problems = build_spl_deck(
+                manifest,
+                md_step_results,
+                annotated_paths,
+                spl_path,
+                author=doc_cfg.author,
+                **layout,
+            )
+            if spl_problems:
+                report["spl_text_overflow"] = spl_problems
+        except Exception as exc:  # noqa: BLE001 - optional export, never blocks the doc
+            logger.exception("SPL deck export failed for session %s", session_id)
+            report["spl_error"] = str(exc)
+            spl_path.unlink(missing_ok=True)
+
         md_bundle_dir = session_dir / "md_bundle"
         export_markdown_bundle(
             manifest,
@@ -2399,6 +2422,19 @@ def create_app(
         return Response(
             path.read_text(encoding="utf-8"),
             media_type="text/html",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/sessions/{session_id}/spl.pptx")
+    def get_spl_pptx(session_id: str):
+        session_dir = _require_done(session_id)
+        path = session_dir / "spl.pptx"
+        if not path.exists():  # generated before 6f, or the deck export failed
+            raise HTTPException(status_code=404, detail="SPL deck not available; re-render")
+        filename = _download_filename(sessions[session_id][0], "SPL.pptx")
+        return Response(
+            path.read_bytes(),
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 

@@ -34,6 +34,12 @@ a = Analysis(
             "vendor/sop_factory_2/SOP_TEMPLATE_WITH_PHOTOS.docx",
             "vendor/sop_factory_2",
         ),
+        # Phase 6f SPL deck engine + its VRSI template (pipeline/export_spl.py).
+        ("vendor/sop_factory_2/spl_lib.py", "vendor/sop_factory_2"),
+        (
+            "vendor/sop_factory_2/Single Point Lesson Template V4.potm",
+            "vendor/sop_factory_2",
+        ),
         # DejaVu Sans (Bitstream Vera license -- freely redistributable/
         # embeddable, see assets/fonts/dejavu-sans/LICENSE) gives export_pdf.py
         # a real Unicode font instead of core-font Latin-1 + a transliteration
@@ -50,7 +56,9 @@ a = Analysis(
     # can't see that it needs python-docx, so its import must be declared
     # explicitly. Found by running the actual built EXE end-to-end
     # (task-11), which failed with "No module named 'docx'"; not assumed.
-    hiddenimports=["docx"],
+    # spl_lib.py is loaded the same way and needs python-pptx; its optional
+    # PowerPoint text-fit pass needs win32com (pywin32).
+    hiddenimports=["docx", "pptx", "win32com.client"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
