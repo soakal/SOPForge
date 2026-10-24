@@ -8,13 +8,15 @@ Inferred defaults:
 - title: the capture's title (auto-generated from the steps when blank).
 - author: config/models.toml [document].author when someone set it, else the
   Windows user running SOPForge, else "SOPForge".
-- doc_no: "<prefix>-XXXX" from the session id (assembler.doc_number), with
-  "SOP" standing in when no prefix is configured.
+- doc_no: "<prefix>-0001", "<prefix>-0002", ... from a per-prefix counter in
+  the sessions folder (assign_doc_number), "SOP" standing in when no prefix
+  is configured. Each session keeps the number it was first given.
 - revision: "1.0"; subtitle: none."""
 
 import getpass
 import json
 import re
+import threading
 from dataclasses import asdict, dataclass
 
 from pipeline.assembler import doc_number
@@ -25,6 +27,11 @@ DEFAULT_REVISION = "1.0"
 FIELDS = ("title", "subtitle", "doc_no", "author", "revision")
 MAX_FIELD_LEN = 120
 _REVISION_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){0,2}$")
+DOC_NO_FILE = "doc_no.txt"
+COUNTER_FILE = "doc_numbers.json"
+# Export jobs run on worker threads in one server process; the lock keeps two
+# jobs from taking the same number.
+_COUNTER_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -43,12 +50,45 @@ def _os_user():
         return None
 
 
-def inferred_meta(manifest, doc_cfg):
+def assign_doc_number(session_dir, prefix):
+    """This session's document number: the one it was given before
+    (session_dir/doc_no.txt), else the next "<prefix>-NNNN" from the counter
+    in the sessions folder (session_dir's parent), saved for next time.
+    Sequential per prefix, so no two documents share a number -- unlike
+    the old session-id suffix, which repeats once there are a few hundred."""
+    own = session_dir / DOC_NO_FILE
+    try:
+        existing = own.read_text(encoding="utf-8").strip()
+        if existing:
+            return existing
+    except OSError:
+        pass
+    counter_path = session_dir.parent / COUNTER_FILE
+    with _COUNTER_LOCK:
+        try:
+            counters = json.loads(counter_path.read_text(encoding="utf-8"))
+            if not isinstance(counters, dict):
+                counters = {}
+        except (OSError, ValueError):
+            counters = {}
+        last = counters.get(prefix)
+        number = (last if isinstance(last, int) else 0) + 1
+        counters[prefix] = number
+        counter_path.write_text(json.dumps(counters, indent=2), encoding="utf-8")
+        doc_no = f"{prefix}-{number:04d}"
+        own.write_text(doc_no, encoding="utf-8")
+    return doc_no
+
+
+def inferred_meta(manifest, doc_cfg, doc_no=None):
+    """Inferred metadata. doc_no comes from assign_doc_number when there is
+    a session folder; without one, the session-id form stands in."""
     author = doc_cfg.author if doc_cfg.author and doc_cfg.author != DEFAULT_AUTHOR else None
+    prefix = doc_cfg.doc_no_prefix or DEFAULT_DOC_PREFIX
     return DocMeta(
         title=manifest.session.title or manifest.session.id,
         subtitle=None,
-        doc_no=doc_number(doc_cfg.doc_no_prefix or DEFAULT_DOC_PREFIX, manifest.session.id),
+        doc_no=doc_no or doc_number(prefix, manifest.session.id),
         author=author or _os_user() or DEFAULT_AUTHOR,
         revision=DEFAULT_REVISION,
     )
@@ -66,7 +106,9 @@ def load_overrides(session_dir):
 
 def resolve_meta(manifest, doc_cfg, session_dir):
     """Inferred metadata with this session's overrides applied."""
-    meta = asdict(inferred_meta(manifest, doc_cfg))
+    prefix = doc_cfg.doc_no_prefix or DEFAULT_DOC_PREFIX
+    doc_no = assign_doc_number(session_dir, prefix)
+    meta = asdict(inferred_meta(manifest, doc_cfg, doc_no=doc_no))
     overrides = load_overrides(session_dir)
     overrides.pop("title", None)
     meta.update(overrides)
