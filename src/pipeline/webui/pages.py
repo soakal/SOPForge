@@ -140,6 +140,11 @@ width:100%;max-width:460px}
 input[type=number]{width:5.5em}
 textarea{min-height:6em;max-width:100%;resize:vertical;line-height:1.5}
 ::placeholder{color:var(--muted);opacity:1}
+input[type=file]{padding:5px 6px;color:var(--muted);cursor:pointer}
+input[type=file]::file-selector-button{font:inherit;font-weight:600;font-size:13px;margin-right:10px;
+padding:5px 12px;border:1px solid var(--border-2);border-radius:6px;background:var(--card-2);color:var(--fg);
+cursor:pointer}
+input[type=file]::file-selector-button:hover{border-color:var(--muted)}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--ember);outline-offset:0;border-color:transparent}
 .help{color:var(--muted);font-size:12.5px;margin:6px 0 0;max-width:80ch}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:500;line-height:18px;
