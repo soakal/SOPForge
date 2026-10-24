@@ -13,6 +13,12 @@ import — see that module's docstring. Do not edit `sop_lib.py` here; treat
 it as an external dependency snapshot (CLAUDE.md: "extend it, do not rewrite
 it") and update it by re-copying from the source repo, not by hand-patching.
 
+Re-vendored 10/23/2026 from `soakal/sop-factory-local` (`template/sop_lib.py`
+at `e4a00e5`) for Phase 6a: adds `keep_with_next` on headings, on the
+paragraph before an image, and `code_block()`. The template docx was
+content-identical and was not re-copied. That repo is a read-only reference;
+SOPForge never writes to it.
+
 `SOPFORGE_SOP_FACTORY_2_DIR` still overrides this location at runtime, for
 anyone testing against a newer/different copy of the engine.
 
