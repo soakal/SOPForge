@@ -38,7 +38,7 @@ a = Analysis(
         "unittest",
         "pywinauto.unittests",
         # Not imported at runtime by anything the app actually uses (verified:
-        # PIL/pywinauto/pystray/winsdk/comtypes/mss/pynput don't put it in
+        # PIL/pywinauto/pystray/winrt/comtypes/mss/pynput don't put it in
         # sys.modules) — PyInstaller's static analysis only picks it up via
         # some library's conditional/optional import paths.
         "numpy",

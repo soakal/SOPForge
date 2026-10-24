@@ -7,7 +7,13 @@ Pillow==12.3.0
 numpy==2.5.0
 pystray==0.19.5
 pyinstaller==6.21.0
-winsdk==1.0.0b10
+winrt-runtime==4.0.0
+winrt-Windows.Foundation==4!10.0.28000.2705
+winrt-Windows.Foundation.Collections==4!10.0.28000.2705
+winrt-Windows.Graphics.Imaging==4!10.0.28000.2705
+winrt-Windows.Media.Ocr==4!10.0.28000.2705
+winrt-Windows.Storage==4!10.0.28000.2705
+winrt-Windows.Storage.Streams==4!10.0.28000.2705
 pydantic==2.13.4
 jsonschema==4.26.0
 fastapi==0.139.0

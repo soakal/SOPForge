@@ -1,5 +1,5 @@
 """Post-capture redaction pass: OCR each screenshot (Windows.Media.Ocr via
-winsdk) for text matching configured patterns (email, IPv4) and cover those
+PyWinRT's winrt-* packages) for text matching configured patterns (email, IPv4) and cover those
 regions with a solid box labelled with what was hidden ("email", "IP
 address"). Password fields never show their real value as OCR-able text
 (they're masked on screen), so they're caught separately via a UIA-metadata
@@ -21,11 +21,12 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-# winsdk's WinRT projection modules are deferred (imported inside _ocr_words,
-# not here) — importing winsdk.windows.storage alone drags in most of the
-# WinRT metadata tree (applicationmodel, background, contacts, ui.text, ...)
-# and cost ~500ms at cold start, which is otherwise unused until the first
-# screenshot is actually redacted. See scripts/verify_exe.py (criterion 4).
+# The WinRT projection modules (PyWinRT's per-namespace winrt-* packages,
+# which replaced the archived monolithic winsdk) are deferred (imported inside
+# _ocr_words, not here) — the old winsdk.windows.storage import alone dragged
+# in most of the WinRT metadata tree and cost ~500ms at cold start, which is
+# otherwise unused until the first screenshot is actually redacted. See
+# scripts/verify_exe.py (criterion 4).
 
 
 def _app_root():
@@ -91,24 +92,32 @@ def is_password_field(element, config):
     return bool(tokens & keywords)
 
 
+def _create_ocr_engine():
+    """An OCR engine for the user profile's languages, or None when no OCR
+    language pack is installed. A module-level seam so tests can simulate a
+    machine without OCR, without patching the WinRT class itself."""
+    from winrt.windows.media.ocr import OcrEngine
+
+    return OcrEngine.try_create_from_user_profile_languages()
+
+
 async def _ocr_words(image_path):
     """(text, (left, top, right, bottom)) for every word OCR finds in the
     image at image_path. Reads via WinRT's BitmapDecoder (a real file
     on disk) rather than hand-building a SoftwareBitmap from raw pixel
     bytes — the latter silently produced empty OCR results in testing."""
-    from winsdk.windows.graphics.imaging import BitmapDecoder
-    from winsdk.windows.media.ocr import OcrEngine
-    from winsdk.windows.storage import StorageFile
+    from winrt.windows.graphics.imaging import BitmapDecoder
+    from winrt.windows.storage import FileAccessMode, StorageFile
 
     file = await StorageFile.get_file_from_path_async(str(image_path))
-    stream = await file.open_async(0)  # FileAccessMode.READ
+    stream = await file.open_async(FileAccessMode.READ)
     try:
         decoder = await BitmapDecoder.create_async(stream)
         bitmap = await decoder.get_software_bitmap_async()
     finally:
         stream.close()
 
-    engine = OcrEngine.try_create_from_user_profile_languages()
+    engine = _create_ocr_engine()
     if engine is None:
         raise OcrUnavailableError("no OCR engine available for the user profile's languages")
     result = await engine.recognize_async(bitmap)
@@ -127,7 +136,7 @@ async def _ocr_words(image_path):
 
 
 def ocr_words(image_path):
-    import asyncio  # deferred alongside winsdk — see _ocr_words's imports
+    import asyncio  # deferred alongside the winrt imports — see _ocr_words
 
     return asyncio.run(_ocr_words(image_path))
 
