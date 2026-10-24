@@ -1,0 +1,21 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+{% block head_extra %}{% endblock %}
+<title>{{ title }}</title><style>{{ font_css }}{% include "assets/forge.css" %}</style></head><body>
+<div class="app">
+<aside class="side"><a class="logo" href="/ui"><span class="mark" aria-hidden="true"></span>SOPForge</a>
+<nav aria-label="Main">
+{% for key, href, icon_name, label in nav_items %}
+<a href="{{ href }}"{% if key == active %} aria-current="page"{% endif %}>{{ icon(icon_name) }}<span>{{ label }}</span>
+{%- if key == "review" and review_count %}<span class="count" aria-label="{{ review_count }} need review">{{ review_count }}</span>{% endif %}</a>
+{% if key == "review" %}<div class="sec">System</div>{% endif %}
+{% endfor %}
+</nav>
+<div class="foot"><span id="llm-status" role="status"><span class="dot"></span><b>Checking LLM&hellip;</b></span><br>
+<span>v{{ version }} &middot; Built by CWI AI</span></div>
+</aside>
+<main>{% block body %}{% endblock %}</main>
+</div>
+{% include "assets/status_script.html" %}
+</body></html>

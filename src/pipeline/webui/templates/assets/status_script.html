@@ -1,0 +1,28 @@
+<script>
+(function(){
+  var el = document.getElementById('llm-status');
+  if (!el) return;
+  var KEY = 'sopforge.llm-status';
+  function name(p){ return {ollama:'Ollama', openrouter:'OpenRouter', openai:'OpenAI',
+    anthropic:'Anthropic'}[p] || p || 'LLM'; }
+  function paint(d){
+    var dot = el.querySelector('.dot'), txt = el.querySelector('b');
+    if (!d){ dot.className = 'dot error'; txt.textContent = 'LLM status unknown'; return; }
+    var word = d.status === 'ok' ? 'connected' : d.status === 'warn' ? 'model missing' : 'unreachable';
+    dot.className = 'dot ' + d.status;
+    txt.textContent = name(d.provider) + ' ' + word;
+    el.title = (d.model || '') + (d.detail ? ' \u2014 ' + d.detail : '');
+  }
+  try {
+    var c = JSON.parse(sessionStorage.getItem(KEY) || 'null');
+    if (c && Date.now() - c.t < 60000){ paint(c.d); return; }
+  } catch (e) {}
+  fetch('/ui/config/test', {method: 'POST', body: new URLSearchParams({section: 'steps'})})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      paint(d);
+      if (d) try { sessionStorage.setItem(KEY, JSON.stringify({t: Date.now(), d: d})); } catch (e) {}
+    })
+    .catch(function(){ paint(null); });
+})();
+</script>

@@ -1,0 +1,1 @@
+<script>(function(){var out=document.getElementById('keepcount');if(!out)return;var boxes=document.querySelectorAll('input[name=keep]');function n(){var k=0;boxes.forEach(function(b){if(b.checked)k++});out.textContent=k+' of '+boxes.length+' steps kept'}boxes.forEach(function(b){b.addEventListener('change',n)});n()})();</script>

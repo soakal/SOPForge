@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% from "_macros.html" import page_header %}
+{% block body %}
+{% set eyebrow %}{{ back }}{% if session_title %} &middot; {{ session_title }}{% endif %}{% endset %}
+{{ page_header(eyebrow, "Review captured steps", lede) }}
+<form method="post" action="/ui/sessions/{{ sid }}/confirm-steps"><div class="steps">
+{% for card in cards %}
+<label class="card step"><input type="checkbox" name="keep" value="{{ card.step_id }}" checked><img class="shot" src="/sessions/{{ sid }}/raw/{{ card.screenshot }}" alt="{{ card.step_id }}" loading="lazy">
+<span class="what"><strong>{{ card.step_id }}</strong><span class="act">{{ card.action }}</span> ({{ card.detail }})<span class="muted">{{ card.window_line }}</span></span>
+<span class="pos"><span>Position</span><input type="number" name="pos-{{ card.step_id }}" value="{{ card.position }}" step="any" min="0" aria-label="Position of {{ card.step_id }}"></span></label>
+{% endfor %}
+</div>
+<div class="stickybar"><span class="muted mono" id="keepcount">{{ total }} steps</span><div class="actions" style="margin:0"><button type="submit">Keep selected steps &amp; generate document</button></div></div></form>
+{% include "assets/lightbox.html" %}
+{% include "assets/keep_count_script.html" %}
+{% endblock %}

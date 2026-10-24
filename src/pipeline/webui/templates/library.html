@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% from "_macros.html" import page_header, pill %}
+{% block body %}
+{% set search %}<search><form method="get" action="/ui"><label class="search" style="margin:0">{{ icon("search") }}<input type="text" name="q" value="{{ query or '' }}" aria-label="Search procedures" placeholder="Search title, date, doc no.">
+{%- if review %}<input type="hidden" name="view" value="review">{% endif %}<button type="submit" class="secondary">Search</button></label></form></search>{% endset %}
+{% if review %}
+{{ page_header("Procedures", "Review queue", "Steps awaiting your check before generation, documents whose review report flags something, and failed builds.", search) }}
+{% else %}
+{% set actions %}{{ search }}<a class="btn" href="#new">New SOP</a>{% endset %}
+{{ page_header("Procedures", "SOP Library", none, actions) }}
+{% endif %}
+{% if tiles %}
+<div class="stats">
+{%- for tile in tiles %}<div class="stat"><b>{{ tile.value }}</b><span>{{ tile.label }}{% if tile.detail %} <i>({{ tile.detail }})</i>{% endif %}</span></div>{% endfor -%}
+</div>
+{% endif %}
+{% if not review %}
+<div class="drop" id="new"><div class="ico">{{ icon("upload") }}</div>
+<div class="txt"><h2>Drop a capture folder or screenshots</h2><p>manifest.json + PNGs, or images with an optional transcript (.txt, .md, .json). SOPForge works out which.</p></div>
+<div class="toolbar"><button type="button" class="secondary" data-pick="drop-files">Browse files</button><button type="button" class="secondary" data-pick="drop-folder">Choose folder</button><input type="file" id="drop-files" multiple hidden accept=".json,.png,.jpg,.jpeg,.gif,.bmp,.webp,.txt,.md,.wav,image/*"><input type="file" id="drop-folder" webkitdirectory multiple hidden></div>
+<div class="plan" hidden><div class="kind" data-kind></div><ul data-files></ul>
+<div class="field" data-title hidden><label for="drop-title">Title <small>(optional &mdash; inferred when blank)</small></label><input type="text" id="drop-title" name="title" placeholder="My procedure"></div>
+<div class="actions"><button type="button" data-go>Build document</button><button type="button" class="secondary" data-cancel>Cancel</button></div>
+<p class="err" role="alert"></p></div>
+</div>
+{% include "assets/noscript_forms.html" %}
+{% include "assets/drop_script.html" %}
+{% endif %}
+<div class="tablewrap"><table class="lib"><thead><tr><th scope="col">Procedure</th><th scope="col">Doc no.</th><th scope="col">Steps</th><th scope="col">Status</th><th scope="col">Exports</th><th scope="col">Updated</th></tr></thead>
+<tbody>
+{% for row in rows %}
+<tr data-state="{{ row.state }}"><td><div class="proc">
+{%- if row.get("thumb") %}<img class="thumb" loading="lazy" src="{{ row.thumb }}" alt="">{% else %}<span class="thumb none">{{ icon("image") }}</span>{% endif -%}
+<div><a href="/ui/sessions/{{ row.session_id }}">{{ row.title }}</a><small class="muted">{{ row.sub }}</small></div></div></td>
+<td class="num">{% if row.get("doc_no") %}{{ row.doc_no }}{% else %}&mdash;{% endif %}</td><td class="num">{% if row.get("steps") is none %}&mdash;{% else %}{{ row.steps }}{% endif %}</td>
+<td>{{ pill(row.state, row.status_label, row.state == "generating") }}</td>
+<td><div class="fmt">
+{%- for label, href in row.get("exports") or [] %}<a href="{{ href }}" title="Download {{ label }}">{{ label }}</a>{% else %}<span aria-label="none">&mdash;</span>{% endfor -%}
+</div></td>
+<td class="num">{{ row.get("updated") or "" }}</td></tr>
+{% else %}
+<tr><td colspan="6" class="empty">
+{%- if review %}<b>Nothing to review.</b>Every finished procedure is clean.
+{%- elif query %}<b>No sessions yet.</b>Nothing in the library matches &ldquo;{{ query }}&rdquo;.
+{%- else %}<b>No sessions yet.</b>Drop a capture folder or screenshots above to start.{% endif -%}
+</td></tr>
+{% endfor %}
+</tbody></table></div>
+{% endblock %}

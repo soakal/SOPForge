@@ -1,8 +1,8 @@
 """Frozen-bundle resource resolution (Phase 3, AC3/AC5 prerequisite): a
 single sys._MEIPASS-aware helper for locating resources bundled inside the
 repo (config/models.toml, and the review UI's vendored IBM Plex webfonts
-under assets/fonts/ibm-plex/ -- src/pipeline/webui/ is otherwise pure
-server-rendered Python strings).
+under assets/fonts/ibm-plex/, and its Jinja2 templates under
+src/pipeline/webui/templates/).
 Dev/test mode resolves relative to the repo root; a frozen PyInstaller
 build resolves relative to its own extraction directory. Every in-repo
 resource path must go through this rather than __file__ math, so a single

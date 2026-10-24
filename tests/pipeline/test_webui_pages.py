@@ -437,7 +437,8 @@ def test_report_findings_render_as_thumbnail_rows_linked_to_their_step():
     assert 'src="/sessions/sid/002.png"' in page
     assert 'href="/sessions/sid/doc.html#step-002"' in page
     assert 'target="docpreview"' in page
-    assert "Click &#x27;Save&#x27;." in page
+    # Jinja escapes an apostrophe as &#39; (html.escape wrote &#x27;; same character).
+    assert "Click &#39;Save&#39;." in page
     # The section contract (data-status + <h2> first) must still hold.
     assert '<section class="card" data-status="red"><h2>Template-fallback steps</h2>' in page
 
@@ -491,7 +492,11 @@ def test_session_page_renders_an_edit_form_and_regenerate_button_per_step():
     page = render_session_page("sid", "Title", "date", {}, {}, steps=steps, can_regenerate=True)
     assert 'id="edit-step-001"' in page
     assert 'action="/ui/sessions/sid/steps/step-001"' in page
-    assert 'action="/ui/sessions/sid/steps/step-001/regenerate"' in page
+    # Regenerate is a formaction on the edit form's own button: a <form>
+    # nested in the edit form is dropped by the parser and submits the edit.
+    assert 'formaction="/ui/sessions/sid/steps/step-001/regenerate"' in page
+    editor = page.split('id="edit-step-001"', 1)[1].split("</details>", 1)[0]
+    assert editor.count("<form") == 1
     assert '<textarea name="text"' in page
     # The textarea content must be HTML-escaped (raw "<button>" would break markup).
     assert "&lt;button&gt;" in page
