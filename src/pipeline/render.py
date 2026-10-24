@@ -18,6 +18,7 @@ import html
 
 from pipeline.annotate import annotate_click, crop_to_element
 from pipeline.assembler import assemble_steps, is_grouped, phase_starts, step_heading
+from pipeline.claim_coverage import parse_verify_line
 from pipeline.generation import generate_all_steps
 from pipeline.review_notes import step_review_notes
 from pipeline.template import render_step_template
@@ -149,11 +150,25 @@ def review_note_html(step):
     ]
 
 
+# Inline so the callout looks right in every HTML export, including
+# render_html's style-less page.
+_VERIFY_STYLE = (
+    "border-left:3px solid #c00000;margin:.75em 0;padding:.4em .9em;"
+    "background:#fdf2f2;color:#7a1414"
+)
+
+
 def narrative_html_blocks(narrative_text):
     """Splits narrative text into HTML blocks, rendering '> '-prefixed
     lines (task-08's [verify] blockquotes) as <blockquote> elements instead
     of flattening them into a single escaped paragraph — otherwise the
-    blockquote marker and its newlines collapse into unreadable inline text."""
+    blockquote marker and its newlines collapse into unreadable inline text.
+
+    A [verify] line renders as a styled "Needs verification:" callout, the
+    way the docx and PDF already show it, instead of raw "[verify]
+    (claim-001): ..." text. The claim id stays on the element (data-claim)
+    and in the sidecar report; claim coverage is validated on the narrative
+    text itself, never on this HTML."""
     blocks = []
     paragraph = []
 
@@ -165,7 +180,16 @@ def narrative_html_blocks(narrative_text):
     for line in narrative_text.splitlines():
         if line.startswith("> "):
             flush_paragraph()
-            blocks.append(f"<blockquote>{html.escape(line[2:])}</blockquote>")
+            claim_text = parse_verify_line(line)
+            if claim_text is None:
+                blocks.append(f"<blockquote>{html.escape(line[2:])}</blockquote>")
+            else:
+                claim_id = line[len("> [verify] (") :].split(")", 1)[0]
+                blocks.append(
+                    f'<blockquote class="verify" data-claim="{html.escape(claim_id)}" '
+                    f'style="{_VERIFY_STYLE}"><strong>Needs verification:</strong> '
+                    f"{html.escape(claim_text)}</blockquote>"
+                )
         elif line.strip():
             paragraph.append(line)
         else:

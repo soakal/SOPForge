@@ -149,3 +149,36 @@ def test_metadata_edit_reexports_every_format(tmp_path):
     assert "2.0" in header
     library = client.get("/library").json()
     assert any(e.get("title") == "Create a SmartDeploy Answer File" for e in library)
+
+
+def test_doc_numbers_are_sequential_unique_and_stable(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from pipeline.doc_meta import assign_doc_number
+
+    dirs = []
+    for i in range(20):
+        d = tmp_path / f"session-{i}"
+        d.mkdir()
+        dirs.append(d)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        numbers = list(pool.map(lambda d: assign_doc_number(d, "SOP-IT"), dirs))
+    assert sorted(numbers) == [f"SOP-IT-{n:04d}" for n in range(1, 21)]
+    # A session keeps its number on every later export.
+    assert [assign_doc_number(d, "SOP-IT") for d in dirs] == numbers
+    # Each prefix counts on its own.
+    other = tmp_path / "other"
+    other.mkdir()
+    assert assign_doc_number(other, "VRSI") == "VRSI-0001"
+
+
+def test_resolve_meta_uses_the_counter_and_overrides_still_win(tmp_path):
+    m = _manifest()
+    first, second = tmp_path / "a", tmp_path / "b"
+    first.mkdir()
+    second.mkdir()
+    cfg = DocumentConfig(doc_no_prefix="SOP-IT-LIC")
+    assert resolve_meta(m, cfg, first).doc_no == "SOP-IT-LIC-0001"
+    assert resolve_meta(m, cfg, second).doc_no == "SOP-IT-LIC-0002"
+    save_overrides(first, {"doc_no": "SOP-IT-LIC-001"})
+    assert resolve_meta(m, cfg, first).doc_no == "SOP-IT-LIC-001"
