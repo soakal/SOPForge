@@ -456,7 +456,7 @@ _RECOMMENDED = {
 }
 _MODEL_SUGGESTIONS = {
     "steps": {
-        "ollama": ["qwen3:32b", "qwen3:14b"],
+        "ollama": ["qwen3:32b", "qwen3.6:27b", "qwen3:14b"],
         "openrouter": [
             "anthropic/claude-sonnet-5.5",
             "anthropic/claude-haiku-5.5",
@@ -482,7 +482,7 @@ _MODEL_SUGGESTIONS = {
         "anthropic": ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"],
     },
     "vision": {
-        "ollama": ["qwen2.5vl:7b"],
+        "ollama": ["qwen2.5vl:7b", "qwen3-vl:8b", "qwen3.6:27b"],
         "openrouter": [
             "anthropic/claude-sonnet-5.5",
             "anthropic/claude-opus-5.5",
