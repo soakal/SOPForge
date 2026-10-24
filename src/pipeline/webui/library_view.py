@@ -143,14 +143,16 @@ def session_row(session_id, title, date, session_dir, manifest, status, doc_no_p
 
 
 def library_stats(rows):
-    """The four stat tiles. Procedures counts finished documents; the step
-    totals cover the same finished documents so the AI-written share is a
-    ratio over one population."""
+    """The four stat tiles. "Finished" counts finished documents (shown
+    against the total row count, which includes in-flight and failed
+    sessions); the step totals cover the same finished documents so the
+    AI-written share is a ratio over one population."""
     done = [r for r in rows if r["ai_steps"] is not None]
     steps = sum(r["steps"] or 0 for r in done)
     ai_steps = sum(r["ai_steps"] for r in done)
     return {
         "procedures": len(done),
+        "total": len(rows),
         "need_review": sum(1 for r in rows if r["needs_review"]),
         "steps": steps,
         "ai_steps": ai_steps,

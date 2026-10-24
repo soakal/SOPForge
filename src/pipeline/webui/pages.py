@@ -701,7 +701,10 @@ def _stat_tiles(stats):
     else:
         ai_value, ai_label = "&mdash;", "Steps AI-written"
     tiles = (
-        (str(stats["procedures"]), "Procedures"),
+        (
+            str(stats["procedures"]),
+            f"Finished <i>(of {stats.get('total', stats['procedures'])} total)</i>",
+        ),
         (str(stats["need_review"]), "Need review"),
         (str(steps), "Steps captured"),
         (ai_value, ai_label),

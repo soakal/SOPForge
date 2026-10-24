@@ -140,7 +140,7 @@ def test_library_shows_table_stat_tiles_and_review_queue(tmp_path):
     page = client.get("/ui").text
     for header in ("Procedure", "Doc no.", "Steps", "Status", "Exports", "Updated"):
         assert f'<th scope="col">{header}</th>' in page
-    for label in ("Procedures", "Need review", "Steps captured", "Steps AI-written"):
+    for label in ("Finished", "Need review", "Steps captured", "Steps AI-written"):
         assert label in page
     # The stub LLM fails every round-trip -> every step is template fallback,
     # so 0% AI-written and the session needs review.
@@ -214,12 +214,14 @@ def test_library_stats_ratio_covers_finished_documents_only():
     ]
     assert library_stats(rows) == {
         "procedures": 2,
+        "total": 3,
         "need_review": 2,
         "steps": 14,
         "ai_steps": 13,
     }
     page = render_library_page([], rows=[], stats=library_stats(rows))
     assert "93%" in page and "(13 of 14)" in page
+    assert "<b>2</b><span>Finished <i>(of 3 total)</i></span>" in page
 
 
 def test_config_page_posts_exactly_the_existing_fields(tmp_path):
