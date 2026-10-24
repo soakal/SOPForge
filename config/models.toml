@@ -22,10 +22,9 @@ endpoint = "http://192.168.200.60:11434/v1"
 model = "qwen3:32b"
 max_concurrency = 1
 
-# NOTE (2026-10-20): qwen3.6:27b (the documented default in CLAUDE.md and
-# USER_MANUAL.md) is an UNVERIFIED tag with no pull record in this repo --
-# confirm it is installed with `ollama list` or
-# `py -3.12 scripts/verify_models.py` before relying on it.
+# qwen3.6:27b is an official Ollama library tag (checked 2026-10-24: ~18-19GB
+# Q4, 256K context, text + image input). It still has to be pulled on the
+# Ollama host: `py -3.12 scripts/verify_models.py` checks every configured tag.
 [narrative]
 provider = "ollama"
 endpoint = "http://192.168.200.60:11434/v1"
@@ -62,7 +61,7 @@ doc_no_prefix = ""
 # /ui/sessions/{id}/rerender) overrides this section for a single re-render
 # job without editing this file: "off" skips the stage even if enabled here
 # is true, "local" forces the ollama provider (keeping this section's own
-# endpoint/model), "haiku" forces Anthropic's Claude Haiku 4.5. Omitting the
+# endpoint/model), "haiku" forces Anthropic's Claude Haiku 5.5. Omitting the
 # param leaves the enabled/provider/model below in full effect. See
 # resolve_polish_config in src/pipeline/config.py.
 [polish]

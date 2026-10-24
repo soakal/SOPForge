@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Decomposes a SOPForge phase into verifiable tasks; replans on failure. Use at phase start and after repeated task failure.
-model: claude-fable-5
+model: claude-fable-5-1
 tools: Read, Grep, Glob, Bash
 ---
 

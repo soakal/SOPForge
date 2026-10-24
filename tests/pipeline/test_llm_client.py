@@ -187,10 +187,57 @@ def test_real_anthropic_integration_opt_in():
     if not os.environ.get("ANTHROPIC_API_KEY"):
         pytest.skip("ANTHROPIC_API_KEY not set; opt-in Anthropic integration test skipped")
 
-    model = os.environ.get("SOPFORGE_ANTHROPIC_TEST_MODEL", "claude-haiku-4-5-20251001")
+    model = os.environ.get("SOPFORGE_ANTHROPIC_TEST_MODEL", "claude-haiku-5-5")
     config = SectionConfig(endpoint="unused-for-anthropic", model=model, anthropic=True)
     with LLMClient(config) as client:
-        reply = client.chat(
-            [{"role": "user", "content": "Reply with only the word 'ok'."}], max_tokens=10
-        )
+        reply = client.chat([{"role": "user", "content": "Reply with only the word 'ok'."}])
         assert reply
+
+
+def _anthropic_reply(monkeypatch, body):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, json=body))
+    config = SectionConfig(endpoint="http://fake", model="claude-opus-5-5", anthropic=True)
+    return LLMClient(config, transport=transport)
+
+
+def test_anthropic_reply_skips_thinking_blocks(monkeypatch):
+    """Current Claude models put a thinking block (empty text by default)
+    before the answer; the reply is the text blocks, not content[0]."""
+    body = {
+        "stop_reason": "end_turn",
+        "content": [
+            {"type": "thinking", "thinking": "", "signature": "x"},
+            {"type": "text", "text": "Click Save."},
+        ],
+    }
+    with _anthropic_reply(monkeypatch, body) as client:
+        assert client.chat([{"role": "user", "content": "hi"}]) == "Click Save."
+
+
+def test_anthropic_default_max_tokens_leaves_room_for_thinking(monkeypatch):
+    captured = {}
+
+    def handler(request):
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    config = SectionConfig(endpoint="http://fake", model="claude-opus-5-5", anthropic=True)
+    with LLMClient(config, transport=httpx.MockTransport(handler)) as client:
+        client.chat([{"role": "user", "content": "hi"}])
+    assert captured["body"]["max_tokens"] >= 16000
+
+
+def test_anthropic_refusal_or_empty_reply_raises(monkeypatch):
+    refusal = {"stop_reason": "refusal", "stop_details": {"category": "cyber"}, "content": []}
+    with _anthropic_reply(monkeypatch, refusal) as client:
+        with pytest.raises(RuntimeError, match="declined"):
+            client.chat([{"role": "user", "content": "hi"}])
+    truncated = {
+        "stop_reason": "max_tokens",
+        "content": [{"type": "thinking", "thinking": "", "signature": "x"}],
+    }
+    with _anthropic_reply(monkeypatch, truncated) as client:
+        with pytest.raises(RuntimeError, match="no text"):
+            client.chat([{"role": "user", "content": "hi"}])

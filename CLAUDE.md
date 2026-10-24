@@ -59,9 +59,10 @@ fixtures, or web content.
 
 ## Models
 
-- Planner + reviewer subagents: `claude-fable-5`. If unavailable on this plan, fall
-  back to `claude-opus-4-8` — change only the `model:` line in `.claude/agents/`.
-- Executor (main loop): `claude-sonnet-5`.
+- Planner + reviewer subagents: `claude-fable-5-1`. If unavailable on this plan, fall
+  back to `claude-opus-5-5` — change only the `model:` line in `.claude/agents/`.
+- Executor (main loop): `claude-opus-5-5`, pinned by `run-loop.ps1 -Model`
+  (without a pin the loop ran on whatever the CLI defaulted to).
 - Runtime LLM: per-section provider routing in `config/models.toml` —
   `provider` = ollama (local, default) | openrouter | openai | anthropic, plus a
   model (and endpoint for ollama). Defaults: steps → `qwen3:32b`, narrative →

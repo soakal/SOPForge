@@ -19,7 +19,10 @@ from pipeline.config import PROVIDERS
 
 ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-ANTHROPIC_DEFAULT_MAX_TOKENS = 1024
+# Current Claude models think by default and thinking tokens count against
+# max_tokens; 1024 could be spent before any text was written. ~16k is the
+# usual non-streaming ceiling (stays inside HTTP timeouts).
+ANTHROPIC_DEFAULT_MAX_TOKENS = 16000
 
 
 class AnthropicAPIKeyMissingError(RuntimeError):
@@ -103,7 +106,22 @@ class LLMClient:
         )
         response.raise_for_status()
         data = response.json()
-        return data["content"][0]["text"]
+        # Current models return a thinking block before the text, so the
+        # reply is the text blocks, not content[0]. A refusal or a reply with
+        # no text raises, so the caller falls back to the template.
+        if data.get("stop_reason") == "refusal":
+            category = (data.get("stop_details") or {}).get("category")
+            raise RuntimeError(f"Anthropic declined the request (category: {category})")
+        text = "".join(
+            block.get("text", "")
+            for block in data.get("content", [])
+            if block.get("type") == "text"
+        )
+        if not text.strip():
+            raise RuntimeError(
+                f"Anthropic returned no text (stop_reason: {data.get('stop_reason')})"
+            )
+        return text
 
     def close(self):
         self._client.close()

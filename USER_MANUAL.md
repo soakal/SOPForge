@@ -690,15 +690,17 @@ Recommended models per provider are shown on the page. Sensible defaults:
 
 | Task | ollama | openrouter | openai | anthropic |
 |---|---|---|---|---|
-| Steps | `qwen3:32b` | `anthropic/claude-haiku-4.5` | `gpt-5.4-mini` | `claude-haiku-4-5-20251001` |
-| Narration | `qwen3.6:27b` | `anthropic/claude-sonnet-5` | `gpt-5.5` | `claude-sonnet-5` |
-| Vision | `qwen2.5vl:7b` | `anthropic/claude-sonnet-5` | `gpt-4o` | — |
+| Steps | `qwen3:32b` | `anthropic/claude-sonnet-5.5` | `gpt-5.4-mini` | `claude-sonnet-5-5` |
+| Narration | `qwen3.6:27b` | `anthropic/claude-opus-5.5` | `gpt-5.5` | `claude-opus-5-5` |
+| Vision | `qwen2.5vl:7b` | `anthropic/claude-sonnet-5.5` | `gpt-4o` | — |
+| Polish | `gemma3:12b` | `anthropic/claude-sonnet-5.5` | `gpt-5.4-mini` | `claude-sonnet-5-5` |
 
 The model box's suggestion dropdown offers more than just the recommended
 default per provider — e.g. Steps' ollama suggestions include both `qwen3:32b`
 and `qwen3:14b` (faster, lower quality), and its openrouter/anthropic
-suggestions include higher-tier options (Sonnet 5, Opus 4.8, Fable 5) if you
-want more consistent phrasing than a local model reliably gives.
+suggestions include Haiku 5.5 (cheapest) and Opus 5.5 / Fable 5.1 (most
+capable). Use the page's **Test connection** button after changing a model:
+cloud model IDs change faster than this manual.
 
 Saving writes to a **per-user** config at `%USERPROFILE%\SOPForge\models.toml`
 (seeded from the bundled default). Changes take effect on the next generation —
