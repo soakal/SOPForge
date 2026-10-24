@@ -217,7 +217,7 @@ object-fit:cover;object-position:top left;display:block}
 .proc a:hover{color:var(--link)}
 .proc small{font:11.5px var(--mono)}
 td.num{font-family:var(--mono);color:var(--muted);white-space:nowrap}
-.fmt{display:flex;gap:4px;flex-wrap:wrap}
+.fmt{display:flex;gap:4px;flex-wrap:nowrap}
 .fmt a,.fmt span{font:500 10.5px/16px var(--mono);padding:1px 6px;border:1px solid var(--border-2);
 border-radius:4px;color:var(--muted)}
 .fmt a:hover{color:var(--link);border-color:var(--link);text-decoration:none}

@@ -166,7 +166,7 @@ steps review, processing, session/review, configuration) on the Forge chrome:
 graphite sidebar (Library, New SOP, Review queue + count, Configuration; LLM
 status + version in the footer), warm off-white surface, ember accent, IBM
 Plex Sans + Mono, light + dark via `prefers-color-scheme`. Screenshots of each
-page in both themes: `phases/06-screenshots/6h/`.
+page in both themes (full-page captures, refreshed at the PR's final head): `phases/06-screenshots/6h/`.
 
 - **Fonts**: `assets/fonts/ibm-plex/` (5 Sans + 3 Mono WOFF2 from npm
   `@ibm/plex-sans@1.1.0` / `@ibm/plex-mono@2.5.0`, OFL `LICENSE`, README with
