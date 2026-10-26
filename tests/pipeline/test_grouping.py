@@ -232,8 +232,8 @@ def test_toc_numbers_each_phase():
     m = _manifest(SIX)
     phases = [Phase("Sign in", ("step-001", "step-002")), Phase("Configure", m.step_ids()[2:])]
     lines = toc_lines(m, "overview", phases)
-    assert lines[:3] == ["1.  Overview", "2.  Sign in", "      Step 1 — Click 'Button 1'"]
-    assert "4.  Revision History" == lines[-1] and "3.  Configure" in lines
+    # Grouped: sections only, SOP Factory style -- no per-step lines.
+    assert lines == ["1.  Overview", "2.  Sign in", "3.  Configure", "4.  Revision History"]
     assert toc_lines(m, None)[0] == f"1.  {DEFAULT_PHASE_NAME}"
 
 
@@ -369,3 +369,46 @@ def test_restored_screenshots_round_trip_through_phases_json(tmp_path):
     path.write_text("{broken", encoding="utf-8")
     assert load_keep_screenshots(path) == frozenset()
     assert "keep_screenshots" not in phases_to_json(default_phases(m), "llm")
+
+
+def test_ungrouped_toc_lists_steps_with_vision_titles():
+    m = _manifest(SIX)
+    results = [{"step_id": s.id, "text": "t"} for s in m.steps]
+    results[0]["title"] = "Sign in"
+    lines = toc_lines(m, None, None, results)
+    assert lines[1] == "      Step 1 — Sign in"
+
+
+def test_grouped_docx_toc_field_collects_sections_only(tmp_path):
+    import zipfile
+
+    from pipeline.docx_assembler import assemble_docx
+
+    m = _manifest(SIX)
+    phases = [Phase("Sign in", ("step-001", "step-002")), Phase("Configure", m.step_ids()[2:])]
+    results = [{"step_id": s.id, "text": "Do it."} for s in m.steps]
+    out = tmp_path / "doc.docx"
+    assemble_docx(m, results, tmp_path, out, phases=phases)
+    xml = zipfile.ZipFile(out).read("word/document.xml").decode()
+    assert r'TOC \o "1-1"' in xml
+
+
+def test_pdf_toc_prints_the_real_page_numbers(tmp_path):
+    import re
+
+    from pypdf import PdfReader
+
+    from pipeline.export_pdf import render_pdf
+
+    m = _manifest(SIX)
+    phases = [Phase("Sign in", ("step-001", "step-002")), Phase("Configure", m.step_ids()[2:])]
+    results = [{"step_id": s.id, "text": "Do it. " * 120} for s in m.steps]  # spills pages
+    out = render_pdf(m, results, [None] * len(m.steps), tmp_path / "d.pdf", phases=phases)
+    pages = [p.extract_text() for p in PdfReader(str(out)).pages]
+    toc = pages[1]
+    for name in ("Sign in", "Configure", "Revision History"):
+        printed = int(re.search(rf"{name}\s*(\d+)", toc).group(1))
+        actual = next(
+            i for i, text in enumerate(pages, 1) if i > 2 and re.search(rf"^{name}$", text, re.M)
+        )
+        assert printed == actual, (name, printed, actual)

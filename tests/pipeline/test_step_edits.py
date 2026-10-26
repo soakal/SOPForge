@@ -501,6 +501,10 @@ def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path, mon
     session_dir = tmp_path / "sessions" / session_id
     step_id = manifest.steps[0].id
     calls_before = len(calls)
+    changed = load_models_config(cfg)
+    changed.steps.provider = "anthropic"
+    changed.steps.model = "claude-selected-for-regeneration"
+    save_models_config(changed, cfg)
 
     resp = client.post(
         f"/ui/sessions/{session_id}/steps/{step_id}/regenerate", follow_redirects=False
@@ -510,6 +514,9 @@ def test_regenerate_makes_exactly_one_llm_call_for_the_target_step(tmp_path, mon
     assert status["status"] == "done", status
 
     assert len(calls) == calls_before + 1
+    report = client.get(f"/sessions/{session_id}/report").json()
+    assert report["step_models"][step_id] == "anthropic/claude-selected-for-regeneration"
+    assert report["models"]["steps"] != report["step_models"][step_id]
     state = json.loads((session_dir / "steps.json").read_text(encoding="utf-8"))
     entry = next(s for s in state["steps"] if s["step_id"] == step_id)
     assert entry["manually_edited"] is False

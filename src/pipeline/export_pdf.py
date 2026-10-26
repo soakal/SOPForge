@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fpdf import FPDF
 
-from pipeline.assembler import format_doc_date, phase_starts, step_heading, toc_lines
+from pipeline.assembler import format_doc_date, phase_starts, step_heading, toc_entries
 from pipeline.grouping import DEFAULT_PHASE_NAME
 from pipeline.claim_coverage import parse_verify_line
 from pipeline.resource_path import resource_path
@@ -83,6 +83,10 @@ def _safe_text(text, font_family):
     return text.encode("latin-1", "replace").decode("latin-1")
 
 
+# Width (mm) of the right-aligned page-number column in the TOC.
+_TOC_PAGE_W = 14
+
+
 class _SOPPdf(FPDF):
     def header(self):
         # No header on the title page (page 1); a thin running title after.
@@ -149,12 +153,23 @@ def _narrative_body(pdf, narrative_text):
             pdf.multi_cell(0, 6, _safe_text(line, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
 
 
+def _heading(pdf, text, height):
+    text = _safe_text(text, pdf._font_family)
+    rows = len(pdf.multi_cell(0, height, text, dry_run=True, output="LINES"))
+    if pdf.will_page_break(rows * height):
+        pdf.add_page()
+    page = pdf.page_no()
+    pdf.multi_cell(0, height, text, new_x="LMARGIN", new_y="NEXT")
+    return page
+
+
 def _section_heading(pdf, text):
     pdf.set_font(pdf._font_family, "B", 18)
     pdf.set_text_color(*_ACCENT)
-    pdf.multi_cell(0, 12, _safe_text(text, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
+    page = _heading(pdf, text, 12)
     pdf.set_text_color(*_INK)
     pdf.ln(2)
+    return page
 
 
 def render_pdf(
@@ -180,152 +195,180 @@ def render_pdf(
     (never a hardcoded placeholder). Returns output_path."""
     date = date or format_doc_date(manifest.session.started_utc)
 
-    pdf = _SOPPdf()
-    pdf._font_family = _register_font(pdf)
-    title = manifest.session.title or manifest.session.id
-    pdf._running_title = _safe_text(title, pdf._font_family)
-    pdf.set_auto_page_break(auto=True, margin=18)
+    def _build(pages):
+        page_of = {}
+        pdf = _SOPPdf()
+        pdf._font_family = _register_font(pdf)
+        title = manifest.session.title or manifest.session.id
+        pdf._running_title = _safe_text(title, pdf._font_family)
+        pdf.set_auto_page_break(auto=True, margin=18)
 
-    # --- Title page ---
-    pdf.add_page()
-    pdf.ln(50)
-    pdf.set_font(pdf._font_family, "B", 26)
-    pdf.set_text_color(*_INK)
-    pdf.multi_cell(
-        0, 14, _safe_text(title.upper(), pdf._font_family), align="C", new_x="LMARGIN", new_y="NEXT"
-    )
-    pdf.ln(6)
-    pdf.set_font(pdf._font_family, "", 12)
-    pdf.set_text_color(*_MUTED)
-    pdf.multi_cell(
-        0,
-        7,
-        _safe_text(subtitle or "Standard Operating Procedure", pdf._font_family),
-        align="C",
-        new_x="LMARGIN",
-        new_y="NEXT",
-    )
-    pdf.ln(10)
-    meta_lines = []
-    if doc_no:
-        meta_lines.append(f"Document No: {doc_no}")
-    meta_lines.append(f"Revision {revision}  —  Released {date}")
-    if author:
-        meta_lines.append(f"Author: {author}")
-    pdf.multi_cell(
-        0,
-        7,
-        _safe_text("\n".join(meta_lines), pdf._font_family),
-        align="C",
-        new_x="LMARGIN",
-        new_y="NEXT",
-    )
+        # --- Title page ---
+        pdf.add_page()
+        pdf.ln(50)
+        pdf.set_font(pdf._font_family, "B", 26)
+        pdf.set_text_color(*_INK)
+        pdf.multi_cell(
+            0,
+            14,
+            _safe_text(title.upper(), pdf._font_family),
+            align="C",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
+        pdf.ln(6)
+        pdf.set_font(pdf._font_family, "", 12)
+        pdf.set_text_color(*_MUTED)
+        pdf.multi_cell(
+            0,
+            7,
+            _safe_text(subtitle or "Standard Operating Procedure", pdf._font_family),
+            align="C",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
+        pdf.ln(10)
+        meta_lines = []
+        if doc_no:
+            meta_lines.append(f"Document No: {doc_no}")
+        meta_lines.append(f"Revision {revision}  —  Released {date}")
+        if author:
+            meta_lines.append(f"Author: {author}")
+        pdf.multi_cell(
+            0,
+            7,
+            _safe_text("\n".join(meta_lines), pdf._font_family),
+            align="C",
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
 
-    # --- Table of contents ---
-    pdf.add_page()
-    pdf.set_font(pdf._font_family, "B", 16)
-    pdf.set_text_color(*_ACCENT)
-    pdf.cell(0, 11, "Table of Contents", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(*_INK)
-    pdf.ln(2)
-    # toc_lines (assembler.py) is the single source of truth for the outline
-    # itself -- shared with docx_assembler.py so the two TOCs can't drift
-    # out of sync. Indented step entries (the "      " prefix that same
-    # helper produces) get the smaller/muted styling; numbered section
-    # lines get the larger plain one.
-    for line in toc_lines(manifest, narrative_text, phases):
-        if line.startswith("      "):
-            pdf.set_font(pdf._font_family, "", 10)
-            pdf.set_text_color(*_MUTED)
-            pdf.multi_cell(0, 6, _safe_text(line, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
-            pdf.set_text_color(*_INK)
-        else:
-            pdf.set_font(pdf._font_family, "", 11)
-            pdf.multi_cell(0, 7, _safe_text(line, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
-
-    # --- Overview ---
-    if narrative_text:
+        # --- Table of contents ---
         pdf.add_page()
         pdf.set_font(pdf._font_family, "B", 16)
         pdf.set_text_color(*_ACCENT)
-        pdf.cell(0, 11, "Overview", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 11, "Table of Contents", new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*_INK)
         pdf.ln(2)
-        _narrative_body(pdf, narrative_text)
-
-    # --- Procedure: one section per phase (6c); ungrouped, just "Procedure" ---
-    starts = phase_starts(manifest, phases)
-    pdf.add_page()
-    if not starts:
-        _section_heading(pdf, DEFAULT_PHASE_NAME)
-
-    for n, (step, result, shot) in enumerate(
-        zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
-    ):
-        if step.id in starts:
-            if n > 1:
-                pdf.ln(4)
-            _section_heading(pdf, starts[step.id])
-        heading = step_heading(n, step)
-        pdf.set_font(pdf._font_family, "BI", 13)
-        pdf.set_text_color(*_INK)
-        pdf.multi_cell(0, 9, _safe_text(heading, pdf._font_family), new_x="LMARGIN", new_y="NEXT")
-
-        _bullet(pdf, result["text"])
-
-        for note in step_review_notes(step):
-            pdf.set_font(pdf._font_family, "B", 10)
-            pdf.set_text_color(0xC0, 0x00, 0x00)
-            pdf.multi_cell(
-                0, 5.5, _safe_text(note, pdf._font_family), new_x="LMARGIN", new_y="NEXT"
-            )
+        # toc_entries (assembler.py) is the single source of truth for the outline
+        # itself -- shared with docx_assembler.py so the two TOCs can't drift
+        # out of sync. Indented step entries (the "      " prefix that same
+        # helper produces) get the smaller/muted styling; numbered section
+        # lines get the larger plain one. Each line reserves a fixed-width page
+        # number slot, so pass 1 (no numbers yet) lays out exactly like pass 2.
+        for key, line in toc_entries(manifest, narrative_text, phases, step_results):
+            step_line = line.startswith("      ")
+            pdf.set_font(pdf._font_family, "", 10 if step_line else 11)
+            if step_line:
+                pdf.set_text_color(*_MUTED)
+            h = 6 if step_line else 7
+            w = pdf.epw - _TOC_PAGE_W
+            text = _safe_text(line, pdf._font_family)
+            # Break before a (possibly wrapped) line, never inside it, so the
+            # page number can sit on the line's first row.
+            rows = len(pdf.multi_cell(w, h, text, dry_run=True, output="LINES"))
+            if pdf.will_page_break(rows * h):
+                pdf.add_page()
+            y = pdf.get_y()
+            pdf.multi_cell(w, h, text, new_x="LMARGIN", new_y="NEXT")
+            end_y = pdf.get_y()
+            pdf.set_xy(pdf.l_margin + w, y)
+            pdf.cell(_TOC_PAGE_W, h, str(pages.get(key, "")), align="R")
+            pdf.set_xy(pdf.l_margin, end_y)
             pdf.set_text_color(*_INK)
 
-        if result.get("narration"):
-            pdf.ln(1)
-            pdf.set_font(pdf._font_family, "I", 10)
-            pdf.set_text_color(*_MUTED)
-            pdf.multi_cell(
-                0,
-                5.5,
-                _safe_text(f"Narration: {result['narration']}", pdf._font_family),
-                new_x="LMARGIN",
-                new_y="NEXT",
-            )
+        # --- Overview ---
+        if narrative_text:
+            pdf.add_page()
+            pdf.set_font(pdf._font_family, "B", 16)
+            pdf.set_text_color(*_ACCENT)
+            page_of["overview"] = pdf.page_no()
+            pdf.cell(0, 11, "Overview", new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*_INK)
-
-        if step.id not in omitted_screenshots and shot is not None and Path(shot).exists():
             pdf.ln(2)
-            pdf.image(str(shot), w=130)
-            pdf.set_font(pdf._font_family, "I", 9)
-            pdf.set_text_color(*_MUTED)
-            pdf.multi_cell(
-                0,
-                5,
-                _safe_text(heading, pdf._font_family),
-                align="C",
-                new_x="LMARGIN",
-                new_y="NEXT",
-            )
+            _narrative_body(pdf, narrative_text)
+
+        # --- Procedure: one section per phase (6c); ungrouped, just "Procedure" ---
+        starts = phase_starts(manifest, phases)
+        pdf.add_page()
+        if not starts:
+            page_of["procedure"] = pdf.page_no()
+            _section_heading(pdf, DEFAULT_PHASE_NAME)
+
+        for n, (step, result, shot) in enumerate(
+            zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
+        ):
+            if step.id in starts:
+                if n > 1:
+                    pdf.ln(4)
+                page_of[f"phase:{step.id}"] = _section_heading(pdf, starts[step.id])
+            heading = step_heading(n, step, result)
+            pdf.set_font(pdf._font_family, "BI", 13)
             pdf.set_text_color(*_INK)
-        pdf.ln(6)
+            page_of[step.id] = _heading(pdf, heading, 9)
 
-    # --- Revision history (mirrors sop.revision_history in the docx) ---
-    pdf.add_page()
-    pdf.set_font(pdf._font_family, "B", 16)
-    pdf.set_text_color(*_ACCENT)
-    pdf.cell(0, 11, "Revision History", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_text_color(*_INK)
-    pdf.ln(2)
-    pdf.set_font(pdf._font_family, "B", 10)
-    widths = (35, 25, 70, 40)
-    for label, w in zip(("Date", "Revision", "Description", "Author"), widths):
-        pdf.cell(w, 8, label, border=1)
-    pdf.ln(8)
-    pdf.set_font(pdf._font_family, "", 10)
-    for value, w in zip((date, revision, "Initial generation", author), widths):
-        pdf.cell(w, 8, _safe_text(value, pdf._font_family), border=1)
-    pdf.ln(8)
+            _bullet(pdf, result["text"])
 
+            for note in step_review_notes(step):
+                pdf.set_font(pdf._font_family, "B", 10)
+                pdf.set_text_color(0xC0, 0x00, 0x00)
+                pdf.multi_cell(
+                    0, 5.5, _safe_text(note, pdf._font_family), new_x="LMARGIN", new_y="NEXT"
+                )
+                pdf.set_text_color(*_INK)
+
+            if result.get("narration"):
+                pdf.ln(1)
+                pdf.set_font(pdf._font_family, "I", 10)
+                pdf.set_text_color(*_MUTED)
+                pdf.multi_cell(
+                    0,
+                    5.5,
+                    _safe_text(f"Narration: {result['narration']}", pdf._font_family),
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                )
+                pdf.set_text_color(*_INK)
+
+            if step.id not in omitted_screenshots and shot is not None and Path(shot).exists():
+                pdf.ln(2)
+                pdf.image(str(shot), w=130)
+                pdf.set_font(pdf._font_family, "I", 9)
+                pdf.set_text_color(*_MUTED)
+                pdf.multi_cell(
+                    0,
+                    5,
+                    _safe_text(heading, pdf._font_family),
+                    align="C",
+                    new_x="LMARGIN",
+                    new_y="NEXT",
+                )
+                pdf.set_text_color(*_INK)
+            pdf.ln(6)
+
+        # --- Revision history (mirrors sop.revision_history in the docx) ---
+        pdf.add_page()
+        pdf.set_font(pdf._font_family, "B", 16)
+        pdf.set_text_color(*_ACCENT)
+        page_of["revision"] = pdf.page_no()
+        pdf.cell(0, 11, "Revision History", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*_INK)
+        pdf.ln(2)
+        pdf.set_font(pdf._font_family, "B", 10)
+        widths = (35, 25, 70, 40)
+        for label, w in zip(("Date", "Revision", "Description", "Author"), widths):
+            pdf.cell(w, 8, label, border=1)
+        pdf.ln(8)
+        pdf.set_font(pdf._font_family, "", 10)
+        for value, w in zip((date, revision, "Initial generation", author), widths):
+            pdf.cell(w, 8, _safe_text(value, pdf._font_family), border=1)
+        pdf.ln(8)
+
+        return pdf, page_of
+
+    # Two passes: the first finds the page each TOC entry lands on, the
+    # second prints those numbers (same layout, so the same pages).
+    _pdf, page_of = _build({})
+    pdf, _ = _build(page_of)
     pdf.output(str(output_path))
     return output_path

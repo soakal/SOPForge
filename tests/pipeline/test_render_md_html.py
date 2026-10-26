@@ -116,7 +116,7 @@ def test_render_html_contains_every_step_and_screenshot(tmp_path):
         # html.escape() correctly turns into &#x27; — check the escaped form.
         assert html.escape(result["text"]) in doc
     for path in annotated_paths:
-        assert str(path) in doc
+        assert html.escape(str(path)) in doc
 
 
 def test_render_html_anchors_each_step_heading_with_its_step_id(tmp_path):
@@ -213,3 +213,14 @@ def test_html_escapes_special_characters():
     doc = render_html(manifest, [], [])
     assert "A &amp; B &lt;Test&gt;" in doc
     assert "<Test>" not in doc
+
+
+def test_photo_title_is_literal_markdown():
+    from pipeline.render import _escape_md_heading
+
+    title = "<script>alert(1)</script> [click](javascript:alert(1)) *bold*"
+    escaped = _escape_md_heading(title)
+    assert "<script>" not in escaped
+    assert "&lt;script&gt;" in escaped
+    assert r"\[click\](javascript:alert(1))" in escaped  # no link can form
+    assert "*bold*" in escaped  # harmless punctuation stays readable

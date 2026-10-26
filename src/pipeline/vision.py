@@ -8,6 +8,7 @@ and parallel: any per-image failure yields None so the caller falls back to the
 transcript text, never crashing generation."""
 
 import base64
+import re
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -47,8 +48,37 @@ def _prompt(narration, index, total):
         "do at this step. Be specific to what is shown on screen. Do not mention the words "
         "'screenshot' or 'step', and do not number it. If a file name, product name, or other "
         "proper noun is visible on screen, spell it exactly as shown in the image, even if the "
-        "narrator's description above spells it differently."
+        "narrator's description above spells it differently.\n\n"
+        "Reply in exactly this format:\n"
+        "Title: <a 2-6 word title for this action, e.g. 'Open Subscriptions > Products'>\n"
+        "<the 1-2 sentence instruction>"
     )
+
+
+_TITLE_LINE = re.compile(r"^\W*title\W*:\s*(.+?)\s*$", re.IGNORECASE)
+MAX_TITLE_LEN = 80
+
+
+def split_title(caption):
+    """(title, text) from a caption in _prompt's "Title: ...\\n<instruction>"
+    format. A model that ignored the format yields (None, caption) -- the
+    caption is then used exactly as before. A reply that is ONLY a title
+    line yields (title, None) so the caller falls back for the text. The
+    title is display-only (a heading/TOC label); the step itself is still
+    the uploaded image."""
+    if not caption:
+        return None, caption
+    first, _sep, rest = caption.strip().partition("\n")
+    match = _TITLE_LINE.match(first.strip())
+    if not match:
+        return None, caption
+    title = match.group(1).strip(" *`")
+    # Only a wrapping pair of quotes comes off ("Sign in" -> Sign in); a
+    # quote that is part of the title (Click 'OK') stays.
+    if len(title) > 1 and title[0] == title[-1] and title[0] in "\"'":
+        title = title[1:-1]
+    title = title[:MAX_TITLE_LEN].strip() or None
+    return title, rest.strip() or None
 
 
 def _anthropic_request(path, prompt, model, api_key):

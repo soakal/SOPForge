@@ -14,7 +14,7 @@ from pathlib import Path
 
 from docx.shared import RGBColor
 
-from pipeline.assembler import phase_starts, step_heading, toc_lines
+from pipeline.assembler import is_grouped, phase_starts, step_heading, toc_lines
 from pipeline.grouping import DEFAULT_PHASE_NAME
 from pipeline.claim_coverage import parse_verify_line
 from pipeline.docx_fields import add_toc_field, enable_update_fields_on_open, set_outline_level
@@ -125,7 +125,14 @@ def assemble_docx(
     # heading below is marked with a matching outline level (0 for section
     # headings, 1 for step headings) since SOPBuilder's heading1/heading2
     # carry no named Word style for the field's \u switch to key off.
-    add_toc_field(sop, toc_lines(manifest, narrative_text, phases))
+    # Grouped: sections only (SOP Factory style), so the field collects
+    # outline level 0 only -- otherwise Word's first refresh would put every
+    # step back into the TOC.
+    add_toc_field(
+        sop,
+        toc_lines(manifest, narrative_text, phases, step_results),
+        levels="1-1" if is_grouped(phases) else "1-2",
+    )
 
     if narrative_text:
         sop.heading1("Overview")
@@ -141,7 +148,7 @@ def assemble_docx(
         if step.id in starts:
             sop.heading1(starts[step.id])
             set_outline_level(sop.doc.paragraphs[-1], 0)
-        heading = step_heading(n, step)
+        heading = step_heading(n, step, result)
         sop.heading2(heading)
         set_outline_level(sop.doc.paragraphs[-1], 1)
         # SOPBuilder.image() keeps only the paragraph directly before the

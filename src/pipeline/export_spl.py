@@ -29,7 +29,7 @@ from pptx import Presentation
 from pptx.enum.shapes import PP_PLACEHOLDER
 from pptx.util import Pt
 
-from pipeline.assembler import resolve_phases
+from pipeline.assembler import resolve_phases, step_heading
 from pipeline.docx_assembler import sop_factory_2_dir
 from pipeline.resource_path import resource_path
 from pipeline.review_notes import step_review_notes
@@ -90,6 +90,8 @@ class TextEstimator:
         """Lines the text wraps to at this size and width: greedy word wrap,
         with a word wider than the box broken across as many lines as it
         needs (PowerPoint breaks it mid-word)."""
+        if "\n" in text or "\v" in text:
+            return sum(self._lines(line, size, width, bold) for line in text.splitlines())
         font = self._font(bold)
         scale = size / 100
         space = font.getlength(" ") * scale
@@ -171,6 +173,7 @@ def estimate_fit(pptx_path, estimator=None):
             if ph.placeholder_format.type in _TEMPLATE_FURNITURE:
                 continue  # date / footer / slide number: short, fixed template text
             base, bold, indent, para_space = _text_rules(ph, prs.slide_master)
+            bold = bold or any(r.font.bold for p in ph.text_frame.paragraphs for r in p.runs)
             run_sizes = [
                 r.font.size.pt for p in ph.text_frame.paragraphs for r in p.runs if r.font.size
             ]
@@ -214,6 +217,14 @@ def _fit_in_powerpoint(spl_lib, pptx_path):
         pythoncom.CoUninitialize()
 
 
+def _step_text(n, step, result):
+    # Preserve the compact capture layout; photo titles are part of the SOP
+    # and must also be included in slide planning's fit calculation.
+    if result.get("title"):
+        return f"{step_heading(n, step, result)}\v{result['text']}"
+    return result["text"]
+
+
 def plan_slides(manifest, step_results, phases=None, estimator=None, steps_box_pt=(690, 107)):
     """[(phase name, [(step number, step, result), ...]), ...]: each phase's
     steps packed onto as few slides as fit at the floor, in order, every
@@ -229,9 +240,13 @@ def plan_slides(manifest, step_results, phases=None, estimator=None, steps_box_p
         current = []
         for step_id in phase.step_ids:
             candidate = current + [numbered[step_id]]
-            texts = [r["text"] for _n, _s, r in candidate]
+            texts = [_step_text(n, s, r) for n, s, r in candidate]
             if len(candidate) <= MAX_STEPS_PER_SLIDE and estimator.fits(
-                steps_box_pt, texts, BODY_FLOOR_PT, **kw
+                steps_box_pt,
+                texts,
+                BODY_FLOOR_PT,
+                bold=any(r.get("title") for _, _, r in candidate),
+                **kw,
             ):
                 current = candidate
             else:
@@ -305,13 +320,22 @@ def build_spl_deck(
     seen_phases = set()
     for phase_name, entries in plan_slides(manifest, step_results, phases, estimator, steps_box):
         images = [str(shot_by_id[s.id]) for _n, s, _r in entries if s.id in shot_by_id][:2]
-        deck.step(
+        slide = deck.step(
             _task_label(phase_name, phase_name in seen_phases, estimator, task_box),
-            [r["text"] for _n, _s, r in entries],
+            [_step_text(n, s, r) for n, s, r in entries],
             notes=_notes_line(entries),
             images=images,
             start_at=entries[0][0],
         )
+        body = slide.placeholders[STEPS_IDX]
+        for paragraph, (n, step, result) in zip(body.text_frame.paragraphs, entries, strict=True):
+            if result.get("title"):
+                paragraph.clear()
+                run = paragraph.add_run()
+                run.text = step_heading(n, step, result)
+                run.font.bold = True
+                paragraph.add_line_break()
+                paragraph.add_run().text = result["text"]
         seen_phases.add(phase_name)
 
     # What spl_lib.save() does before fitting, minus the full local path: the

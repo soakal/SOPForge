@@ -286,3 +286,22 @@ def test_pdf_handles_missing_screenshot_without_crashing(tmp_path):
     render_pdf(manifest, step_results, missing_paths, output_path)
 
     assert output_path.read_bytes()[:5] == b"%PDF-"
+
+
+def test_wrapped_heading_stays_on_its_toc_page(tmp_path):
+    from pipeline.export_pdf import _SOPPdf, _register_font, _heading
+
+    pdf = _SOPPdf()
+    pdf._font_family = _register_font(pdf)
+    pdf._running_title = "Test"
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_page()
+    pdf.set_font(pdf._font_family, "BI", 13)
+    pdf.set_y(pdf.page_break_trigger - 10)
+    page = _heading(pdf, "Step 2 — " + "Long title " * 12, 9)
+    assert page == 2
+    out = tmp_path / "heading.pdf"
+    pdf.output(str(out))
+    reader = PdfReader(out)
+    assert "Step 2" not in reader.pages[0].extract_text()
+    assert "Step 2" in reader.pages[page - 1].extract_text()

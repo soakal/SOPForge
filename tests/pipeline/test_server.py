@@ -3698,3 +3698,170 @@ def test_config_key_file_part_is_rejected_not_500(tmp_path):
         "/ui/config/key", data={"provider": "anthropic"}, files={"key": ("k.txt", b"sk-ant")}
     )
     assert resp.status_code == 400
+
+
+def test_photo_build_vision_titles_become_step_headings_and_persist(tmp_path, monkeypatch):
+    """A vision caption's leading "Title:" line names the step (heading,
+    TOC, walkthrough) and never leaks into the step text; it survives the
+    no-LLM steps.json re-export path."""
+    client, sid = _photo_build_with_captions(
+        tmp_path,
+        monkeypatch,
+        ["Title: Sign in to Thrive\nClick Login with Microsoft.", "Click Products."],
+    )
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "Step 1 — Sign in to Thrive" in md
+    assert "Click Login with Microsoft." in md
+    assert "Title:" not in md
+    steps = json.loads((tmp_path / "sessions" / sid / "steps.json").read_text(encoding="utf-8"))
+    by_id = {s["step_id"]: s for s in steps["steps"]}
+    assert by_id["step-001"].get("title") == "Sign in to Thrive"
+    assert not by_id["step-002"].get("title")
+    walkthrough = client.get(f"/sessions/{sid}/walkthrough.html").text
+    assert "Sign in to Thrive" in walkthrough
+
+    # A restart, step edit and phase rename all read persisted state only.
+    def no_llm(*args, **kwargs):
+        raise AssertionError("re-export must not invoke a model")
+
+    monkeypatch.setattr(server_module, "LLMClient", no_llm)
+    monkeypatch.setattr(server_module, "caption_images", no_llm)
+    client = TestClient(
+        create_app(sessions_root=tmp_path / "sessions", config_path=tmp_path / "models.toml")
+    )
+    response = client.post(
+        f"/ui/sessions/{sid}/steps/step-001",
+        data={"text": "Choose Microsoft sign-in."},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert _wait_for_terminal_status(client, sid)["status"] == "done"
+    response = client.post(
+        f"/ui/sessions/{sid}/phases/0", data={"name": "Sign in"}, follow_redirects=False
+    )
+    assert response.status_code == 303
+    assert _wait_for_terminal_status(client, sid)["status"] == "done"
+    md = client.get(f"/sessions/{sid}/doc.md").text
+    assert "Step 1 — Sign in to Thrive" in md
+    assert "Choose Microsoft sign-in." in md
+    assert "## Sign in" in md
+
+
+def test_config_save_rejects_model_that_does_not_match_provider(tmp_path):
+    """Switching a section to anthropic while its model box still holds an
+    ollama model must not save: every call would fail at Anthropic and the
+    build would silently fall back to template text."""
+    client = _make_client(tmp_path)
+    base = {
+        "steps_provider": "anthropic",
+        "steps_endpoint": "http://x/v1",
+        "steps_model": "qwen3:32b",
+        "narrative_provider": "ollama",
+        "narrative_endpoint": "http://x/v1",
+        "narrative_model": "qwen3:32b",
+        "narrative_passes": "1",
+        "vision_provider": "openrouter",
+        "vision_endpoint": "http://x/v1",
+        "vision_model": "claude-sonnet-5-5",
+    }
+    resp = client.post("/ui/config", data=base, follow_redirects=False)
+    assert resp.status_code == 400
+    assert "steps: 'qwen3:32b' is not an Anthropic model" in resp.text
+    assert "vision: 'claude-sonnet-5-5' is not an OpenRouter model id" in resp.text
+
+    ok = dict(base, steps_model="claude-opus-5-5", vision_model="anthropic/claude-sonnet-5.5")
+    assert client.post("/ui/config", data=ok, follow_redirects=False).status_code == 303
+    cfg = client.get("/config").json()
+    assert cfg["steps"]["model"] == "claude-opus-5-5"
+
+
+def test_photo_build_report_records_models_used(tmp_path, monkeypatch):
+    client, sid = _photo_build_with_captions(tmp_path, monkeypatch, ["A.", "B."])
+    models = client.get(f"/sessions/{sid}/report").json()["models"]
+    assert set(models) == {"steps", "vision"}
+    assert all("/" in v for v in models.values())
+
+
+@pytest.mark.parametrize("photo", [False, True])
+def test_build_pins_models_when_config_changes_mid_build(tmp_path, monkeypatch, photo):
+    cfg_path = tmp_path / "models.toml"
+    cfg = load_models_config(default_config_path())
+    for name in ("steps", "narrative", "vision", "polish"):
+        section = getattr(cfg, name)
+        section.provider = "anthropic"
+        section.model = "claude-selected-" + name
+    cfg.polish.enabled = True
+    save_models_config(cfg, cfg_path)
+    calls = []
+
+    def change_config():
+        changed = cfg.model_copy(deep=True)
+        for name in ("steps", "narrative", "vision", "polish"):
+            getattr(changed, name).model = "claude-changed-" + name
+        save_models_config(changed, cfg_path)
+
+    def factory(section):
+        calls.append((section.provider, section.model))
+        change_config()
+        return stub_llm_client_factory()
+
+    def captions(paths, narration, endpoint, model, **kwargs):
+        calls.append((kwargs["provider"], model))
+        change_config()
+        return ["Title: Open Products\nClick Products."] * len(paths)
+
+    monkeypatch.setattr(server_module, "LLMClient", factory)
+    monkeypatch.setattr(server_module, "caption_images", captions)
+    client = TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions", config_path=cfg_path, preflight_enabled=False
+        )
+    )
+    if photo:
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), "white").save(buf, "PNG")
+        files = [("files", (f"{i}.png", buf.getvalue(), "image/png")) for i in range(6)]
+        files.append(
+            (
+                "transcript_file",
+                ("t.txt", b"Open Products and request licenses. Verify the result.", "text/plain"),
+            )
+        )
+        response = client.post("/ui/build", files=files, follow_redirects=False)
+        sid = response.headers["location"].rsplit("/", 1)[-1]
+        _confirm_all_steps(client, sid)
+    else:
+        sid = _create_session(client, tmp_path).json()["session_id"]
+    status = _wait_for_terminal_status(client, sid, timeout=20)
+    assert status["status"] == "done", status
+    assert calls and all(
+        provider == "anthropic" and model.startswith("claude-selected-")
+        for provider, model in calls
+    )
+    report = client.get(f"/sessions/{sid}/report").json()
+    assert all("claude-selected-" in model for model in report["models"].values())
+    assert "polish" in report["models"]
+
+
+def test_photo_title_markup_is_literal_in_exports(tmp_path, monkeypatch):
+    from docx import Document
+
+    title = "<img src=x onerror=alert(1)> & [link](javascript:alert(1))"
+    client, sid = _photo_build_with_captions(
+        tmp_path, monkeypatch, [f"Title: {title}\nClick Products.", "Click Save."]
+    )
+    for name in ("doc.html", "doc.single.html"):
+        text = client.get(f"/sessions/{sid}/{name}").text
+        assert "<img src=x onerror" not in text
+        assert "&lt;img src=x onerror=alert(1)&gt;" in text
+    walkthrough = client.get(f"/sessions/{sid}/walkthrough.html").text
+    assert "<img src=x onerror" not in walkthrough
+    assert r"\u003cimg" in walkthrough
+    root = tmp_path / "sessions" / sid
+    assert title in "\n".join(p.text for p in Document(root / "doc.docx").paragraphs)
+    assert "<img src=x onerror=alert(1)>" in "\n".join(
+        p.extract_text() for p in PdfReader(root / "doc.pdf").pages
+    )
+    md = (root / "doc.md").read_text(encoding="utf-8")
+    assert "## Step 1 — &lt;img" in md
+    assert r"\[link\](javascript:alert(1))" in md

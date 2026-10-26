@@ -318,6 +318,9 @@ def test_phase_routes_refuse_sessions_without_phases(tmp_path):
     session_id = resp.headers["location"].rsplit("/", 1)[-1]
     client.post(f"/ui/sessions/{session_id}/confirm-steps", data={"keep": ["step-001"]})
     _wait_done(client, session_id)
+    # Photo builds now write phases.json too; a session without one (pre-6c,
+    # or an older screenshot build) must still be refused.
+    (tmp_path / "sessions" / session_id / "phases.json").unlink()
     assert client.post(f"/ui/sessions/{session_id}/phases/0", data={"name": "X"}).status_code == 409
     assert (
         client.post(f"/ui/sessions/{session_id}/steps/step-001/keep-screenshot").status_code == 409

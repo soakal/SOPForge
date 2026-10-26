@@ -24,6 +24,15 @@ from pipeline.review_notes import step_review_notes
 from pipeline.template import render_step_template
 
 
+def _escape_md_heading(text):
+    """A heading (possibly a screenshot-derived vision title) stays one line
+    and can't inject raw HTML or a link/image (escaped brackets) into a
+    Markdown viewer. Other punctuation is left alone so doc.md still reads
+    cleanly as plain text."""
+    text = html.escape(" ".join(text.splitlines()), quote=False)
+    return text.replace("[", r"\[").replace("]", r"\]")
+
+
 def _escape_md_alt_text(text):
     """Escapes markdown-significant characters for use inside an image
     alt-text slot `![...]`. A step heading can embed a raw UIA element name
@@ -124,8 +133,8 @@ def render_markdown(
         if step.id in starts:
             lines.append(f"## {starts[step.id]}")
             lines.append("")
-        heading = step_heading(n, step)
-        lines.append(f"{step_level} {heading}")
+        heading = step_heading(n, step, result)
+        lines.append(f"{step_level} {_escape_md_heading(heading)}")
         lines.append("")
         lines.append(result["text"])
         lines.append("")
@@ -225,7 +234,7 @@ def render_html(
     ):
         if step.id in starts:
             parts.append(f"<h2>{html.escape(starts[step.id])}</h2>")
-        heading = step_heading(n, step)
+        heading = step_heading(n, step, result)
         # id=step.id anchors each step so a link like doc.html#step-003 (the
         # session page's report rows, webui/pages.py's _finding_row) jumps
         # straight to it.

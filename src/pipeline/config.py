@@ -202,6 +202,32 @@ def provider_api_key(provider):
     return os.environ.get(key_env) if key_env else None
 
 
+def model_provider_mismatches(cfg: ModelsConfig):
+    """["section: why", ...] for sections whose model name can't belong to
+    their provider -- e.g. provider switched to anthropic while the model box
+    still says qwen3:32b. Such a config "works" but every call fails at the
+    provider and the build silently falls back to template text."""
+    problems = []
+    for name in ("steps", "narrative", "vision", "polish"):
+        section = getattr(cfg, name)
+        model = section.model.strip()
+        if section.provider == "anthropic" and not model.startswith("claude-"):
+            problems.append(f"{name}: '{model}' is not an Anthropic model (expected claude-...)")
+        elif section.provider == "openrouter" and "/" not in model:
+            problems.append(
+                f"{name}: '{model}' is not an OpenRouter model id (expected vendor/model)"
+            )
+    return problems
+
+
+def models_in_use(cfg: ModelsConfig, include_vision=False):
+    """{section: "provider/model"} for a build's review report, so a reader
+    can inspect the configured models for attempted stages (which may fall
+    back). The caller omits stages it did not attempt."""
+    sections = ["steps", "narrative"] + (["vision"] if include_vision else [])
+    return {n: f"{getattr(cfg, n).provider}/{getattr(cfg, n).model}" for n in sections}
+
+
 def key_status(cfg: ModelsConfig):
     """{provider: bool} for every keyed (non-ollama) provider -- whether its
     API key env var is set. All of them, not just the ones the config uses,

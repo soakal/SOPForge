@@ -121,7 +121,8 @@ def walkthrough_steps(
                 "phase": phase_of[step.id],
                 # The card already says "Step N of M"; drop the heading's own
                 # "Step N — " prefix so it isn't said twice.
-                "title": step_heading(n, step).partition(" — ")[2] or step_heading(n, step),
+                "title": step_heading(n, step, result).partition(" — ")[2]
+                or step_heading(n, step, result),
                 "text": _step_html(result, step_review_notes(step)),
                 "img": img,
                 "box": box,

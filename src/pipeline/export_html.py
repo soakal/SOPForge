@@ -56,7 +56,7 @@ def render_single_file_html(
     ):
         if step.id in starts:
             parts.append(f"<h2>{html.escape(starts[step.id])}</h2>")
-        heading = step_heading(n, step)
+        heading = step_heading(n, step, result)
         parts.append(f"<{tag}>{html.escape(heading)}</{tag}>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         parts.extend(review_note_html(step))

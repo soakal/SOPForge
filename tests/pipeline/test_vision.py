@@ -204,3 +204,24 @@ def test_anthropic_provider_uses_messages_api_not_endpoint(tmp_path):
     assert body["system"] and body["model"] == "claude-sonnet-5-5"
     image = body["messages"][0]["content"][0]
     assert image["type"] == "image" and image["source"]["media_type"] == "image/png"
+
+
+def test_prompt_asks_for_a_title_line_and_split_title_parses_it():
+    from pipeline.vision import _prompt, split_title
+
+    assert "Title:" in _prompt("", 1, 3)
+    assert split_title("Title: Open Products\nClick Products.") == (
+        "Open Products",
+        "Click Products.",
+    )
+    assert split_title('**Title:** "Sign in"\n\nClick Login.') == ("Sign in", "Click Login.")
+    # The prompt's own example is quoted, so models quote back; a quote that
+    # is part of the title must survive.
+    assert split_title("Title: 'Open Subscriptions > Products'\nx")[0] == (
+        "Open Subscriptions > Products"
+    )
+    assert split_title("Title: Click 'OK'\nPress it.")[0] == "Click 'OK'"
+    assert split_title("Click Save.") == (None, "Click Save.")  # format ignored: as before
+    assert split_title("Title: Only a title") == ("Only a title", None)
+    assert split_title("Title of the page is X. Click it.")[0] is None
+    assert split_title(None) == (None, None)

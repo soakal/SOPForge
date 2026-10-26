@@ -66,6 +66,8 @@ from pipeline.config import (
     SectionConfig,
     VisionConfig,
     key_status,
+    model_provider_mismatches,
+    models_in_use,
     save_api_key,
     load_models_config,
     provider_api_key,
@@ -76,6 +78,7 @@ from pipeline.config import (
 )
 from pipeline.doc_meta import download_basename, resolve_meta, save_overrides, validate_overrides
 from pipeline.docx_assembler import assemble_docx
+from pipeline.docx_fields import refresh_toc_in_word, word_available
 from pipeline.export_html import render_single_file_html
 from pipeline.export_md import export_markdown_bundle
 from pipeline.export_pdf import render_pdf
@@ -109,7 +112,7 @@ from pipeline.sidecar import build_sidecar_report
 from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
 from pipeline.transcription import Transcriber
-from pipeline.vision import caption_images
+from pipeline.vision import caption_images, split_title
 from pipeline.resource_path import resource_path
 from pipeline.webui.library_view import library_stats, matches_query, session_row
 from pipeline.webui.pages import (
@@ -786,20 +789,21 @@ def create_app(
     # the bundled default). Tests pass an isolated config_path so the editor
     # never writes to the real user config.
     resolved_config_path = config_path or runtime_config_path()
-    make_llm_client = llm_client_factory or (
-        lambda: LLMClient(load_models_config(resolved_config_path).steps)
-    )
-    make_narrative_llm_client = narrative_llm_client_factory or (
-        lambda: LLMClient(load_models_config(resolved_config_path).narrative)
-    )
+
+    def make_llm_client(section):
+        return llm_client_factory() if llm_client_factory else LLMClient(section)
+
+    def make_narrative_llm_client(section):
+        return (
+            narrative_llm_client_factory() if narrative_llm_client_factory else LLMClient(section)
+        )
 
     def make_polish_llm_client(section=None):
         """section: a resolved PolishConfig to build the client from --
         passed by _write_all_exports when a per-job `polish` override
         (resolve_polish_config) is in play. Defaults to the current
-        [polish] section from config/models.toml, loaded fresh (not
-        cached), matching every other make_*_llm_client factory's promise
-        to reflect config edits without a server restart."""
+        [polish] section from config/models.toml. Build callers pass their
+        snapshot so config edits take effect on the next build."""
         if section is None:
             section = load_models_config(resolved_config_path).polish
         if polish_llm_client_factory is not None:
@@ -912,7 +916,7 @@ def create_app(
             except Exception:  # noqa: BLE001 - preflight is diagnostics, never a gate
                 logger.exception("preflight probe failed for session %s", session_id)
 
-        llm_client = make_llm_client()
+        llm_client = make_llm_client(models_cfg.steps)
         try:
             step_results, annotated_paths = render_steps_llm_mode(
                 manifest,
@@ -935,7 +939,9 @@ def create_app(
         # the semantic LLM placement + polish pipeline). Best-effort: a
         # transcript is validated at upload time, but a problem here must never
         # break generation -- the doc is complete from the steps alone.
-        transcript_note, placement_meta = _apply_transcript(session_dir, manifest, step_results)
+        transcript_note, placement_meta = _apply_transcript(
+            session_dir, manifest, step_results, models_cfg
+        )
 
         # A real capture session's manifest almost never has a title (nothing
         # in the capture flow asks the user for one), so without this the
@@ -948,7 +954,7 @@ def create_app(
         # DOES carry a title (or a previous run's title) is never overwritten.
         synthetic_narration = _synthesize_narration_from_steps(manifest, step_results)
         if not manifest.session.title and synthetic_narration.strip():
-            title_llm = make_llm_client()
+            title_llm = make_llm_client(models_cfg.steps)
             try:
                 gen_title, _overview = generate_title_and_overview(synthetic_narration, title_llm)
             finally:
@@ -986,7 +992,7 @@ def create_app(
         if claims:
             placed_text = "\n".join(r["narration"] for r in step_results if r.get("narration"))
             narrative_text, narrative_verify_ids = _narrative_with_coverage(
-                claims, placed_text, models_cfg.narrative.passes
+                claims, placed_text, models_cfg.narrative
             )
 
         # Verify claims come from two places: the narrative stage's uncovered
@@ -1004,7 +1010,7 @@ def create_app(
         phase_llm = None
         try:
             if len(manifest.steps) >= MIN_STEPS_TO_GROUP:
-                phase_llm = make_llm_client()
+                phase_llm = make_llm_client(models_cfg.steps)
             phases, phase_source = propose_phases(manifest, step_results, phase_llm)
         except Exception:  # noqa: BLE001 - grouping is layout only, never blocks the doc
             logger.exception("phase grouping failed for session %s", session_id)
@@ -1018,6 +1024,9 @@ def create_app(
         )
 
         report = build_sidecar_report(manifest, step_results, verify_claim_ids, claims_by_id)
+        report["models"] = models_in_use(models_cfg)
+        if not claims and not placement_meta:
+            report["models"].pop("narrative", None)
         if transcript_note:
             report["transcript"] = transcript_note
         if placement_meta:
@@ -1039,24 +1048,25 @@ def create_app(
             report,
             narrative_text=narrative_text,
             polish_override=polish_override,
+            models_cfg=models_cfg,
             claims=claims,
             # Without a transcript the claims ARE the step texts, so gating
             # step rewrites on them would revert every genuine rephrase.
             gate_steps_on_claims=transcript_path is not None,
         )
 
-    def _narrative_with_coverage(claims, placed_text, passes):
+    def _narrative_with_coverage(claims, placed_text, section):
         """Stage 2 narrative -> (text_or_None, verify_claim_ids). If the LLM
         stage fails, every claim not already placed verbatim under a step
         (`placed_text`) still comes out as a [verify] blockquote rather than
         being silently dropped."""
         narrative_llm = None
         try:
-            narrative_llm = make_narrative_llm_client()
+            narrative_llm = make_narrative_llm_client(section)
             text, _covered, verify_ids = generate_narrative(
                 claims,
                 narrative_llm,
-                passes=passes,
+                passes=section.passes,
                 placed_text=placed_text,
             )
         except Exception as exc:  # noqa: BLE001 - narrative is best-effort, never blocks the doc
@@ -1111,8 +1121,10 @@ def create_app(
         # there's nothing per-step to count, so the processing page just shows
         # its plain spinner (same as before this feature existed).
         captions = [None] * len(manifest.steps)
+        titles = [None] * len(manifest.steps)
         vision_note = None
-        vision_cfg = load_models_config(resolved_config_path).vision
+        models_cfg = load_models_config(resolved_config_path)
+        vision_cfg = models_cfg.vision
         if vision_cfg.enabled:
             captions = caption_images(
                 annotated_paths,
@@ -1125,6 +1137,11 @@ def create_app(
                 trust_env=vision_cfg.provider != "ollama",
                 provider=vision_cfg.provider,
             )
+            # Each caption leads with a short "Title:" line (vision._prompt):
+            # it becomes the step's heading/TOC label, never its text.
+            split = [split_title(c) for c in captions]
+            titles = [t for t, _c in split]
+            captions = [c for _t, c in split]
             vision_note = (
                 f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
                 f"screenshots ({vision_cfg.model})"
@@ -1137,7 +1154,8 @@ def create_app(
         # element metadata, which doesn't exist here.
         placement_meta = None
         verbatim = dict(per_step)
-        if transcript_note and "WARNING" in transcript_note:
+        semantic_attempted = bool(transcript_note and "WARNING" in transcript_note)
+        if semantic_attempted:
             step_contexts = build_step_contexts(
                 manifest,
                 [
@@ -1155,10 +1173,13 @@ def create_app(
                 # matters when some step has no caption to fall back on.
                 polish=any(c is None for c in captions),
                 raw_out=verbatim,
+                models_cfg=models_cfg,
             )
 
         step_results = []
-        for step, caption in zip(manifest.steps, captions):
+        # Not strict: a short caption list must reach _assert_1to1_mapping's
+        # clear error below, not die here as a bare zip() ValueError.
+        for step, caption, title in zip(manifest.steps, captions, titles):
             placed = per_step.get(step.id)
             result = {
                 "step_id": step.id,
@@ -1167,8 +1188,29 @@ def create_app(
             }
             if caption and placed:
                 result["narration"] = verbatim.get(step.id, placed)
+            if title:
+                result["title"] = title
             step_results.append(result)
         _assert_1to1_mapping(manifest, step_results)
+
+        # Phase grouping, same as the capture flow (6c, grouping.py): the LLM
+        # only proposes boundaries/names over the captioned steps; anything
+        # invalid falls back deterministically. Saved for no-LLM re-exports.
+        phase_llm = None
+        try:
+            if len(manifest.steps) >= MIN_STEPS_TO_GROUP:
+                phase_llm = make_llm_client(models_cfg.steps)
+            phases, phase_source = propose_phases(manifest, step_results, phase_llm)
+        except Exception:  # noqa: BLE001 - grouping is layout only, never blocks the doc
+            logger.exception("phase grouping failed for session %s", session_id)
+            phases, phase_source = propose_phases(manifest, step_results, None)
+        finally:
+            close = getattr(phase_llm, "close", None)
+            if callable(close):
+                close()
+        (session_dir / "phases.json").write_text(
+            json.dumps(phases_to_json(phases, phase_source)), encoding="utf-8"
+        )
 
         # A title + one-line overview from the narration (best-effort). Fill the
         # title only if the user didn't provide one, so a UUID never shows.
@@ -1176,7 +1218,7 @@ def create_app(
         on_screen_texts = [c for c in captions if c]
         narrative_text = None
         if narration.strip():
-            llm = make_llm_client()
+            llm = make_llm_client(models_cfg.steps)
             try:
                 gen_title, narrative_text = generate_title_and_overview(
                     narration, llm, on_screen_texts=on_screen_texts
@@ -1290,6 +1332,11 @@ def create_app(
             }
         if vision_note:
             report["vision"] = vision_note
+        report["models"] = models_in_use(models_cfg, include_vision=vision_cfg.enabled)
+        if not semantic_attempted:
+            report["models"].pop("narrative", None)
+        if not narration.strip() and len(manifest.steps) < MIN_STEPS_TO_GROUP:
+            report["models"].pop("steps", None)
         if consistency_actions:
             report["consistency"] = consistency_actions
         if manually_edited:
@@ -1304,6 +1351,7 @@ def create_app(
             report,
             narrative_text=narrative_text,
             polish_override=polish_override,
+            models_cfg=models_cfg,
             claims=claims,
             verbatim_narration=True,
         )
@@ -1321,6 +1369,7 @@ def create_app(
         claims=(),
         verbatim_narration=False,
         gate_steps_on_claims=True,
+        models_cfg=None,
     ):
         """Render every output format + the review report from finished
         step_results and annotated images. Shared by both generation modes.
@@ -1349,13 +1398,17 @@ def create_app(
         # doc.single.html, the md-bundle (export.md.zip), doc.docx, and
         # doc.pdf all reflect this pass -- all six rendered from the
         # polished fields below.
-        current_cfg = load_models_config(resolved_config_path)
+        current_cfg = models_cfg or load_models_config(resolved_config_path)
         if polish_override is not None:
             polish_section = resolve_polish_config(polish_override, current_cfg)
         elif current_cfg.polish.enabled:
             polish_section = current_cfg.polish
         else:
             polish_section = None
+        if polish_section is not None:
+            report.setdefault("models", {})["polish"] = (
+                f"{polish_section.provider}/{polish_section.model}"
+            )
 
         md_narrative_text = narrative_text
         md_step_results = step_results
@@ -1444,8 +1497,8 @@ def create_app(
                 report["polish_rejected_claim_coverage"] = missing
                 md_narrative_text = narrative_text
 
-        # Phases exist only for capture sessions (phases.json, written at
-        # generation); photo builds and pre-6c sessions render ungrouped.
+        # Phases come from phases.json, written at generation by both build
+        # flows; pre-6c sessions (and older photo builds) render ungrouped.
         phases_path = session_dir / "phases.json"
         phases = load_phases(phases_path, manifest) if phases_path.exists() else None
         omitted = duplicate_screenshot_steps(manifest, annotated_paths, phases) if phases else []
@@ -1479,7 +1532,7 @@ def create_app(
         )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
 
-        doc_cfg = load_models_config(resolved_config_path).document
+        doc_cfg = current_cfg.document
         doc_date = format_doc_date(manifest.session.started_utc)
         # 6g: inferred metadata + this session's overrides (doc_meta.py).
         meta = resolve_meta(manifest, doc_cfg, session_dir)
@@ -1507,6 +1560,14 @@ def create_app(
             **layout,
         )
         report["docx_warnings"] = docx_warnings
+        # Word installed (the build host): have it fill in the TOC's page
+        # numbers now, so the file needs no "update fields" on the reader's
+        # side. Best-effort -- the unrefreshed TOC field is still valid.
+        report.pop("docx_toc_refresh", None)
+        if word_available():
+            toc_problem = refresh_toc_in_word(docx_path)
+            if toc_problem:
+                report["docx_toc_refresh"] = toc_problem
 
         pdf_path = session_dir / "doc.pdf"
         render_pdf(
@@ -1598,6 +1659,7 @@ def create_app(
                             "used_fallback": bool(r.get("used_fallback")),
                             "manually_edited": bool(r.get("manually_edited")),
                             "narration": r.get("narration"),
+                            "title": r.get("title"),
                             "screenshot": screenshot_by_id.get(r["step_id"], ""),
                         }
                         for r in md_step_results
@@ -1657,6 +1719,8 @@ def create_app(
             }
             if entry.get("narration"):
                 result["narration"] = entry["narration"]
+            if entry.get("title"):
+                result["title"] = entry["title"]
             step_results.append(result)
 
         annotated_paths = []
@@ -1671,7 +1735,11 @@ def create_app(
         return step_results, annotated_paths, state
 
     def _reexport_session(
-        session_id, text_overrides=None, preflight_result=None, regenerate_declined_step=None
+        session_id,
+        text_overrides=None,
+        preflight_result=None,
+        regenerate_declined_step=None,
+        step_models=None,
     ):
         """Re-renders all six export formats + report.json + steps.json +
         the library entry from the session's persisted steps.json state --
@@ -1750,6 +1818,8 @@ def create_app(
             existing_report.pop("template_fallback_steps", None)
             existing_report.pop("empty_metadata_steps", None)
             existing_report.update(rebuilt)
+        if step_models:
+            existing_report.setdefault("step_models", {}).update(step_models)
         if preflight_result:
             existing_report["llm_preflight"] = preflight_result
 
@@ -1767,7 +1837,7 @@ def create_app(
         )
 
     def _run_semantic_pipeline(
-        content, manifest, step_contexts, per_step, note, polish=True, raw_out=None
+        content, manifest, step_contexts, per_step, note, polish=True, raw_out=None, models_cfg=None
     ):
         """Shared by the real-capture flow (_apply_transcript) and the photo
         build flow (_generate_photo): when the deterministic placement
@@ -1789,7 +1859,7 @@ def create_app(
             return per_step, note, None
 
         placement_meta = None
-        narrative_llm = make_narrative_llm_client()
+        narrative_llm = make_narrative_llm_client(models_cfg.narrative)
         try:
             aligned = semantic_align(content, manifest, step_contexts, narrative_llm)
         finally:
@@ -1802,7 +1872,7 @@ def create_app(
                 raw_out.clear()
                 raw_out.update(per_step)
             if polish:
-                polish_llm = make_narrative_llm_client()
+                polish_llm = make_narrative_llm_client(models_cfg.narrative)
                 try:
                     per_step, polish_meta = polish_narration(
                         per_step, manifest, step_contexts, polish_llm
@@ -1818,7 +1888,7 @@ def create_app(
             )
         return per_step, note, placement_meta
 
-    def _apply_transcript(session_dir, manifest, step_results):
+    def _apply_transcript(session_dir, manifest, step_results, models_cfg):
         """If a transcript was uploaded (saved as transcript.<ext>), place its
         narration onto each step_result's "narration" key and return
         (placement_note, placement_meta) for the report. Returns (None, None)
@@ -1837,7 +1907,7 @@ def create_app(
 
         step_contexts = build_step_contexts(manifest, step_results)
         per_step, note, placement_meta = _run_semantic_pipeline(
-            content, manifest, step_contexts, per_step, note
+            content, manifest, step_contexts, per_step, note, models_cfg=models_cfg
         )
 
         for result in step_results:
@@ -2221,7 +2291,7 @@ def create_app(
 
     def _save_phases_and_reexport(session_id, edit):
         """Shared by the phase-rename and screenshot-restore routes: load the
-        saved phases.json (capture sessions only), apply `edit(phases, kept)`
+        saved phases.json (written by both build flows), apply `edit(phases, kept)`
         -> (phases, kept), write it back keeping every other field's value,
         then run the same no-LLM re-export the step-edit route uses."""
         session_dir = _require_done(session_id)
@@ -2229,7 +2299,7 @@ def create_app(
         phases_path = session_dir / "phases.json"
         if not phases_path.exists():
             raise HTTPException(
-                status_code=409, detail="this session has no phases (screenshot build or pre-6c)"
+                status_code=409, detail="this session has no phases (generated before grouping)"
             )
         _load_reexportable_state(session_id)
         phases = load_phases(phases_path, manifest)
@@ -2354,7 +2424,7 @@ def create_app(
                 preflight_result = probe(cfg.steps)
             except Exception:  # noqa: BLE001 - preflight is diagnostics, never a gate
                 logger.exception("preflight probe failed regenerating %s/%s", session_id, step_id)
-        llm = make_llm_client()
+        llm = make_llm_client(cfg.steps)
         try:
             text, used_fallback = generate_step_text(step, llm)
         finally:
@@ -2407,6 +2477,7 @@ def create_app(
         _reexport_session(
             session_id,
             text_overrides={step_id: (text, used_fallback)},
+            step_models={step_id: f"{cfg.steps.provider}/{cfg.steps.model}"},
             preflight_result=preflight_result,
         )
         _clear_edit(session_dir, step_id)
@@ -2730,6 +2801,9 @@ def create_app(
             cfg = ModelsConfig.model_validate(data)
         except Exception as exc:  # noqa: BLE001 - pydantic ValidationError -> clear 400
             raise HTTPException(status_code=400, detail=f"invalid config: {exc}") from exc
+        mismatches = model_provider_mismatches(cfg)
+        if mismatches:
+            raise HTTPException(status_code=400, detail="; ".join(mismatches))
         try:
             save_models_config(cfg, resolved_config_path)
         except OSError as exc:

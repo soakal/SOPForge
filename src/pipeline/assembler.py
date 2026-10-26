@@ -10,7 +10,7 @@ import datetime as dt
 from pipeline.grouping import DEFAULT_PHASE_NAME, default_phases
 
 
-def step_heading(n, step):
+def step_heading(n, step, result=None):
     """A short, descriptive per-step heading built purely from manifest
     fields (no LLM, no invariant risk) -- "Step 3 — Click 'Save'" instead of
     a bare "Step 3". Shared by every export format (docx/pdf/html/md) so a
@@ -21,7 +21,14 @@ def step_heading(n, step):
     the screen") would be a fabrication for the manifest-free photo-build
     flow (photo_build.py's synthetic steps carry a placeholder action="click"
     for every step even though no click ever happened), and is uninformative
-    even for a real capture step with genuinely empty UIA metadata."""
+    even for a real capture step with genuinely empty UIA metadata.
+
+    A `result["title"]` (a vision model's short title for a photo-build
+    step, read off the screenshot) wins over both: it only names the step,
+    the step itself still comes from the manifest."""
+    title = (result or {}).get("title")
+    if title:
+        return f"Step {n} — {title}"
     if step.element.name:
         target = f"'{step.element.name}'"
     elif step.element.control_type:
@@ -50,30 +57,41 @@ def phase_starts(manifest, phases=None):
     return {p.step_ids[0]: p.name for p in resolve_phases(manifest, phases) if p.step_ids}
 
 
-def toc_lines(manifest, narrative_text, phases=None):
-    """The document outline as a flat list of display strings: an optional
-    numbered "N.  Overview" line, a numbered "N.  Procedure" line followed
-    by each step's indented heading, and a closing "N.  Revision History"
-    line. Shared by docx_assembler.py and export_pdf.py so their two TOCs
-    can never independently drift out of sync for the same session (adding,
-    renaming, or reordering a section only needs to change here once)."""
+def toc_entries(manifest, narrative_text, phases=None, step_results=None):
+    """The document outline as [(key, display string)]: an optional numbered
+    "N.  Overview" line, a numbered "N.  Procedure" line followed by each
+    step's indented heading, and a closing "N.  Revision History" line.
+    Grouped into phases, it lists the numbered phase sections only, SOP
+    Factory style (no per-step lines). `key` ("overview", "revision", a
+    step id, or "phase:<first step id>"/"procedure") lets a renderer attach
+    a page number to each line. Shared by docx_assembler.py and
+    export_pdf.py so their two TOCs can never independently drift out of
+    sync for the same session."""
+    results = step_results or [None] * len(manifest.steps)
     section = 0
-    lines = []
+    entries = []
     if narrative_text:
         section += 1
-        lines.append(f"{section}.  Overview")
+        entries.append(("overview", f"{section}.  Overview"))
     starts = phase_starts(manifest, phases)
+    grouped = is_grouped(phases)
     if not starts:
         section += 1
-        lines.append(f"{section}.  {DEFAULT_PHASE_NAME}")
-    for n, step in enumerate(manifest.steps, 1):
+        entries.append(("procedure", f"{section}.  {DEFAULT_PHASE_NAME}"))
+    for n, (step, result) in enumerate(zip(manifest.steps, results, strict=True), 1):
         if step.id in starts:
             section += 1
-            lines.append(f"{section}.  {starts[step.id]}")
-        lines.append(f"      {step_heading(n, step)}")
+            entries.append((f"phase:{step.id}", f"{section}.  {starts[step.id]}"))
+        if not grouped:
+            entries.append((step.id, f"      {step_heading(n, step, result)}"))
     section += 1
-    lines.append(f"{section}.  Revision History")
-    return lines
+    entries.append(("revision", f"{section}.  Revision History"))
+    return entries
+
+
+def toc_lines(manifest, narrative_text, phases=None, step_results=None):
+    """toc_entries' display strings only."""
+    return [line for _key, line in toc_entries(manifest, narrative_text, phases, step_results)]
 
 
 def format_doc_date(started_utc):

@@ -140,3 +140,28 @@ def test_footer_shows_file_name_not_local_path(tmp_path):
     master = Presentation(str(out)).slide_master
     file_path_text = [s.text_frame.text for s in master.shapes if s.name == "FilePath"]
     assert file_path_text == ["deck.pptx"]
+
+
+def test_photo_titles_survive_slide_export_and_fit_planning(tmp_path, monkeypatch):
+    monkeypatch.setattr(export_spl, "powerpoint_available", lambda: False)
+    m, results, paths = _rendered(tmp_path, n=3)
+    results[0]["title"] = "Select <Products> & licenses"
+    out, _ = build_spl_deck(m, results, paths, tmp_path / "titled.pptx")
+    text = "\n".join(t for slide in _slide_texts(out) for t in slide)
+    assert "Step 1 — Select <Products> & licenses" in text
+    assert any(
+        r.font.bold and r.text == "Step 1 — Select <Products> & licenses"
+        for slide in Presentation(out).slides
+        for shape in slide.shapes
+        if shape.has_text_frame
+        for paragraph in shape.text_frame.paragraphs
+        for r in paragraph.runs
+    )
+    assert results[0]["text"] in text
+
+    class Estimator:
+        def fits(self, box, texts, *args, **kwargs):
+            assert any("Select <Products>" in text for text in texts)
+            return True
+
+    plan_slides(m, results, estimator=Estimator())

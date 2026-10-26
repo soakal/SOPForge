@@ -109,3 +109,12 @@ def scratch_window():
         yield win
     finally:
         _kill_if_new(win, pids_before)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_word(monkeypatch):
+    """Builds must not launch real Word to refresh the docx TOC during tests
+    (slow, and COM-flaky on the build VM); test_docx_fields covers it."""
+    import pipeline.server
+
+    monkeypatch.setattr(pipeline.server, "word_available", lambda: False)
