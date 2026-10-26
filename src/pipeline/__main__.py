@@ -10,6 +10,7 @@ from pathlib import Path
 import uvicorn
 
 from pipeline import __version__
+from pipeline.config import load_user_api_keys
 from pipeline.server import create_app
 
 DEFAULT_SESSIONS_ROOT = Path.home() / "SOPForge" / "sessions"
@@ -35,6 +36,7 @@ def main(argv=None):
     parser.add_argument("--sessions-root", type=Path, default=DEFAULT_SESSIONS_ROOT)
     args = parser.parse_args(argv)
 
+    load_user_api_keys()
     app = create_app(sessions_root=args.sessions_root, bind_host=args.host)
     uvicorn.run(app, host=args.host, port=args.port)
     return 0

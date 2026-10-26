@@ -12,6 +12,7 @@ user copy instead."""
 
 import os
 import shutil
+import sys
 import tomllib
 from pathlib import Path
 from typing import Literal
@@ -31,11 +32,6 @@ PROVIDERS = {
 }
 
 Provider = Literal["ollama", "openrouter", "openai", "anthropic"]
-# Vision captioning goes through the OpenAI-compatible image path (base64
-# image_url). Anthropic uses a different image format AND has no OpenAI-compat
-# endpoint here -- allowing it would send ANTHROPIC_API_KEY as a Bearer token to
-# the (leftover) ollama endpoint. So vision providers exclude anthropic.
-VisionProvider = Literal["ollama", "openrouter", "openai"]
 
 
 def default_config_path():
@@ -147,7 +143,8 @@ class VisionConfig(BaseModel):
     enabled: bool = False
     endpoint: str = "http://192.168.200.60:11434/v1"
     model: str = "qwen2.5vl:7b"
-    provider: VisionProvider = "ollama"
+    # anthropic is captioned via its Messages API (vision.py), never the endpoint.
+    provider: Provider = "ollama"
     max_concurrency: int = Field(default=4, ge=1)
 
 
@@ -206,16 +203,64 @@ def provider_api_key(provider):
 
 
 def key_status(cfg: ModelsConfig):
-    """{provider: bool} for every non-ollama provider used by the config --
-    whether its API key env var is set. For the config page's indicator; never
-    exposes the key value itself."""
-    used = {cfg.steps.provider, cfg.narrative.provider, cfg.vision.provider}
-    status = {}
-    for provider in used:
-        key_env = PROVIDERS.get(provider, {}).get("key_env")
-        if key_env:
-            status[provider] = bool(os.environ.get(key_env))
-    return status
+    """{provider: bool} for every keyed (non-ollama) provider -- whether its
+    API key env var is set. All of them, not just the ones the config uses,
+    so the config page can offer a paste box for each. Never exposes the key
+    value itself."""
+    return {
+        provider: bool(os.environ.get(spec["key_env"]))
+        for provider, spec in PROVIDERS.items()
+        if spec.get("key_env")
+    }
+
+
+def save_api_key(provider, key):
+    """Store a provider's API key as a per-user environment variable (the
+    same place `setx` writes -- never the config file), and set it in this
+    process so it takes effect without a restart. Raises ValueError for an
+    unknown provider or a malformed key."""
+    key_env = PROVIDERS.get(provider, {}).get("key_env")
+    if not key_env:
+        raise ValueError(f"provider {provider!r} takes no API key")
+    key = (key or "").strip()
+    if not key or len(key) > 512 or any(c.isspace() or not c.isprintable() for c in key):
+        raise ValueError("API key is empty or malformed")
+    if sys.platform == "win32":
+        import winreg
+
+        import ctypes
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
+            winreg.SetValueEx(k, key_env, 0, winreg.REG_SZ, key)
+        # What setx does: tell Explorer etc. the environment changed, so apps
+        # launched later (not just this process) see the new key.
+        # HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG, 5s timeout.
+        ctypes.windll.user32.SendMessageTimeoutW(0xFFFF, 0x1A, 0, "Environment", 2, 5000, None)
+    os.environ[key_env] = key
+
+
+def load_user_api_keys():
+    """Load provider key env vars from the per-user registry copy
+    (HKCU\\Environment) -- what the config page's key box writes. It wins
+    over an inherited value: a server launched from a stale parent
+    environment (an Explorer/terminal started before the key was saved or
+    replaced) would otherwise use a missing or old key until logoff. No-op
+    off Windows."""
+    if sys.platform != "win32":
+        return
+    import winreg
+
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+            for spec in PROVIDERS.values():
+                key_env = spec.get("key_env")
+                if key_env:
+                    try:
+                        os.environ[key_env] = winreg.QueryValueEx(k, key_env)[0]
+                    except FileNotFoundError:
+                        pass
+    except OSError:
+        pass
 
 
 def load_models_config(path=None):

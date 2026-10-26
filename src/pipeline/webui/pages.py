@@ -239,9 +239,6 @@ def render_steps_review_page(session_id, manifest, nav=None):
 
 
 _PROVIDERS = ["ollama", "openrouter", "openai", "anthropic"]
-# Vision goes through the OpenAI-compatible image path, which excludes anthropic
-# (see config.VisionProvider) -- so the vision row offers only these three.
-_VISION_PROVIDERS = ["ollama", "openrouter", "openai"]
 _KEY_ENV = {
     "openrouter": "OPENROUTER_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -264,6 +261,7 @@ _RECOMMENDED = {
         "ollama": "qwen2.5vl:7b",
         "openrouter": "anthropic/claude-sonnet-5.5",
         "openai": "gpt-4o",
+        "anthropic": "claude-sonnet-5-5",
     },
     "polish": {
         "ollama": "gemma3:12b",
@@ -307,7 +305,7 @@ _MODEL_SUGGESTIONS = {
             "openai/gpt-5.5",
         ],
         "openai": ["gpt-5.5", "gpt-4o"],
-        # deliberately no "anthropic" key -- vision excludes bare anthropic (see _VISION_PROVIDERS)
+        "anthropic": ["claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5"],
     },
     "polish": {
         "ollama": ["gemma3:12b", "gemma3:27b"],
@@ -332,10 +330,9 @@ def render_config_page(config, keystatus, saved=False, nav=None):
         document=config.get("document", {}),
         transcription=config.get("transcription", {}),
         providers=_PROVIDERS,
-        vision_providers=_VISION_PROVIDERS,
         suggestions=_MODEL_SUGGESTIONS,
         recommended=_RECOMMENDED,
-        key_rows=[(_KEY_ENV.get(p, p), ok) for p, ok in sorted(keystatus.items())],
+        key_rows=[(p, _KEY_ENV.get(p, p), ok) for p, ok in sorted(keystatus.items())],
     )
 
 

@@ -66,6 +66,7 @@ from pipeline.config import (
     SectionConfig,
     VisionConfig,
     key_status,
+    save_api_key,
     load_models_config,
     provider_api_key,
     provider_endpoint,
@@ -1122,6 +1123,7 @@ def create_app(
                 on_progress=lambda i, n: jobs.set_progress(session_id, i, n),
                 max_workers=vision_cfg.max_concurrency,
                 trust_env=vision_cfg.provider != "ollama",
+                provider=vision_cfg.provider,
             )
             vision_note = (
                 f"vision-captioned {sum(1 for c in captions if c)}/{len(captions)} "
@@ -2619,6 +2621,47 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"invalid section: {exc}") from exc
         result = await run_in_threadpool(probe, section)
         return JSONResponse({**result, "section": name})
+
+    def _same_ip(ip, host):
+        """True if `host` is an IP literal equal to `ip` -- a canonical
+        compare, so an expanded IPv6 spelling still matches. A hostname bind
+        never matches: fail closed rather than resolve DNS per request."""
+        try:
+            return ipaddress.ip_address(host) == ip
+        except ValueError:
+            return False
+
+    @app.post("/ui/config/key")
+    async def ui_config_key(request: Request):
+        """Paste-in API key box on /ui/config. This PC only: when the server
+        is bound to the LAN, nobody else on the network may set (and so
+        redirect billing/prompts to) this user's key.
+
+        Two checks, both regardless of bind mode: the TCP peer must be this
+        machine (loopback, or the fixed bind address itself), AND the Host
+        (and Origin, if sent) must be a local name. The second closes DNS
+        rebinding in bind-all mode, where _host_guard is a no-op and a
+        rebound evil.com page arrives from 127.0.0.1 with Host == Origin."""
+        try:
+            peer = ipaddress.ip_address(request.client.host if request.client else "")
+            peer_ok = (getattr(peer, "ipv4_mapped", None) or peer).is_loopback or (
+                not _bind_all and _same_ip(peer, _bind_host_norm)
+            )
+        except ValueError:
+            peer_ok = False
+        origin = request.headers.get("origin")
+        hosts_ok = _parse_host_header(request.headers.get("host")) in _LOCAL_HOSTS and (
+            origin is None or _parse_host_header(origin.partition("://")[2]) in _LOCAL_HOSTS
+        )
+        if not (peer_ok and hosts_ok):
+            raise HTTPException(status_code=403, detail="API keys can only be set from this PC")
+        form = await request.form()
+        key = form.get("key")
+        try:
+            save_api_key(form.get("provider"), key if isinstance(key, str) else "")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return RedirectResponse("/ui/config?saved=1", status_code=303)
 
     @app.post("/ui/config")
     async def ui_config_save(request: Request):

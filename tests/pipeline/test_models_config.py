@@ -61,13 +61,12 @@ def _base_cfg():
     }
 
 
-def test_vision_provider_rejects_anthropic():
-    # anthropic as a vision provider would leak ANTHROPIC_API_KEY to the ollama
-    # endpoint -- it must be rejected at validation.
+def test_vision_provider_accepts_anthropic():
+    # vision.py captions via Anthropic's Messages API (fixed URL), so the key
+    # never goes to the section's ollama endpoint.
     data = _base_cfg()
     data["vision"]["provider"] = "anthropic"
-    with pytest.raises(ValidationError):
-        ModelsConfig.model_validate(data)
+    assert ModelsConfig.model_validate(data).vision.provider == "anthropic"
 
 
 def test_passes_must_be_at_least_one():

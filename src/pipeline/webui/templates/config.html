@@ -26,7 +26,7 @@
 {% call model_row("narrative", "Narration", narrative, providers, suggestions.get("narrative", {})) %}
 <div class="field"><label for="narrative_passes">Passes</label><input type="text" name="narrative_passes" id="narrative_passes" value="{{ narrative.get('passes', 1) }}"></div>
 {% endcall %}
-{% call model_row("vision", "Vision (screenshot captions)", vision, vision_providers, suggestions.get("vision", {})) %}
+{% call model_row("vision", "Vision (screenshot captions)", vision, providers, suggestions.get("vision", {})) %}
 <div class="field"><label class="check"><input type="checkbox" name="vision_enabled"{% if vision.get("enabled") %} checked{% endif %}> Enable vision captioning</label></div>
 <div class="field"><label for="vision_max_concurrency">Max concurrency <small>(concurrent vision calls)</small></label><input type="text" name="vision_max_concurrency" id="vision_max_concurrency" value="{{ vision.get('max_concurrency', 4) }}"></div>
 {% endcall %}
@@ -51,9 +51,13 @@
 {%- for p in providers %}<th scope="col">{{ p }}</th>{% endfor %}</tr></thead><tbody>
 {%- for task in ("steps", "narrative", "vision", "polish") %}<tr><td>{{ task }}</td>{% for p in providers %}<td>{{ recommended[task].get(p, "—") }}</td>{% endfor %}</tr>{% endfor -%}
 </tbody></table></div></div>
-<div class="card"><h2>API keys</h2><p class="help" style="margin-top:0">Keys are read from environment variables and never stored in the config — this page can only show whether one is set, never edit or reveal it. To set one: PowerShell <code>setx ANTHROPIC_API_KEY &quot;sk-ant-...&quot;</code> (swap in the variable name below for your provider), or Windows Settings → search &quot;Environment Variables&quot; → Edit environment variables for your account → New. Then restart the server.</p><ul class="sessions">
-{%- for name, ok in key_rows %}<li>{{ name }}: {% if ok %}<span class="pill ok">set</span>{% else %}<span class="pill">not set</span>{% endif %}</li>
-{%- else %}<li>All chosen providers are local (Ollama) — no key needed.</li>{% endfor -%}
-</ul></div></div>
+<div class="card"><h2>API keys</h2><p class="help" style="margin-top:0">Paste a key and click Save. It is stored as a per-user Windows environment variable (never in the config file), takes effect immediately, and is never shown again — this page only says whether one is set. Only works from this PC.</p>
+{%- for provider, name, ok in key_rows %}
+<form method="post" action="/ui/config/key" class="row" autocomplete="off"><input type="hidden" name="provider" value="{{ provider }}">
+<div class="field"><label for="key_{{ provider }}">{{ provider }} <code>{{ name }}</code> {% if ok %}<span class="pill ok">set</span>{% else %}<span class="pill">not set</span>{% endif %}</label>
+<input type="password" name="key" id="key_{{ provider }}" autocomplete="new-password" placeholder="{% if ok %}paste to replace{% else %}paste key{% endif %}" required></div>
+<div class="field"><label>&nbsp;</label><button type="submit">Save key</button></div></form>
+{%- endfor %}
+</div></div>
 {% include "assets/config_test_script.html" %}
 {% endblock %}

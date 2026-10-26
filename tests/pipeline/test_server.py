@@ -2673,18 +2673,8 @@ def test_config_page_model_datalists(tmp_path):
                 f"missing per-provider datalist for {key}/{provider}"
             )
 
-    assert "anthropic" not in _MODEL_SUGGESTIONS["vision"], (
-        "vision suggestions should not have a bare anthropic entry"
-    )
-    vision_datalists = re.findall(
-        r'<datalist id="vision_model_suggestions[^"]*">(.*?)</datalist>', text, re.DOTALL
-    )
-    assert vision_datalists, "vision datalists missing"
-    for options_html in vision_datalists:
-        options = re.findall(r'<option value="([^"]*)">', options_html)
-        assert not any(opt.startswith("claude-") for opt in options), (
-            "vision datalist should not suggest bare anthropic models"
-        )
+    assert "claude-sonnet-5-5" in _MODEL_SUGGESTIONS["vision"]["anthropic"]
+    assert '<datalist id="vision_model_suggestions_anthropic">' in text
 
     resp = client.post(
         "/ui/config",
@@ -2714,7 +2704,7 @@ def test_config_provider_select_switches_suggestions(tmp_path):
     canonical datalist's contents to match the newly-selected provider's
     per-provider datalist -- and every id it could reference actually exists
     on the page (no dangling getElementById reference)."""
-    from pipeline.webui.pages import _PROVIDERS, _VISION_PROVIDERS
+    from pipeline.webui.pages import _PROVIDERS
 
     client = _make_client(tmp_path)
     text = client.get("/ui/config").text
@@ -2722,7 +2712,7 @@ def test_config_provider_select_switches_suggestions(tmp_path):
     for key, providers in (
         ("steps", _PROVIDERS),
         ("narrative", _PROVIDERS),
-        ("vision", _VISION_PROVIDERS),
+        ("vision", _PROVIDERS),
     ):
         select_match = re.search(rf'<select name="{key}_provider"[^>]*>', text)
         assert select_match, f"missing provider select for {key}"
@@ -3595,3 +3585,116 @@ def test_preflight_probe_raising_does_not_fail_the_job(tmp_path):
     if status["status"] == "done":
         report = client.get(f"/sessions/{session_id}/report").json()
         assert "llm_preflight" not in report
+
+
+def test_config_page_offers_a_paste_box_per_keyed_provider(tmp_path):
+    page = _make_client(tmp_path).get("/ui/config").text
+    for provider in ("anthropic", "openai", "openrouter"):
+        assert f'id="key_{provider}"' in page
+    assert 'action="/ui/config/key"' in page
+    assert 'type="password"' in page
+
+
+def test_config_key_post_saves_from_loopback_only(tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(server_module, "save_api_key", lambda p, k: saved.append((p, k)))
+    app = TestClient(_make_client(tmp_path).app, client=("127.0.0.1", 50000))
+    resp = app.post(
+        "/ui/config/key",
+        data={"provider": "anthropic", "key": "sk-ant-x"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303 and saved == [("anthropic", "sk-ant-x")]
+
+    lan = TestClient(_make_client(tmp_path).app, client=("192.168.200.9", 50000))
+    resp = lan.post("/ui/config/key", data={"provider": "anthropic", "key": "sk-ant-y"})
+    assert resp.status_code == 403 and len(saved) == 1
+
+
+def test_save_api_key_rejects_bad_input_without_storing(monkeypatch):
+    from pipeline.config import save_api_key
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    for provider, key in (("ollama", "x"), ("anthropic", ""), ("anthropic", "a b"), ("nope", "k")):
+        with pytest.raises(ValueError):
+            save_api_key(provider, key)
+    import os
+
+    assert "ANTHROPIC_API_KEY" not in os.environ
+
+
+def _key_client(tmp_path, peer, bind_host="127.0.0.1", base_url="http://testserver"):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    app = create_app(
+        sessions_root=tmp_path / "sessions",
+        llm_client_factory=stub_llm_client_factory,
+        narrative_llm_client_factory=stub_llm_client_factory,
+        config_path=cfg,
+        bind_host=bind_host,
+    )
+    return TestClient(app, client=(peer, 50000), base_url=base_url)
+
+
+def test_config_key_rejects_dns_rebinding_in_bind_all_mode(tmp_path, monkeypatch):
+    """Bind-all disables _host_guard and _csrf_guard only needs Origin==Host,
+    so a page rebound to 127.0.0.1 arrives from loopback with matching
+    evil Host/Origin -- the key route must still refuse it."""
+    saved = []
+    monkeypatch.setattr(server_module, "save_api_key", lambda p, k: saved.append((p, k)))
+    client = _key_client(
+        tmp_path, "127.0.0.1", bind_host="0.0.0.0", base_url="http://evil.com:8420"
+    )
+    resp = client.post(
+        "/ui/config/key",
+        data={"provider": "openrouter", "key": "sk-or-attacker"},
+        headers={"Origin": "http://evil.com:8420"},
+    )
+    assert resp.status_code == 403 and saved == []
+
+    local = _key_client(
+        tmp_path, "127.0.0.1", bind_host="0.0.0.0", base_url="http://127.0.0.1:8420"
+    )
+    resp = local.post(
+        "/ui/config/key",
+        data={"provider": "openrouter", "key": "sk-or-mine"},
+        headers={"Origin": "http://127.0.0.1:8420"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303 and saved == [("openrouter", "sk-or-mine")]
+
+
+def test_config_key_allows_this_pc_on_fixed_lan_bind_and_v4_mapped_loopback(tmp_path, monkeypatch):
+    saved = []
+    monkeypatch.setattr(server_module, "save_api_key", lambda p, k: saved.append((p, k)))
+    lan_ip = "192.168.200.77"
+    own = _key_client(tmp_path, lan_ip, bind_host=lan_ip, base_url=f"http://{lan_ip}:8420")
+    assert (
+        own.post(
+            "/ui/config/key", data={"provider": "openai", "key": "k1"}, follow_redirects=False
+        ).status_code
+        == 303
+    )
+    other = _key_client(
+        tmp_path, "192.168.200.9", bind_host=lan_ip, base_url=f"http://{lan_ip}:8420"
+    )
+    assert other.post("/ui/config/key", data={"provider": "openai", "key": "k2"}).status_code == 403
+    mapped = _key_client(tmp_path, "::ffff:127.0.0.1", bind_host="::")
+    mapped = TestClient(
+        mapped.app, client=("::ffff:127.0.0.1", 1), base_url="http://127.0.0.1:8420"
+    )
+    assert (
+        mapped.post(
+            "/ui/config/key", data={"provider": "openai", "key": "k3"}, follow_redirects=False
+        ).status_code
+        == 303
+    )
+    assert [k for _p, k in saved] == ["k1", "k3"]
+
+
+def test_config_key_file_part_is_rejected_not_500(tmp_path):
+    client = _key_client(tmp_path, "127.0.0.1")
+    resp = client.post(
+        "/ui/config/key", data={"provider": "anthropic"}, files={"key": ("k.txt", b"sk-ant")}
+    )
+    assert resp.status_code == 400

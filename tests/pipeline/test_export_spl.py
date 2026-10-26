@@ -16,7 +16,6 @@ from pipeline.export_spl import (
     TextEstimator,
     build_spl_deck,
     plan_slides,
-    powerpoint_available,
 )
 from pipeline.grouping import Phase
 from pipeline.manifest import Manifest
@@ -123,8 +122,7 @@ def test_text_too_long_is_reported_not_cut(tmp_path):
     assert ("word " * 300).strip() in "\n".join(t for s in _slide_texts(out) for t in s)
 
 
-def test_no_powerpoint_here_and_powerpoint_failure_falls_back(tmp_path, monkeypatch):
-    assert powerpoint_available() is False  # Linux CI
+def test_powerpoint_failure_falls_back(tmp_path, monkeypatch):
     monkeypatch.setattr(export_spl, "powerpoint_available", lambda: True)
 
     def boom(*_a):

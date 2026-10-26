@@ -1,5 +1,6 @@
 """Vision captioning: caption_images against a mock transport (no network)."""
 
+import json
 import time
 
 import httpx
@@ -164,3 +165,42 @@ def test_caption_client_is_built_with_trust_env_false(tmp_path, monkeypatch):
     assert recorded == [False]
     caption_images(imgs, "", "http://x/v1", "m", transport=mock, trust_env=True)
     assert recorded == [False, True]
+
+
+def test_anthropic_provider_uses_messages_api_not_endpoint(tmp_path):
+    """provider=anthropic must hit api.anthropic.com with x-api-key and an
+    Anthropic image block -- never the configured (ollama) endpoint, which
+    would leak the key -- and read the reply's text blocks."""
+    imgs = [_png(tmp_path, "1.png")]
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {"type": "thinking", "thinking": "..."},
+                    {"type": "text", "text": "Click Save."},
+                ]
+            },
+        )
+
+    caps = caption_images(
+        imgs,
+        "narration",
+        "http://192.168.200.60:11434/v1",
+        "claude-sonnet-5-5",
+        api_key="sk-ant-test",
+        transport=httpx.MockTransport(handler),
+        provider="anthropic",
+    )
+    assert caps == ["Click Save."]
+    req = seen[0]
+    assert str(req.url) == "https://api.anthropic.com/v1/messages"
+    assert req.headers["x-api-key"] == "sk-ant-test"
+    assert "authorization" not in req.headers
+    body = json.loads(req.read())
+    assert body["system"] and body["model"] == "claude-sonnet-5-5"
+    image = body["messages"][0]["content"][0]
+    assert image["type"] == "image" and image["source"]["media_type"] == "image/png"

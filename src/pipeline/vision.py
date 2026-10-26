@@ -13,6 +13,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
+from pipeline.llm_client import (
+    ANTHROPIC_DEFAULT_MAX_TOKENS,
+    ANTHROPIC_MESSAGES_URL,
+    ANTHROPIC_VERSION,
+)
 from pipeline.textgate import degenerate_reason
 
 logger = logging.getLogger(__name__)
@@ -46,8 +51,46 @@ def _prompt(narration, index, total):
     )
 
 
+def _anthropic_request(path, prompt, model, api_key):
+    """(url, headers, json) for Anthropic's Messages API: a base64 image
+    block, the system prompt top-level. Always the fixed api.anthropic.com
+    URL -- never the section's (ollama) endpoint, so the key can't leak."""
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return (
+        ANTHROPIC_MESSAGES_URL,
+        {"x-api-key": api_key or "", "anthropic-version": ANTHROPIC_VERSION},
+        {
+            "model": model,
+            "max_tokens": ANTHROPIC_DEFAULT_MAX_TOKENS,
+            "system": _SYSTEM,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/png", "data": data},
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
+        },
+    )
+
+
 def _caption_one(
-    path, narration, index, total, endpoint, model, timeout, transport, api_key, trust_env=False
+    path,
+    narration,
+    index,
+    total,
+    endpoint,
+    model,
+    timeout,
+    transport,
+    api_key,
+    trust_env=False,
+    provider="ollama",
 ):
     """Returns the caption text, or None on any failure -- including a
     degenerate reply (a repetition loop, a leaked chat-template special
@@ -55,8 +98,26 @@ def _caption_one(
     fallback chain (caption or per_step.get(...) or a placeholder) already
     handles a missing caption safely. Never raises."""
     try:
-        image_url = _image_data_url(path)
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        prompt = _prompt(narration, index, total)
+        if provider == "anthropic":
+            url, headers, payload = _anthropic_request(path, prompt, model, api_key)
+        else:
+            url = f"{endpoint.rstrip('/')}/chat/completions"
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": _SYSTEM},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": _image_data_url(path)}},
+                        ],
+                    },
+                ],
+                "stream": False,
+            }
         # Cap the CONNECT phase short (like LLMClient) so an unreachable/
         # firewalled endpoint fails fast per image instead of stalling the whole
         # build ~timeout seconds each.
@@ -64,29 +125,16 @@ def _caption_one(
         with httpx.Client(
             transport=transport, timeout=client_timeout, trust_env=trust_env
         ) as client:
-            resp = client.post(
-                f"{endpoint.rstrip('/')}/chat/completions",
-                headers=headers,
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": _SYSTEM},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": _prompt(narration, index, total)},
-                                {
-                                    "type": "image_url",
-                                    "image_url": {"url": image_url},
-                                },
-                            ],
-                        },
-                    ],
-                    "stream": False,
-                },
-            )
+            resp = client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
-        text = resp.json()["choices"][0]["message"]["content"].strip()
+        data = resp.json()
+        if provider == "anthropic":
+            # Text blocks only -- current models may emit a thinking block first.
+            text = "".join(
+                b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"
+            ).strip()
+        else:
+            text = data["choices"][0]["message"]["content"].strip()
         if not text:
             return None
         reason = degenerate_reason(text)
@@ -110,11 +158,14 @@ def caption_images(
     transport=None,
     on_progress=None,
     trust_env=False,
+    provider="ollama",
 ):
     """Caption each image, in parallel. Returns a list the same length as
     image_paths; each entry is the caption string or None on failure. Order is
     preserved regardless of completion order. `api_key` (Bearer) is used for
-    non-ollama providers; `transport` is injectable for tests (no network).
+    OpenAI-compatible providers; `provider="anthropic"` switches to the
+    Messages API (x-api-key) and ignores `endpoint`. `transport` is
+    injectable for tests (no network).
     `on_progress`, if given, is called as `on_progress(completed, total)` as
     each image's caption finishes (mirroring generate_all_steps' callback) --
     a plain count, so out-of-order completion doesn't matter."""
@@ -125,7 +176,17 @@ def caption_images(
     def work(item):
         index, path = item
         return _caption_one(
-            path, narration, index, total, endpoint, model, timeout, transport, api_key, trust_env
+            path,
+            narration,
+            index,
+            total,
+            endpoint,
+            model,
+            timeout,
+            transport,
+            api_key,
+            trust_env,
+            provider,
         )
 
     results = [None] * total
