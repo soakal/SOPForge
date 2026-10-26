@@ -181,6 +181,31 @@ def test_auto_generated_title_is_persisted_to_manifest_json_on_disk(tmp_path):
     assert on_disk["session"]["title"] == "Configure SmartDeploy Console"
 
 
+def test_finished_exports_are_copied_to_a_titled_outputs_folder(tmp_path):
+    cfg = tmp_path / "models.toml"
+    shutil.copyfile(default_config_path(), cfg)
+    outputs = tmp_path / "Documents" / "SOPForge"
+    client = TestClient(
+        create_app(
+            sessions_root=tmp_path / "sessions",
+            llm_client_factory=stub_llm_client_factory,
+            narrative_llm_client_factory=stub_llm_client_factory,
+            config_path=cfg,
+            outputs_root=outputs,
+        )
+    )
+    session_id, status = _create_and_wait(client, tmp_path)
+    assert status["status"] == "done"
+
+    report = client.get(f"/sessions/{session_id}/report").json()
+    (folder,) = outputs.iterdir()
+    assert report["outputs_folder"] == str(folder)
+    names = {p.name for p in folder.iterdir()}
+    base = folder.name
+    assert base.endswith("_v1.0")
+    assert {f"{base}.docx", f"{base}.pdf", f"{base}.html", f"{base}_Walkthrough.html"} <= names
+
+
 def test_get_report_lists_expected_categories(tmp_path):
     client = _make_client(tmp_path)
     session_id, status = _create_and_wait(client, tmp_path)

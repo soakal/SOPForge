@@ -16,6 +16,21 @@ from pipeline.server import create_app
 DEFAULT_SESSIONS_ROOT = Path.home() / "SOPForge" / "sessions"
 
 
+def _documents_dir():
+    """The user's real Documents folder (it may be redirected, e.g. to
+    OneDrive), falling back to ~/Documents."""
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders",
+        ) as key:
+            return Path(os.path.expandvars(winreg.QueryValueEx(key, "Personal")[0]))
+    except (ImportError, OSError):
+        return Path.home() / "Documents"
+
+
 def main(argv=None):
     # The server ships as a console=False (windowed) PyInstaller EXE so no
     # console window flashes up when the tray/autostart launches it. Such a
@@ -34,10 +49,16 @@ def main(argv=None):
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8420)
     parser.add_argument("--sessions-root", type=Path, default=DEFAULT_SESSIONS_ROOT)
+    # Each finished doc is also copied to <outputs-root>/<Title_vX>/.
+    parser.add_argument("--outputs-root", type=Path, default=None)
     args = parser.parse_args(argv)
 
     load_user_api_keys()
-    app = create_app(sessions_root=args.sessions_root, bind_host=args.host)
+    app = create_app(
+        sessions_root=args.sessions_root,
+        bind_host=args.host,
+        outputs_root=args.outputs_root or _documents_dir() / "SOPForge",
+    )
     uvicorn.run(app, host=args.host, port=args.port)
     return 0
 

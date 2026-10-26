@@ -201,6 +201,33 @@ def _download_filename(meta, suffix):
     return f"{download_basename(meta)}{suffix}"
 
 
+# Session file -> download-name suffix, shared by the download routes and the
+# Documents output folder so both name a format the same way.
+_OUTPUT_SUFFIXES = {
+    "doc.docx": ".docx",
+    "doc.pdf": ".pdf",
+    "doc.single.html": ".html",
+    "walkthrough.html": "_Walkthrough.html",
+    "spl.pptx": "_SPL.pptx",
+    "export.md.zip": "_Markdown.zip",
+}
+
+
+def _publish_outputs(session_dir, meta, outputs_root):
+    """Copies the finished exports to <outputs_root>/<Title_vX>/ under their
+    download names, so a user finds them in Documents without opening the
+    app. Returns the folder. A rename starts a new folder; the old one is
+    left alone (it may hold the user's own files)."""
+    base = download_basename(meta)
+    folder = Path(outputs_root) / base
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, suffix in _OUTPUT_SUFFIXES.items():
+        src = Path(session_dir) / name
+        if src.exists():
+            shutil.copyfile(src, folder / f"{base}{suffix}")
+    return folder
+
+
 def _load_step_state(session_dir):
     """The parsed steps.json sidecar (written by _write_all_exports) as a
     dict, or None if it doesn't exist, isn't valid JSON, or -- even though
@@ -457,6 +484,7 @@ def create_app(
     preflight_enabled=None,
     bind_host="127.0.0.1",
     extra_allowed_hosts=(),
+    outputs_root=None,
 ) -> FastAPI:
     """llm_client_factory: zero-arg callable returning an object with a
     .chat(messages) method (matching LLMClient's interface), called fresh
@@ -1668,6 +1696,15 @@ def create_app(
             ),
             encoding="utf-8",
         )
+
+        report.pop("outputs_folder", None)
+        report.pop("outputs_folder_error", None)
+        if outputs_root is not None:
+            try:
+                report["outputs_folder"] = str(_publish_outputs(session_dir, meta, outputs_root))
+            except OSError as exc:  # e.g. the docx is open in Word; the session still has it
+                logger.warning("copy to outputs folder failed for %s: %s", session_id, exc)
+                report["outputs_folder_error"] = str(exc)
 
         (session_dir / "report.json").write_text(json.dumps(report), encoding="utf-8")
         upsert_entry(sessions_root, session_id, manifest, report)
