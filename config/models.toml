@@ -18,7 +18,7 @@
 
 [steps]
 provider = "ollama"
-endpoint = "http://192.168.200.60:11434/v1"
+endpoint = "http://192.168.200.250:11434/v1"
 model = "qwen3:32b"
 max_concurrency = 1
 
@@ -27,14 +27,14 @@ max_concurrency = 1
 # Ollama host: `py -3.12 scripts/verify_models.py` checks every configured tag.
 [narrative]
 provider = "ollama"
-endpoint = "http://192.168.200.60:11434/v1"
+endpoint = "http://192.168.200.250:11434/v1"
 model = "qwen3.6:27b"
 passes = 3
 
 [vision]
 enabled = true
 provider = "ollama"
-endpoint = "http://192.168.200.60:11434/v1"
+endpoint = "http://192.168.200.250:11434/v1"
 model = "qwen2.5vl:7b"
 max_concurrency = 4
 
@@ -48,7 +48,7 @@ doc_no_prefix = ""
 # Optional 4th stage: one formatting/tone pass over the assembled document
 # (see src/pipeline/polish.py). Off by default -- the model below
 # (gemma3:12b) is confirmed live on this deployment's Ollama host
-# (192.168.200.60:11434) and produced a genuine, gate-passing rewrite in
+# (192.168.200.250:11434) and produced a genuine, gate-passing rewrite in
 # live testing on 2026-07-11. gemma3n:e4b was tried first but consistently
 # echoed the input document back unchanged instead of rewriting it (0/4
 # genuine rewrites across two prompt variants, including one with an
@@ -67,7 +67,7 @@ doc_no_prefix = ""
 [polish]
 enabled = false
 provider = "ollama"
-endpoint = "http://192.168.200.60:11434/v1"
+endpoint = "http://192.168.200.250:11434/v1"
 model = "gemma3:12b"
 
 # Optional local speech-to-text (faster-whisper) over a capture session's

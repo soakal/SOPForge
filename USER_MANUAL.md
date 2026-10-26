@@ -186,7 +186,7 @@ See §9 below.
   from source. Set `SOPFORGE_SOP_FACTORY_2_DIR` only if you want to point at
   a different copy of the engine.
 - (Optional, for LLM-phrased steps) Either an Ollama server reachable at the
-  endpoint in `config/models.toml` (default `http://192.168.200.60:11434/v1`,
+  endpoint in `config/models.toml` (default `http://192.168.200.250:11434/v1`,
   with the `qwen3:32b` model pulled), or Anthropic routing configured with
   `ANTHROPIC_API_KEY` set (§7). Everything works without either — steps just
   render via the deterministic template fallback instead (§4/§6).
@@ -740,7 +740,7 @@ It's **not on the Configuration page** — enable it by editing
 [polish]
 enabled = false        # true to turn it on
 provider = "ollama"
-endpoint = "http://192.168.200.60:11434/v1"
+endpoint = "http://192.168.200.250:11434/v1"
 model = "gemma3:12b"
 ```
 

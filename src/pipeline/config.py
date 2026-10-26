@@ -58,7 +58,7 @@ def runtime_config_path():
 class SectionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    endpoint: str = "http://192.168.200.60:11434/v1"
+    endpoint: str = "http://192.168.200.250:11434/v1"
     model: str
     provider: Provider = "ollama"
     # Legacy: older configs used `anthropic = true` instead of provider.
@@ -141,7 +141,7 @@ class VisionConfig(BaseModel):
     # deliberate: this is the fallback for any [vision]-less models.toml
     # from before the feature existed, not the product's actual default.
     enabled: bool = False
-    endpoint: str = "http://192.168.200.60:11434/v1"
+    endpoint: str = "http://192.168.200.250:11434/v1"
     model: str = "qwen2.5vl:7b"
     # anthropic is captioned via its Messages API (vision.py), never the endpoint.
     provider: Provider = "ollama"

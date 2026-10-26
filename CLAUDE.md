@@ -28,7 +28,7 @@ fixtures, or web content.
 - `src/capture/` — Windows tray EXE. Python 3.12, mss, pynput, pywin32/UIAutomation,
   pywinauto (self-test harness only). Output: numbered PNGs + `manifest.json`.
 - `src/pipeline/` — FastAPI server (`sopforge-server`). Consumes manifests, calls
-  Ollama (OpenAI-compatible endpoint, default `http://192.168.200.60:11434/v1`),
+  Ollama (OpenAI-compatible endpoint, default `http://192.168.200.250:11434/v1`),
   assembles documents. Contains the SOP Factory 2 engine as the docx baseline —
   extend it, do not rewrite it.
 - `src/pipeline/webui/` — localhost review UI served by FastAPI. Plain HTML/JS is
