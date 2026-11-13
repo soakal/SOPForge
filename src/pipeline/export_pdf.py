@@ -1,8 +1,9 @@
 """PDF export: a manifest -> PDF whose structure mirrors the SOP Factory 2
 docx (docx_assembler.py) so the two exports read the same -- a title page,
-a "Steps" section heading, then per-step: a "Step N" heading, the step text
-as a bullet, any narration, the annotated screenshot with a caption, and a
-closing revision-history table. Pure-Python via fpdf2 -- no GTK (weasyprint)
+then assembler.document_outline's numbered sections and per-step: an
+"A)  ..." heading, the step text as a bullet, any authored extras and
+narration, the annotated screenshot with a caption, and a closing
+revision-history table. Pure-Python via fpdf2 -- no GTK (weasyprint)
 or Word COM automation dependency, both hostile to PyInstaller freezing and a
 headless build VM. It won't be pixel-identical to Word's rendering (different
 engines), but the formatting *system* -- headings, bullets, captions,
@@ -12,8 +13,8 @@ from pathlib import Path
 
 from fpdf import FPDF
 
-from pipeline.assembler import format_doc_date, phase_starts, step_heading, toc_entries
-from pipeline.grouping import DEFAULT_PHASE_NAME
+from pipeline import authoring as auth
+from pipeline.assembler import document_outline, format_doc_date, step_heading, toc_entries
 from pipeline.claim_coverage import parse_verify_line
 from pipeline.resource_path import resource_path
 from pipeline.review_notes import step_review_notes
@@ -172,6 +173,70 @@ def _section_heading(pdf, text):
     return page
 
 
+def _text_line(pdf, text, style="", size=11, color=_INK, h=6, align="L"):
+    pdf.set_font(pdf._font_family, style, size)
+    pdf.set_text_color(*color)
+    pdf.multi_cell(
+        0, h, _safe_text(text, pdf._font_family), align=align, new_x="LMARGIN", new_y="NEXT"
+    )
+    pdf.set_text_color(*_INK)
+
+
+def _sub_bullet(pdf, text, sub):
+    if sub:
+        pdf.set_x(pdf.l_margin + 8)
+    _bullet(pdf, text)
+
+
+def _command(pdf, text):
+    """Mirrors sop.code_block: a shaded, bordered monospace box, indented.
+    Core Courier is Latin-1 only, hence the Helvetica-mode _safe_text."""
+    pdf.set_font("Courier", "", 10)
+    pdf.set_fill_color(0xF2, 0xF2, 0xF2)
+    pdf.set_draw_color(0xBF, 0xBF, 0xBF)
+    pdf.set_x(pdf.l_margin + 12)
+    pdf.multi_cell(
+        pdf.epw - 12,
+        5.5,
+        _safe_text(text, "Helvetica"),
+        border=1,
+        fill=True,
+        new_x="LMARGIN",
+        new_y="NEXT",
+    )
+    pdf.set_draw_color(0, 0, 0)
+    pdf.ln(1)
+
+
+def _table(pdf, headers, rows, col_widths=None):
+    """A bordered table, header row bold (sop.scenario_table / revision_history)."""
+    pdf.set_font(pdf._font_family, "", 10)
+    pdf.set_text_color(*_INK)
+    with pdf.table(col_widths=col_widths, text_align="LEFT") as table:
+        for row in [headers, *rows]:
+            cells = table.row()
+            for value in row:
+                cells.cell(_safe_text(value, pdf._font_family))
+    pdf.ln(2)
+
+
+def _authored(pdf, item, values, sub):
+    """An authored step extra's / block's bullets, commands and warning
+    (docx_assembler._authored's counterpart; inline markup shown plain)."""
+    for text in item["bullets"]:
+        _sub_bullet(pdf, auth.plain(auth.substitute(text, values)), sub)
+    for command in item["commands"]:
+        _command(pdf, auth.substitute(command, values))
+    if item["warning"]:
+        warning = auth.plain(auth.substitute(item["warning"], values))
+        _text_line(pdf, f"Warning: {warning}", "B", 10, _VERIFY, 5.5)
+
+
+def _authored_table(pdf, table, values):
+    sub = [[auth.substitute(c, values) for c in row] for row in table["rows"]]
+    _table(pdf, [auth.substitute(h, values) for h in table["headers"]], sub)
+
+
 def render_pdf(
     manifest,
     step_results,
@@ -185,15 +250,23 @@ def render_pdf(
     phases=None,
     omitted_screenshots=(),
     subtitle=None,
+    authoring=None,
+    version_stamp=None,
 ):
     """Builds a PDF mirroring the docx layout (docx_assembler.py): a title
-    page (with doc number/author/revision when given), a table of contents,
-    a "Procedure" section with a descriptive heading per step, and a closing
-    revision-history table. step_results may carry an optional "narration"
-    key per step (placed under the step, matching the docx/markdown/html
-    exports). `date`, if not given, is the manifest's own real session date
-    (never a hardcoded placeholder). Returns output_path."""
-    date = date or format_doc_date(manifest.session.started_utc)
+    page (with doc number/author/revision/version stamp when given), a table
+    of contents, then assembler.document_outline -- numbered sections,
+    lettered step headings with the step text as a bullet, any authored
+    content (authoring.py) -- and a closing revision-history table.
+    step_results may carry an optional "narration" key per step (placed
+    under the step, matching the docx/markdown/html exports). `date`, if not
+    given, is the manifest's own real session date (never a hardcoded
+    placeholder); an authored date overrides both. Returns output_path."""
+    a = authoring or auth.EMPTY
+    values = auth.param_values(a)
+    date = a["date"] or date or format_doc_date(manifest.session.started_utc)
+    outline = document_outline(manifest, step_results, narrative_text, phases, a)
+    shot_of = dict(zip(manifest.step_ids(), annotated_paths, strict=True))
 
     def _build(pages):
         page_of = {}
@@ -206,27 +279,13 @@ def render_pdf(
         # --- Title page ---
         pdf.add_page()
         pdf.ln(50)
-        pdf.set_font(pdf._font_family, "B", 26)
-        pdf.set_text_color(*_INK)
-        pdf.multi_cell(
-            0,
-            14,
-            _safe_text(title.upper(), pdf._font_family),
-            align="C",
-            new_x="LMARGIN",
-            new_y="NEXT",
-        )
+        _text_line(pdf, title.upper(), "B", 26, h=14, align="C")
+        line2 = auth.substitute(a["title_line2"], values).upper()
+        if line2:
+            _text_line(pdf, a["title_connector"], "I", 20, h=11, align="C")
+            _text_line(pdf, line2, "B", 26, h=14, align="C")
         pdf.ln(6)
-        pdf.set_font(pdf._font_family, "", 12)
-        pdf.set_text_color(*_MUTED)
-        pdf.multi_cell(
-            0,
-            7,
-            _safe_text(subtitle or "Standard Operating Procedure", pdf._font_family),
-            align="C",
-            new_x="LMARGIN",
-            new_y="NEXT",
-        )
+        _text_line(pdf, subtitle or "Standard Operating Procedure", "", 12, _MUTED, 7, "C")
         pdf.ln(10)
         meta_lines = []
         if doc_no:
@@ -234,14 +293,9 @@ def render_pdf(
         meta_lines.append(f"Revision {revision}  —  Released {date}")
         if author:
             meta_lines.append(f"Author: {author}")
-        pdf.multi_cell(
-            0,
-            7,
-            _safe_text("\n".join(meta_lines), pdf._font_family),
-            align="C",
-            new_x="LMARGIN",
-            new_y="NEXT",
-        )
+        _text_line(pdf, "\n".join(meta_lines), "", 12, _MUTED, 7, "C")
+        if version_stamp:
+            _text_line(pdf, version_stamp, "I", 9, _MUTED, 5, "C")
 
         # --- Table of contents ---
         pdf.add_page()
@@ -256,7 +310,7 @@ def render_pdf(
         # helper produces) get the smaller/muted styling; numbered section
         # lines get the larger plain one. Each line reserves a fixed-width page
         # number slot, so pass 1 (no numbers yet) lays out exactly like pass 2.
-        for key, line in toc_entries(manifest, narrative_text, phases, step_results):
+        for key, line in toc_entries(manifest, narrative_text, phases, step_results, a):
             step_line = line.startswith("      ")
             pdf.set_font(pdf._font_family, "", 10 if step_line else 11)
             if step_line:
@@ -277,92 +331,80 @@ def render_pdf(
             pdf.set_xy(pdf.l_margin, end_y)
             pdf.set_text_color(*_INK)
 
-        # --- Overview ---
-        if narrative_text:
-            pdf.add_page()
-            pdf.set_font(pdf._font_family, "B", 16)
-            pdf.set_text_color(*_ACCENT)
-            page_of["overview"] = pdf.page_no()
-            pdf.cell(0, 11, "Overview", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_text_color(*_INK)
-            pdf.ln(2)
-            _narrative_body(pdf, narrative_text)
-
-        # --- Procedure: one section per phase (6c); ungrouped, just "Procedure" ---
-        starts = phase_starts(manifest, phases)
-        pdf.add_page()
-        if not starts:
-            page_of["procedure"] = pdf.page_no()
-            _section_heading(pdf, DEFAULT_PHASE_NAME)
-
-        for n, (step, result, shot) in enumerate(
-            zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
-        ):
-            if step.id in starts:
-                if n > 1:
+        # --- Body: the shared outline. Overview, the first content section
+        # and Revision History each start a page; later sections flow on. ---
+        first_body = True
+        for item in outline:
+            if item[0] == "section":
+                _, key, text = item
+                if key in ("overview", "revision") or first_body:
+                    pdf.add_page()
+                    first_body = key == "overview"
+                else:
                     pdf.ln(4)
-                page_of[f"phase:{step.id}"] = _section_heading(pdf, starts[step.id])
-            heading = step_heading(n, step, result)
+                page_of[key] = _section_heading(pdf, text)
+                if key == "overview":
+                    _narrative_body(pdf, narrative_text)
+                elif key == "prereq":
+                    for prereq in a["prerequisites"]:
+                        _bullet(pdf, auth.plain(auth.substitute(prereq, values)))
+                elif key == "revision":
+                    _table(
+                        pdf,
+                        ("Date", "Revision", "Description", "Author"),
+                        auth.revision_rows(a, date, revision, author),
+                        col_widths=(35, 25, 70, 40),
+                    )
+                continue
+
+            if item[0] == "block":
+                _, block, heading = item
+                if heading:
+                    pdf.set_font(pdf._font_family, "BI", 13)
+                    _heading(pdf, auth.substitute(heading, values), 9)
+                    if auth.tag_of(block):
+                        _text_line(pdf, f"— {auth.tag_of(block)}", "BI", 10, _VERIFY, 5.5)
+                for para in block["text"].split("\n\n") if block["text"] else ():
+                    _text_line(pdf, auth.plain(auth.substitute(para.strip(), values)))
+                    pdf.ln(1)
+                _authored(pdf, block, values, sub=False)
+                if block["table"]:
+                    _authored_table(pdf, block["table"], values)
+                if block["placeholder"]:
+                    placeholder = auth.substitute(block["placeholder"], values)
+                    _text_line(pdf, f"[IMAGE PLACEHOLDER: {placeholder}]", "I", 10, _MUTED, 6, "C")
+                pdf.ln(4)
+                continue
+
+            _, n, step, result, heading = item
+            extra = auth.step_extra(a, step.id) or {}
             pdf.set_font(pdf._font_family, "BI", 13)
             pdf.set_text_color(*_INK)
             page_of[step.id] = _heading(pdf, heading, 9)
 
             _bullet(pdf, result["text"])
+            if auth.tag_of(extra):
+                _text_line(pdf, f"— {auth.tag_of(extra)}", "BI", 10, _VERIFY, 5.5)
+            if extra:
+                _authored(pdf, extra, values, sub=True)
 
             for note in step_review_notes(step):
-                pdf.set_font(pdf._font_family, "B", 10)
-                pdf.set_text_color(0xC0, 0x00, 0x00)
-                pdf.multi_cell(
-                    0, 5.5, _safe_text(note, pdf._font_family), new_x="LMARGIN", new_y="NEXT"
-                )
-                pdf.set_text_color(*_INK)
+                _text_line(pdf, note, "B", 10, _VERIFY, 5.5)
 
             if result.get("narration"):
                 pdf.ln(1)
-                pdf.set_font(pdf._font_family, "I", 10)
-                pdf.set_text_color(*_MUTED)
-                pdf.multi_cell(
-                    0,
-                    5.5,
-                    _safe_text(f"Narration: {result['narration']}", pdf._font_family),
-                    new_x="LMARGIN",
-                    new_y="NEXT",
-                )
-                pdf.set_text_color(*_INK)
+                _text_line(pdf, f"Narration: {result['narration']}", "I", 10, _MUTED, 5.5)
 
+            shot = shot_of[step.id]
             if step.id not in omitted_screenshots and shot is not None and Path(shot).exists():
                 pdf.ln(2)
-                pdf.image(str(shot), w=130)
-                pdf.set_font(pdf._font_family, "I", 9)
-                pdf.set_text_color(*_MUTED)
-                pdf.multi_cell(
-                    0,
-                    5,
-                    _safe_text(heading, pdf._font_family),
-                    align="C",
-                    new_x="LMARGIN",
-                    new_y="NEXT",
-                )
-                pdf.set_text_color(*_INK)
+                width = min(extra["width_in"] * 25.4, pdf.epw) if extra.get("width_in") else 130
+                pdf.image(str(shot), w=width)
+                _text_line(pdf, step_heading(n, step, result), "I", 9, _MUTED, 5, "C")
+            if extra.get("table"):
+                pdf.ln(2)
+                _authored_table(pdf, extra["table"], values)
             pdf.ln(6)
-
-        # --- Revision history (mirrors sop.revision_history in the docx) ---
-        pdf.add_page()
-        pdf.set_font(pdf._font_family, "B", 16)
-        pdf.set_text_color(*_ACCENT)
-        page_of["revision"] = pdf.page_no()
-        pdf.cell(0, 11, "Revision History", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(*_INK)
-        pdf.ln(2)
-        pdf.set_font(pdf._font_family, "B", 10)
-        widths = (35, 25, 70, 40)
-        for label, w in zip(("Date", "Revision", "Description", "Author"), widths):
-            pdf.cell(w, 8, label, border=1)
-        pdf.ln(8)
-        pdf.set_font(pdf._font_family, "", 10)
-        for value, w in zip((date, revision, "Initial generation", author), widths):
-            pdf.cell(w, 8, _safe_text(value, pdf._font_family), border=1)
-        pdf.ln(8)
 
         return pdf, page_of
 

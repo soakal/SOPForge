@@ -16,8 +16,8 @@
 {% endif %}
 {% if not review %}
 <div class="drop" id="new"><div class="ico">{{ icon("upload") }}</div>
-<div class="txt"><h2>Drop a capture folder or screenshots</h2><p>manifest.json + PNGs, or images with an optional transcript (.txt, .md, .json). SOPForge works out which.</p></div>
-<div class="toolbar"><button type="button" class="secondary" data-pick="drop-files">Browse files</button><button type="button" class="secondary" data-pick="drop-folder">Choose folder</button><input type="file" id="drop-files" multiple hidden accept=".json,.png,.jpg,.jpeg,.gif,.bmp,.webp,.txt,.md,.wav,image/*"><input type="file" id="drop-folder" webkitdirectory multiple hidden></div>
+<div class="txt"><h2>Drop a capture folder or screenshots</h2><p>manifest.json + PNGs, or images / PDF / Word (.docx) files with an optional transcript (.txt, .md, .json). SOPForge works out which.</p></div>
+<div class="toolbar"><button type="button" class="secondary" data-pick="drop-files">Browse files</button><button type="button" class="secondary" data-pick="drop-folder">Choose folder</button><input type="file" id="drop-files" multiple hidden accept=".json,.png,.jpg,.jpeg,.gif,.bmp,.webp,.pdf,.docx,.txt,.md,.wav,image/*"><input type="file" id="drop-folder" webkitdirectory multiple hidden></div>
 <div class="plan" hidden><div class="kind" data-kind></div><ul data-files></ul>
 <div class="field" data-title hidden><label for="drop-title">Title <small>(optional &mdash; inferred when blank)</small></label><input type="text" id="drop-title" name="title" placeholder="My procedure"></div>
 <div class="actions"><button type="button" data-go>Build document</button><button type="button" class="secondary" data-cancel>Cancel</button></div>

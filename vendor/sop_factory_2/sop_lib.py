@@ -53,6 +53,13 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from PIL import Image, ImageOps
 
+# SOP Factory version, shown on every title page and walkthrough. Bump it and tag the commit (git tag v1.1).
+# SOPForge local adaptation: read tolerantly -- the vendored copy (and a frozen EXE) has no ../VERSION.
+try:
+    FACTORY_VERSION = (Path(__file__).resolve().parent.parent / "VERSION").read_text().strip()
+except OSError:
+    FACTORY_VERSION = ""
+
 
 def load_secret(key: str, base_dir: Union[str, Path]) -> str:
     """Load a secret by key: environment variable first, then KEY=VALUE lines
@@ -105,6 +112,8 @@ class SOPBuilder:
         # the zip on save() to bake them in.
         self._header_revision = revision
         self._header_date     = date
+        # SOPForge local adaptation: title-page version stamp, None = omitted.
+        self.version_stamp = f"SOP Factory v{FACTORY_VERSION}" if FACTORY_VERSION else None
 
     # ---- title / TOC ---------------------------------------------------------
 
@@ -135,6 +144,8 @@ class SOPBuilder:
         self._centered_text(f"Revision {self.revision}  —  Released {self.date}")
         if author:
             self._centered_text(f"Author: {author}")
+        if self.version_stamp:  # SOPForge local adaptation: caller-settable stamp
+            self._centered_run(self.version_stamp, size=Pt(9), italic=True)
         self.page_break()
 
     def toc(self, lines: Iterable[str]):

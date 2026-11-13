@@ -16,6 +16,7 @@ from pathlib import Path
 
 import html
 
+from pipeline import authoring as au
 from pipeline.annotate import annotate_click, crop_to_element
 from pipeline.assembler import assemble_steps, is_grouped, phase_starts, step_heading
 from pipeline.claim_coverage import parse_verify_line
@@ -107,6 +108,176 @@ def _image_ref(shot, base_dir):
     return Path(shot).relative_to(base_dir).as_posix()
 
 
+# ---- Phase 7 authored content (authoring.json) ------------------------------
+# Every helper returns [] without authoring, so documents that have none are
+# byte-identical to before. Authored text gets {{param}} substitution; LLM
+# step text never does.
+
+
+def _md_row(cells):
+    return "| " + " | ".join(c.replace("|", r"\|") for c in cells) + " |"
+
+
+def _md_items(item, values):
+    """Bullets, commands, warning, table and the '— X only' flag of a step
+    extra or block, as Markdown lines."""
+    sub = lambda t: au.substitute(t, values)  # noqa: E731
+    lines = []
+    tag = au.tag_of(item)
+    if tag:
+        lines += [f"***— {sub(tag)}***", ""]
+    if item["bullets"]:
+        lines += [f"- {sub(b)}" for b in item["bullets"]] + [""]
+    for cmd in item["commands"]:
+        lines += ["```", sub(cmd), "```", ""]
+    if item["warning"]:
+        lines += [f"**Warning:** {sub(item['warning'])}", ""]
+    if item["table"]:
+        t = item["table"]
+        lines += [_md_row([sub(h) for h in t["headers"]]), "| --- | --- |"]
+        lines += [_md_row([sub(c) for c in r]) for r in t["rows"]] + [""]
+    return lines
+
+
+def md_step_extras(authoring, step_id):
+    extra = au.step_extra(authoring, step_id) if authoring else None
+    return _md_items(extra, au.param_values(authoring)) if extra else []
+
+
+def md_blocks(authoring, after, step_level):
+    """Blocks placed after step `after` ("" = before the first step)."""
+    if not authoring:
+        return []
+    values = au.param_values(authoring)
+    sub = lambda t: au.substitute(t, values)  # noqa: E731
+    lines = []
+    for b in au.blocks_after(authoring, after):
+        if b["section"]:
+            lines += [f"## {_escape_md_heading(sub(b['section']))}", ""]
+        if b["heading"]:
+            lines += [f"{step_level} {_escape_md_heading(sub(b['heading']))}", ""]
+        for para in sub(b["text"]).split("\n\n"):
+            if para.strip():
+                lines += [para.strip(), ""]
+        lines += _md_items(b, values)
+        if b["placeholder"]:
+            lines += [f"*[IMAGE PLACEHOLDER: {sub(b['placeholder'])}]*", ""]
+    return lines
+
+
+def md_prerequisites(authoring):
+    if not authoring or not authoring["prerequisites"]:
+        return []
+    values = au.param_values(authoring)
+    items = [f"- {au.substitute(p, values)}" for p in authoring["prerequisites"]]
+    return ["## Before You Begin", "", *items, ""]
+
+
+def md_revisions(authoring, revision, date, author):
+    if not authoring or not authoring["revisions"] or None in (revision, date, author):
+        return []
+    rows = au.revision_rows(authoring, date, revision, author)
+    return [
+        "## Revision History",
+        "",
+        "| Date | Revision | Comment | Author |",
+        "| --- | --- | --- | --- |",
+        *(_md_row(r) for r in rows),
+        "",
+    ]
+
+
+def _inline_html(text):
+    out = []
+    for piece, style in au.inline_parts(text):
+        piece = html.escape(piece)
+        if style == "bold":
+            piece = f"<strong>{piece}</strong>"
+        elif style == "code":
+            piece = f"<code>{piece}</code>"
+        out.append(piece)
+    return "".join(out)
+
+
+def _html_table(headers, rows):
+    head = "".join(f"<th>{html.escape(h)}</th>" for h in headers)
+    body = "".join(
+        "<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in r) + "</tr>" for r in rows
+    )
+    return f"<table><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>"
+
+
+def _html_items(item, values):
+    """HTML counterpart of _md_items; every authored string is escaped."""
+    sub = lambda t: au.substitute(t, values)  # noqa: E731
+    parts = []
+    tag = au.tag_of(item)
+    if tag:
+        parts.append(f'<p><em class="only">— {html.escape(sub(tag))}</em></p>')
+    if item["bullets"]:
+        lis = "".join(f"<li>{_inline_html(sub(b))}</li>" for b in item["bullets"])
+        parts.append(f"<ul>{lis}</ul>")
+    for cmd in item["commands"]:
+        parts.append(f"<pre><code>{html.escape(sub(cmd))}</code></pre>")
+    if item["warning"]:
+        warning = _inline_html(sub(item["warning"]))
+        parts.append(f'<p class="warning"><strong>Warning:</strong> {warning}</p>')
+    if item["table"]:
+        t = item["table"]
+        parts.append(
+            _html_table([sub(h) for h in t["headers"]], [[sub(c) for c in r] for r in t["rows"]])
+        )
+    return parts
+
+
+def html_step_extras(authoring, step_id):
+    extra = au.step_extra(authoring, step_id) if authoring else None
+    return _html_items(extra, au.param_values(authoring)) if extra else []
+
+
+def html_blocks(authoring, after, step_tag):
+    """Blocks placed after step `after` ("" = before the first step)."""
+    if not authoring:
+        return []
+    values = au.param_values(authoring)
+    sub = lambda t: au.substitute(t, values)  # noqa: E731
+    parts = []
+    for b in au.blocks_after(authoring, after):
+        if b["section"]:
+            parts.append(f"<h2>{html.escape(sub(b['section']))}</h2>")
+        if b["heading"]:
+            parts.append(f"<{step_tag}>{html.escape(sub(b['heading']))}</{step_tag}>")
+        for para in sub(b["text"]).split("\n\n"):
+            if para.strip():
+                parts.append(f"<p>{_inline_html(para.strip())}</p>")
+        parts += _html_items(b, values)
+        if b["placeholder"]:
+            parts.append(
+                f"<p><em>[IMAGE PLACEHOLDER: {html.escape(sub(b['placeholder']))}]</em></p>"
+            )
+    return parts
+
+
+def html_prerequisites(authoring):
+    if not authoring or not authoring["prerequisites"]:
+        return []
+    values = au.param_values(authoring)
+    lis = "".join(
+        f"<li>{_inline_html(au.substitute(p, values))}</li>" for p in authoring["prerequisites"]
+    )
+    return ["<h2>Before You Begin</h2>", f"<ul>{lis}</ul>"]
+
+
+def html_revisions(authoring, revision, date, author):
+    if not authoring or not authoring["revisions"] or None in (revision, date, author):
+        return []
+    rows = au.revision_rows(authoring, date, revision, author)
+    return [
+        "<h2>Revision History</h2>",
+        _html_table(["Date", "Revision", "Comment", "Author"], rows),
+    ]
+
+
 def render_markdown(
     manifest,
     step_results,
@@ -115,6 +286,10 @@ def render_markdown(
     base_dir=None,
     phases=None,
     omitted_screenshots=(),
+    authoring=None,
+    revision=None,
+    date=None,
+    author=None,
 ):
     """Assembles a Markdown document: title, optional narrative section,
     then one section per step with its text and annotated screenshot. When
@@ -127,6 +302,7 @@ def render_markdown(
     if narrative_text:
         lines.append(narrative_text)
         lines.append("")
+    lines += md_prerequisites(authoring) + md_blocks(authoring, "", step_level)
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
@@ -141,12 +317,15 @@ def render_markdown(
         for note in step_review_notes(step):
             lines.append(f"**{note}**")
             lines.append("")
+        lines += md_step_extras(authoring, step.id)
         if result.get("narration"):
             lines.append(f"> **Narration:** {result['narration']}")
             lines.append("")
         if step.id not in omitted_screenshots:
             lines.append(f"![{_escape_md_alt_text(heading)}]({_image_ref(shot, base_dir)})")
             lines.append("")
+        lines += md_blocks(authoring, step.id, step_level)
+    lines += md_revisions(authoring, revision, date, author)
     return "\n".join(lines)
 
 
@@ -215,6 +394,10 @@ def render_html(
     base_dir=None,
     phases=None,
     omitted_screenshots=(),
+    authoring=None,
+    revision=None,
+    date=None,
+    author=None,
 ):
     """Assembles a minimal HTML document mirroring render_markdown's
     structure — plain string building, no templating engine dependency."""
@@ -229,6 +412,7 @@ def render_html(
     ]
     if narrative_text:
         parts.extend(narrative_html_blocks(narrative_text))
+    parts += html_prerequisites(authoring) + html_blocks(authoring, "", tag)
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
@@ -241,6 +425,7 @@ def render_html(
         parts.append(f'<{tag} id="{html.escape(step.id)}">{html.escape(heading)}</{tag}>')
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         parts.extend(review_note_html(step))
+        parts += html_step_extras(authoring, step.id)
         if result.get("narration"):
             parts.append(
                 '<blockquote class="narration"><strong>Narration:</strong> '
@@ -249,5 +434,7 @@ def render_html(
         if step.id not in omitted_screenshots:
             img_ref = _image_ref(shot, base_dir)
             parts.append(f'<img src="{html.escape(img_ref)}" alt="{html.escape(heading)}">')
+        parts += html_blocks(authoring, step.id, tag)
+    parts += html_revisions(authoring, revision, date, author)
     parts.append("</body></html>")
     return "\n".join(parts)

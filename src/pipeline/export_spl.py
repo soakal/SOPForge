@@ -29,6 +29,7 @@ from pptx import Presentation
 from pptx.enum.shapes import PP_PLACEHOLDER
 from pptx.util import Pt
 
+from pipeline import authoring as auth
 from pipeline.assembler import resolve_phases, step_heading
 from pipeline.docx_assembler import sop_factory_2_dir
 from pipeline.resource_path import resource_path
@@ -225,21 +226,78 @@ def _step_text(n, step, result):
     return result["text"]
 
 
-def plan_slides(manifest, step_results, phases=None, estimator=None, steps_box_pt=(690, 107)):
-    """[(phase name, [(step number, step, result), ...]), ...]: each phase's
+def _authored_text(text, values):
+    return auth.plain(auth.substitute(text, values))
+
+
+def _step_entry(step, result, authoring, values):
+    """The step's result, with its authored extras folded in: the "— X only"
+    flag and extra bullets join the step text (so they are planned, fitted
+    and reported exactly like it); the warning and commands go to "spl_notes"
+    for the slide's notes line. Unchanged when nothing is authored."""
+    extra = auth.step_extra(authoring, step.id)
+    if not extra:
+        return step, result
+    text = result["text"]
+    if auth.tag_of(extra):
+        text += f" — {auth.tag_of(extra)}"
+    text = "\v".join([text] + [_authored_text(b, values) for b in extra["bullets"]])
+    return step, {**result, "text": text, "spl_notes": _authored_notes(extra, values)}
+
+
+def _authored_notes(extra, values):
+    notes = [f"Warning: {_authored_text(extra['warning'], values)}"] if extra["warning"] else []
+    # Commands stay verbatim (copy-paste clean), parameters filled in.
+    return notes + [auth.substitute(c, values) for c in extra["commands"]]
+
+
+def _block_entries(authoring, after, values):
+    """Headed blocks after a step as extra numbered entries (no image):
+    heading, then its bullets and commands. A block without a heading
+    (plain prose, tables, placeholders) is left out of the deck -- a single
+    point lesson carries the steps, the SOP carries the prose."""
+    entries = []
+    for block in auth.blocks_after(authoring, after):
+        if not block["heading"]:
+            continue
+        lines = [_authored_text(block["heading"], values)]
+        lines += [_authored_text(b, values) for b in block["bullets"]]
+        lines += [auth.substitute(c, values) for c in block["commands"]]
+        notes = [f"Warning: {_authored_text(block['warning'], values)}"] if block["warning"] else []
+        entries.append((None, {"text": "\v".join(lines), "spl_notes": notes}))
+    return entries
+
+
+def plan_slides(
+    manifest, step_results, phases=None, estimator=None, steps_box_pt=(690, 107), authoring=None
+):
+    """[(phase name, [(number, step, result), ...]), ...]: each phase's
     steps packed onto as few slides as fit at the floor, in order, every
-    step exactly once."""
+    step exactly once. Authored headed blocks ride along as entries with
+    step None right after the step they follow (leading blocks before the
+    first step); the deck numbers entries in that order, so without
+    authoring the numbers are the SOP's own step numbers."""
     estimator = estimator or TextEstimator()
-    numbered = {
-        step.id: (n, step, result)
-        for n, (step, result) in enumerate(zip(manifest.steps, step_results, strict=True), start=1)
+    values = auth.param_values(authoring)
+    groups = {
+        step.id: [_step_entry(step, result, authoring, values)]
+        + _block_entries(authoring, step.id, values)
+        for step, result in zip(manifest.steps, step_results, strict=True)
     }
+    if manifest.steps:
+        groups[manifest.steps[0].id][:0] = _block_entries(authoring, "", values)
+    numbered, n = {}, 0
+    for step in manifest.steps:
+        numbered[step.id] = []
+        for s, r in groups[step.id]:
+            n += 1
+            numbered[step.id].append((n, s, r))
     kw = {"indent_pt": 342900 / _EMU_PER_PT, "para_space": PARA_SPACE_PT}
     slides = []
     for phase in resolve_phases(manifest, phases):
         current = []
-        for step_id in phase.step_ids:
-            candidate = current + [numbered[step_id]]
+        for entry in (e for step_id in phase.step_ids for e in numbered[step_id]):
+            candidate = current + [entry]
             texts = [_step_text(n, s, r) for n, s, r in candidate]
             if len(candidate) <= MAX_STEPS_PER_SLIDE and estimator.fits(
                 steps_box_pt,
@@ -252,19 +310,17 @@ def plan_slides(manifest, step_results, phases=None, estimator=None, steps_box_p
             else:
                 if current:
                     slides.append((phase.name, current))
-                current = [numbered[step_id]]
+                current = [entry]
         if current:
             slides.append((phase.name, current))
     return slides
 
 
 def _notes_line(entries):
-    notes = [note for _n, step, _r in entries for note in step_review_notes(step)]
-    if len(notes) == 1:
-        return notes[0]
-    if notes:
-        return f"{len(notes)} items need review: see the SOP."
-    return ""
+    notes = [note for _n, step, _r in entries if step for note in step_review_notes(step)]
+    review = notes if len(notes) <= 1 else [f"{len(notes)} items need review: see the SOP."]
+    authored = [note for _n, _s, r in entries for note in r.get("spl_notes", ())]
+    return "\n".join(review + authored)
 
 
 def _task_label(name, continued, estimator, box_pt):
@@ -291,10 +347,13 @@ def build_spl_deck(
     author="SOPForge",
     phases=None,
     omitted_screenshots=(),
+    authoring=None,
 ):
     """Builds the SPL .pptx at output_path. Returns (output_path, problems):
     problems lists text boxes that still overflow at the floor size (the deck
-    is written either way)."""
+    is written either way). authoring (pipeline.authoring) adds a
+    prerequisites slide, step extras, callouts / verdict badges and headed
+    blocks; None leaves the deck as before."""
     spl_lib = _import_spl()
     estimator = TextEstimator()
     output_path = Path(output_path)
@@ -313,13 +372,25 @@ def build_spl_deck(
     title = manifest.session.title or manifest.session.id
     first_shot = next(iter(shot_by_id.values()), None)
     deck.title_slide(title, image=str(first_shot) if first_shot else None)
+    values = auth.param_values(authoring)
+    prerequisites = [_authored_text(p, values) for p in (authoring or auth.EMPTY)["prerequisites"]]
+    if prerequisites:
+        deck.prerequisites(prerequisites)
+
+    def image_spec(step):
+        extra = auth.step_extra(authoring, step.id) or {}
+        if not extra.get("callouts") and not extra.get("verdict"):
+            return str(shot_by_id[step.id])
+        callouts = [(i, x / 100, y / 100) for i, (x, y) in enumerate(extra["callouts"], 1)]
+        return {"path": str(shot_by_id[step.id]), "callouts": callouts, "verdict": extra["verdict"]}
 
     layout = deck.layouts["Assembly Instruction x1 Image"]
     task_box = _box_pt(layout.placeholders.get(idx=TASK_IDX))
     steps_box = _box_pt(layout.placeholders.get(idx=STEPS_IDX))
     seen_phases = set()
-    for phase_name, entries in plan_slides(manifest, step_results, phases, estimator, steps_box):
-        images = [str(shot_by_id[s.id]) for _n, s, _r in entries if s.id in shot_by_id][:2]
+    plan = plan_slides(manifest, step_results, phases, estimator, steps_box, authoring)
+    for phase_name, entries in plan:
+        images = [image_spec(s) for _n, s, _r in entries if s and s.id in shot_by_id][:2]
         slide = deck.step(
             _task_label(phase_name, phase_name in seen_phases, estimator, task_box),
             [_step_text(n, s, r) for n, s, r in entries],
@@ -334,8 +405,9 @@ def build_spl_deck(
                 run = paragraph.add_run()
                 run.text = step_heading(n, step, result)
                 run.font.bold = True
-                paragraph.add_line_break()
-                paragraph.add_run().text = result["text"]
+                for line in result["text"].split("\v"):  # authored bullets add lines
+                    paragraph.add_line_break()
+                    paragraph.add_run().text = line
         seen_phases.add(phase_name)
 
     # What spl_lib.save() does before fitting, minus the full local path: the

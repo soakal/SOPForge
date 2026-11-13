@@ -394,6 +394,9 @@ def render_session_page(
     nav=None,
     walkthrough=False,
     spl_deck=False,
+    authoring_text="",
+    authoring_example=None,
+    authoring_error=None,
 ):
     """steps: the steps.json sidecar's list (task-05), or None for a
     session generated before it existed -- report rows for
@@ -453,6 +456,9 @@ def render_session_page(
         spl_deck=spl_deck,
         document=document if isinstance(document, dict) else None,
         meta_fields=_META_FIELDS,
+        authoring_text=authoring_text,
+        authoring_example=authoring_example,
+        authoring_error=authoring_error,
         preflight=preflight,
         manually_edited=report.get("manually_edited_steps") or [],
         regenerate_declined=report.get("regenerate_declined_steps") or [],

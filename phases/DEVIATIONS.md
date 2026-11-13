@@ -600,3 +600,14 @@ data (`scripts/vision_measurements/vision_step_measurement_20260711T220712Z.json
 remain in the repo as the baseline to beat; re-adding the toggle without a
 new measurement showing a real improvement would just reintroduce the same
 wash-on-correctness/severe-latency-cost tradeoff documented here.
+
+## Phase 7c — VRSI heading layout; golden docx regenerated (2026-11-13)
+
+The docx and PDF now number their sections (`1.  Procedure`) and letter
+their step headings (`A)  Click 'Save'`) — the layout 6c already specified
+and SOP Factory's build scripts use, which the code had not matched. Step
+image captions keep the full `Step N — …` text. `fixtures/golden-document.xml`
+(Phase 2 golden reference) was regenerated with `scripts/regen_golden.py`;
+its diff is heading/TOC text only. No acceptance criterion was weakened:
+step ids, order and content checks are unchanged, and blocks of authored
+content are never steps.

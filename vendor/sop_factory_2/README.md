@@ -34,3 +34,13 @@ imported); and `save()` has a `print(f"WARN: ...")` that's redundant for this
 integration since `assemble_docx()` already returns the same warnings into
 the sidecar report, and the frozen windowed EXE's stdout is `os.devnull`
 anyway.
+
+Re-vendored 11/13/2026 from `SOP Factory` (`template/sop_lib.py` at
+`c100fe1`, SOP Factory v1.1) for Phase 7: upstream adds `FACTORY_VERSION`
+(read from `../VERSION`) and a 9pt italic "SOP Factory v…" line on the title
+page. Two minimal local adaptations, marked "SOPForge local adaptation" in
+the file (the only exceptions to the don't-hand-patch rule above): the
+`VERSION` read is tolerant (missing file -> `""`, since neither this vendored
+copy nor a frozen EXE has one), and the stamp text is the instance attribute
+`version_stamp` (default `"SOP Factory v<version>"`, or `None` when unknown),
+printed only when truthy -- `assemble_docx()` sets it to `"SOPForge v…"`.

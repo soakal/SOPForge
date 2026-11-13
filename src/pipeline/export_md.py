@@ -23,6 +23,10 @@ def export_markdown_bundle(
     narrative_text=None,
     phases=None,
     omitted_screenshots=(),
+    authoring=None,
+    revision=None,
+    date=None,
+    author=None,
 ):
     """Writes output_dir/<slug>.md and output_dir/images/<screenshot
     filename> for every step, with the markdown referencing each image as
@@ -41,6 +45,10 @@ def export_markdown_bundle(
         narrative_text=narrative_text,
         phases=phases,
         omitted_screenshots=omitted_screenshots,
+        authoring=authoring,
+        revision=revision,
+        date=date,
+        author=author,
     )
     for step, shot in zip(manifest.steps, annotated_paths, strict=True):
         markdown = markdown.replace(f"]({shot})", f"](images/{step.screenshot})")

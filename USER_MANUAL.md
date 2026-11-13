@@ -555,6 +555,33 @@ dropdowns (§7), and the steps-review page's click-to-enlarge screenshot
 preview — the checklist/reorder/submit all still work with JavaScript
 disabled, you just lose the zoom.
 
+### Authored content (commands, warnings, tables, extra sections)
+
+A capture records clicks, not the things a good SOP also needs. The
+session page's **Authored content** card takes a small JSON document
+(an example and this document's step ids are under *Example and step
+ids*); saving it re-exports every format with no AI call. Every field is
+optional:
+
+| Field | What it does |
+|---|---|
+| `steps.<id>.commands` | Copyable command boxes under that step (docx code block, PDF box, walkthrough **Copy** button) |
+| `steps.<id>.bullets` / `warning` / `table` | Extra sub-bullets, a red warning, a two-column scenario table |
+| `steps.<id>.system_only` or `path` | Red "— X only" flag |
+| `steps.<id>.width_in` | Screenshot width in the docx (1–6.5 in) |
+| `steps.<id>.callouts` / `verdict` | SPL deck: numbered circles at `[x%, y%]`, a correct/incorrect badge |
+| `blocks` | Content between steps (`after` a step id, `""` = before the first): optional new `section`, `heading`, `text`, `bullets`, `commands`, `warning`, `table`, `placeholder`; in the walkthrough it shows as a terminal or note screen |
+| `prerequisites` | A "Before You Begin" section and an SPL prerequisites slide |
+| `revisions`, `revision_comment` | Earlier revision-history rows, and the comment on the current one |
+| `title_line2`, `title_connector` | Three-line title page (`LINE 1` / `AND` / `LINE 2`) |
+| `date` | Release date (MM/DD/YYYY) instead of the capture date |
+| `paths` | Walkthrough alternative paths: a chooser, and steps/blocks tagged with a `path` show only on it (`?path=Name`) |
+| `params` | `{{name}}` placeholders: the default in documents, a live input in the walkthrough |
+
+Text fields accept `**bold**` and `` `code` ``. Word and PDF documents use
+SOP Factory's layout: numbered sections (`1.  Procedure`) with lettered
+subsections (`A)  Click 'Save'`).
+
 ### Adding narration with a transcript
 
 You can attach a **narration transcript** (`.txt` or `.md`) either on the
@@ -613,6 +640,12 @@ there's nothing per-step to count, so you'll just see the plain spinner
 (everything else about the build still works). Use the capture flow when you
 want the clicks/UIA captured automatically; use this when you already have
 the pictures and want a formatted document fast.
+
+You can also drop a **PDF or Word (.docx) file** — an old procedure, a
+vendor guide — and every picture embedded in it becomes a step at that
+file's place in the upload order (images under 5 KB, like icons, are
+skipped; up to 200 per build). Phone photos are rotated upright from their
+EXIF orientation.
 
 A local vision model occasionally "degenerates" — repeating the same token
 dozens of times, or leaking a raw chat-template marker like `<|im_start|>` —

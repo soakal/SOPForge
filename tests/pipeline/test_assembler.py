@@ -105,7 +105,7 @@ def test_toc_lines_without_narrative_numbers_procedure_first():
     manifest = _Manifest([_step(name="Save")])
     lines = toc_lines(manifest, narrative_text=None)
     assert lines[0] == "1.  Procedure"
-    assert lines[1] == f"      {step_heading(1, manifest.steps[0])}"
+    assert lines[1] == "      A)  Click 'Save'"
     assert lines[-1] == "2.  Revision History"
 
 
@@ -121,11 +121,12 @@ def test_toc_lines_with_narrative_adds_overview_first():
     assert lines[-1] == "3.  Revision History"
 
 
-def test_toc_lines_step_entries_are_indented_and_match_step_heading():
-    manifest = _Manifest([_step(name="Save"), _step(name="Cancel")])
+def test_toc_lines_step_entries_are_indented_and_lettered_vrsi_style():
+    """Phase 7c: SOP Factory's "A)  ..." subsection lettering, the step
+    heading's text without its "Step N — " prefix."""
+    second = _step(name="Cancel")
+    second.id = "step-002"
+    manifest = _Manifest([_step(name="Save"), second])
     lines = toc_lines(manifest, narrative_text=None)
     step_entries = [line for line in lines if line.startswith("      ")]
-    assert step_entries == [
-        f"      {step_heading(1, manifest.steps[0])}",
-        f"      {step_heading(2, manifest.steps[1])}",
-    ]
+    assert step_entries == ["      A)  Click 'Save'", "      B)  Click 'Cancel'"]

@@ -10,13 +10,23 @@ import mimetypes
 from pathlib import Path
 
 from pipeline.assembler import is_grouped, phase_starts, step_heading
-from pipeline.render import narrative_html_blocks, review_note_html
+from pipeline.render import (
+    html_blocks,
+    html_prerequisites,
+    html_revisions,
+    html_step_extras,
+    narrative_html_blocks,
+    review_note_html,
+)
 
 _STYLE = (
     "body{font-family:sans-serif;max-width:800px;margin:2em auto;padding:0 1em;}"
     "img{max-width:100%;}"
     ".review-needed{color:#c00000;}"
     "blockquote{color:#a00;border-left:3px solid #a00;padding-left:1em;margin-left:0;}"
+    ".warning{color:#c00000;}.only{color:#c00000;font-weight:bold;}"
+    "pre{background:#f4f4f4;padding:.5em;overflow-x:auto;}"
+    "table{border-collapse:collapse;}th,td{border:1px solid #999;padding:.3em .6em;}"
 )
 
 
@@ -35,6 +45,10 @@ def render_single_file_html(
     narrative_text=None,
     phases=None,
     omitted_screenshots=(),
+    authoring=None,
+    revision=None,
+    date=None,
+    author=None,
 ):
     """Same structure as render.render_html, but every image is inlined as
     a base64 data URI instead of referenced by path. Returns one complete
@@ -51,6 +65,7 @@ def render_single_file_html(
     ]
     if narrative_text:
         parts.extend(narrative_html_blocks(narrative_text))
+    parts += html_prerequisites(authoring) + html_blocks(authoring, "", tag)
     for n, (step, result, shot) in enumerate(
         zip(manifest.steps, step_results, annotated_paths, strict=True), start=1
     ):
@@ -60,9 +75,12 @@ def render_single_file_html(
         parts.append(f"<{tag}>{html.escape(heading)}</{tag}>")
         parts.append(f"<p>{html.escape(result['text'])}</p>")
         parts.extend(review_note_html(step))
+        parts += html_step_extras(authoring, step.id)
         # Guard a missing annotated image (like render_pdf does) so one absent
         # file doesn't crash the job after docx/pdf were already written.
         if step.id not in omitted_screenshots and shot is not None and Path(shot).exists():
             parts.append(f'<img src="{_data_uri(shot)}" alt="{html.escape(heading)}">')
+        parts += html_blocks(authoring, step.id, tag)
+    parts += html_revisions(authoring, revision, date, author)
     parts.append("</body></html>")
     return "\n".join(parts)

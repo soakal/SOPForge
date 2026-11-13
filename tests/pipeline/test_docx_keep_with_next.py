@@ -8,7 +8,7 @@ from pathlib import Path
 import docx
 from PIL import Image
 
-from pipeline.assembler import step_heading
+from pipeline.assembler import document_outline
 from pipeline.docx_assembler import _import_sop_builder, assemble_docx
 from pipeline.manifest import load_manifest
 from pipeline.render import render_steps_template_mode
@@ -56,7 +56,7 @@ def test_whole_step_block_keeps_with_its_image(tmp_path):
         result["narration"] = "Narration for this step."
     out, _ = assemble_docx(manifest, step_results, annotated, tmp_path / "out.docx")
     paragraphs = docx.Document(out).paragraphs
-    headings = {step_heading(n, step) for n, step in enumerate(manifest.steps, start=1)}
+    headings = {i[4] for i in document_outline(manifest, step_results) if i[0] == "step"}
     for i, p in enumerate(paragraphs):
         if not _has_image(p):
             continue
@@ -70,10 +70,10 @@ def test_whole_step_block_keeps_with_its_image(tmp_path):
 
 def test_step_headings_keep_with_next(tmp_path):
     _, document = _build(tmp_path)
-    for heading in ("Procedure", "Revision History"):
+    for heading in ("1.  Procedure", "2.  Revision History"):
         matches = [p for p in document.paragraphs if p.text == heading]
         assert matches, heading
-        assert matches[0].paragraph_format.keep_with_next
+        assert matches[-1].paragraph_format.keep_with_next  # [0] is the TOC line
 
 
 def test_vendored_engine_has_code_block():

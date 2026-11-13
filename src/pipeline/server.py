@@ -48,9 +48,10 @@ from fastapi.responses import (
     RedirectResponse,
     Response,
 )
-from PIL import Image
+from PIL import Image, ImageOps
 
 from pipeline import __version__
+from pipeline import authoring as authoring_store
 from pipeline.assembler import check_1to1_mapping, format_doc_date
 from pipeline.claim_coverage import (
     _claim_covered,
@@ -109,6 +110,7 @@ from pipeline.render import render_html, render_markdown, render_steps_llm_mode
 from pipeline.roundtrip import round_trip_ok
 from pipeline.semantic_align import build_step_contexts, semantic_align
 from pipeline.sidecar import build_sidecar_report
+from pipeline.source_extract import DOC_EXTS, MAX_IMAGES, extract_images
 from pipeline.summarize import generate_title_and_overview
 from pipeline.transcript import _parse_json_segments, align_transcript_to_steps
 from pipeline.transcription import Transcriber
@@ -1539,6 +1541,16 @@ def create_app(
         if omitted:
             report["omitted_screenshot_steps"] = omitted
         layout = {"phases": phases, "omitted_screenshots": frozenset(omitted)}
+        # Phase 7: authored content (commands, warnings, tables, blocks,
+        # prerequisites, revisions, paths, params) from authoring.json.
+        authoring = authoring_store.load(session_dir, [s.id for s in manifest.steps])
+        layout["authoring"] = authoring
+        version_stamp = f"SOPForge v{__version__}"
+        doc_cfg = current_cfg.document
+        doc_date = authoring["date"] or format_doc_date(manifest.session.started_utc)
+        # 6g: inferred metadata + this session's overrides (doc_meta.py).
+        meta = resolve_meta(manifest, doc_cfg, session_dir)
+        doc_meta_kw = {"revision": meta.revision, "date": doc_date, "author": meta.author}
 
         md = render_markdown(
             manifest,
@@ -1546,6 +1558,7 @@ def create_app(
             annotated_paths,
             narrative_text=md_narrative_text,
             base_dir=annotated_dir,
+            **doc_meta_kw,
             **layout,
         )
         (session_dir / "doc.md").write_text(md, encoding="utf-8")
@@ -1556,14 +1569,11 @@ def create_app(
             annotated_paths,
             narrative_text=md_narrative_text,
             base_dir=annotated_dir,
+            **doc_meta_kw,
             **layout,
         )
         (session_dir / "doc.html").write_text(html_doc, encoding="utf-8")
 
-        doc_cfg = current_cfg.document
-        doc_date = format_doc_date(manifest.session.started_utc)
-        # 6g: inferred metadata + this session's overrides (doc_meta.py).
-        meta = resolve_meta(manifest, doc_cfg, session_dir)
         doc_no = meta.doc_no
         report["document"] = {
             "title": meta.title,
@@ -1571,6 +1581,7 @@ def create_app(
             "doc_no": meta.doc_no,
             "author": meta.author,
             "revision": meta.revision,
+            "date": doc_date,
         }
 
         docx_path = session_dir / "doc.docx"
@@ -1585,6 +1596,7 @@ def create_app(
             doc_no=doc_no,
             narrative_text=md_narrative_text,
             subtitle=meta.subtitle,
+            version_stamp=version_stamp,
             **layout,
         )
         report["docx_warnings"] = docx_warnings
@@ -1609,11 +1621,17 @@ def create_app(
             author=meta.author,
             doc_no=doc_no,
             subtitle=meta.subtitle,
+            version_stamp=version_stamp,
             **layout,
         )
 
         single_html = render_single_file_html(
-            manifest, md_step_results, annotated_paths, narrative_text=md_narrative_text, **layout
+            manifest,
+            md_step_results,
+            annotated_paths,
+            narrative_text=md_narrative_text,
+            **doc_meta_kw,
+            **layout,
         )
         (session_dir / "doc.single.html").write_text(single_html, encoding="utf-8")
 
@@ -1623,6 +1641,9 @@ def create_app(
             annotated_paths,
             narrative_text=md_narrative_text,
             screenshot_dir=sessions[session_id][1],
+            doc_no=doc_no,
+            revision=meta.revision,
+            version_stamp=version_stamp,
             **layout,
         )
         (session_dir / "walkthrough.html").write_text(walkthrough, encoding="utf-8")
@@ -1656,6 +1677,7 @@ def create_app(
             annotated_paths,
             md_bundle_dir,
             narrative_text=md_narrative_text,
+            **doc_meta_kw,
             **layout,
         )
         (session_dir / "export.md.zip").write_bytes(_zip_directory(md_bundle_dir))
@@ -2151,34 +2173,56 @@ def create_app(
         try:
             # Normalize every image to NNN.png (upload order) via PIL -- fixes
             # ordering/naming and validates each file really is an image.
+            # A .pdf/.docx contributes its embedded images (document order)
+            # at its own position in the upload order.
             names = []
-            for i, upload in enumerate(images, start=1):
+            extracted = 0
+            for upload in images:
                 ext = Path(upload.filename or "").suffix.lower().lstrip(".")
-                if ext not in _IMG_EXTS:
+                if ext not in _IMG_EXTS and ext not in DOC_EXTS:
                     raise HTTPException(
                         status_code=400, detail=f"not a supported image: {upload.filename!r}"
                     )
-                name = f"{i:03d}.png"
-                try:
-                    # Capped the same way _ingest_session's screenshots are
-                    # -- this path had no size limit at all before, on the
-                    # same unauthenticated server. Caught by automated PR
-                    # review. PIL needs a seekable buffer, so this reads
-                    # the (capped) image into memory rather than streaming
-                    # straight to disk like _copy_capped; acceptable at the
-                    # same 200MB ceiling as a single screenshot.
-                    image_bytes = _read_capped(
-                        upload.file, _MAX_UPLOAD_FILE_BYTES, f"image {upload.filename!r}"
-                    )
-                    with Image.open(io.BytesIO(image_bytes)) as im:
-                        im.convert("RGB").save(screenshots_dir / name)
-                except HTTPException:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    raise HTTPException(
-                        status_code=400, detail=f"unreadable image {upload.filename!r}: {exc}"
-                    ) from exc
-                names.append(name)
+                # Capped the same way _ingest_session's screenshots are
+                # -- this path had no size limit at all before, on the
+                # same unauthenticated server. Caught by automated PR
+                # review. PIL needs a seekable buffer, so this reads
+                # the (capped) file into memory rather than streaming
+                # straight to disk like _copy_capped; acceptable at the
+                # same 200MB ceiling as a single screenshot.
+                data = _read_capped(
+                    upload.file, _MAX_UPLOAD_FILE_BYTES, f"file {upload.filename!r}"
+                )
+                blobs = [data]
+                if ext in DOC_EXTS:
+                    try:
+                        blobs = extract_images(
+                            data,
+                            max_images=max(MAX_IMAGES - extracted, 0),
+                            max_bytes=_MAX_UPLOAD_FILE_BYTES,
+                        )
+                    except ValueError as exc:
+                        raise HTTPException(
+                            status_code=400, detail=f"unreadable document {upload.filename!r}"
+                        ) from exc
+                    if not blobs:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"no usable images in {upload.filename!r} "
+                            f"(or the {MAX_IMAGES}-image document limit was reached)",
+                        )
+                    extracted += len(blobs)
+                for blob in blobs:
+                    name = f"{len(names) + 1:03d}.png"
+                    try:
+                        with Image.open(io.BytesIO(blob)) as im:
+                            # Phone photos carry their rotation in EXIF only.
+                            ImageOps.exif_transpose(im).convert("RGB").save(screenshots_dir / name)
+                    except Exception as exc:  # noqa: BLE001
+                        raise HTTPException(
+                            status_code=400, detail=f"unreadable image {upload.filename!r}: {exc}"
+                        ) from exc
+                    names.append(name)
 
             started = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             manifest_dict = synthetic_manifest_dict(title, names, started)
@@ -2931,6 +2975,9 @@ def create_app(
                     session_id, status, nav=_nav(), title=manifest.session.title or None
                 )
             )
+        return _done_session_page(session_id)
+
+    def _done_session_page(session_id, authoring_text=None, authoring_error=None, status_code=200):
         manifest = sessions[session_id][0]
         session_dir = sessions[session_id][3]
         report = json.loads((session_dir / "report.json").read_text(encoding="utf-8"))
@@ -2949,8 +2996,38 @@ def create_app(
                 nav=_nav(),
                 walkthrough=(session_dir / "walkthrough.html").is_file(),
                 spl_deck=(session_dir / "spl.pptx").is_file(),
-            )
+                authoring_text=(
+                    authoring_store.raw_text(session_dir)
+                    if authoring_text is None
+                    else authoring_text
+                ),
+                authoring_example=json.dumps(authoring_store.EXAMPLE, indent=2),
+                authoring_error=authoring_error,
+            ),
+            status_code=status_code,
         )
+
+    @app.post("/ui/sessions/{session_id}/authoring")
+    async def ui_edit_authoring(session_id: str, request: Request):
+        """Saves this document's authored content (authoring.py: commands,
+        warnings, tables, blocks, prerequisites, revision history, paths,
+        parameters) and re-exports every format with no LLM call. Invalid
+        JSON re-shows the page with the reason and the text as typed."""
+        session_dir = _require_done(session_id)
+        manifest = sessions[session_id][0]
+        form = await request.form()
+        text = str(form.get("authoring") or "")
+        if len(text) > 400_000:
+            raise HTTPException(status_code=413, detail="authoring is too large")
+        _load_reexportable_state(session_id)
+        try:
+            authoring_store.save(session_dir, text, [s.id for s in manifest.steps])
+        except ValueError as exc:
+            return _done_session_page(
+                session_id, authoring_text=text, authoring_error=str(exc), status_code=400
+            )
+        jobs.submit(session_id, lambda: _reexport_session(session_id))
+        return RedirectResponse(f"/ui/sessions/{session_id}#authoring", status_code=303)
 
     @app.post("/ui/sessions/{session_id}/confirm-steps")
     async def ui_confirm_steps(session_id: str, request: Request):

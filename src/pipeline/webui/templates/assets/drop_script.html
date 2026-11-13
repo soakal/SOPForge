@@ -5,7 +5,7 @@
   var plan = zone.querySelector('.plan'), err = zone.querySelector('.err');
   var go = zone.querySelector('[data-go]'), kind = zone.querySelector('[data-kind]');
   var list = zone.querySelector('[data-files]'), titleRow = zone.querySelector('[data-title]');
-  var IMG = /\.(png|jpe?g|gif|bmp|webp)$/i, TXT = /\.(txt|md|json)$/i, picked = null;
+  var IMG = /\.(png|jpe?g|gif|bmp|webp)$/i, DOC = /\.(pdf|docx)$/i, TXT = /\.(txt|md|json)$/i, picked = null;
 
   function walk(entry){
     return new Promise(function(done){
@@ -23,11 +23,12 @@
     });
   }
   function classify(files){
-    var p = {manifest: null, images: [], texts: [], wav: null, skipped: []};
+    var p = {manifest: null, images: [], docs: 0, texts: [], wav: null, skipped: []};
     files.forEach(function(f){
       var n = f.name.toLowerCase();
       if (n === 'manifest.json' && !p.manifest) p.manifest = f;
       else if (IMG.test(n)) p.images.push(f);
+      else if (DOC.test(n)){ p.images.push(f); p.docs++; }
       else if (TXT.test(n)) p.texts.push(f);
       else if (/\.wav$/.test(n) && !p.wav) p.wav = f;
       else p.skipped.push(f);
@@ -35,7 +36,9 @@
     p.images.sort(function(a, b){
       return a.name.localeCompare(b.name, undefined, {numeric: true});
     });
-    p.mode = p.manifest ? 'capture' : 'photo';
+    // A PDF/DOCX only makes sense to the screenshots build (its images
+    // become steps), so it routes there even next to a manifest.json.
+    p.mode = p.manifest && !p.docs ? 'capture' : 'photo';
     p.transcript = p.texts[0] || null;
     return p;
   }
@@ -55,8 +58,10 @@
       ? 'manifest.json found \u2014 steps come from the recorded clicks.'
       : 'No manifest.json \u2014 each image becomes one step, in filename order.';
     kind.appendChild(pill); kind.appendChild(what);
-    if (p.manifest) list.appendChild(chip('manifest.json'));
-    list.appendChild(chip(n + (n === 1 ? ' screenshot' : ' screenshots')));
+    if (p.manifest) list.appendChild(chip(p.mode === 'capture' ? 'manifest.json' : 'manifest.json ignored (a PDF/DOCX was included)'));
+    var shots = n - p.docs;
+    list.appendChild(chip(shots + (shots === 1 ? ' screenshot' : ' screenshots')));
+    if (p.docs) list.appendChild(chip(p.docs + ' PDF/Word document(s) — their images become steps'));
     if (p.transcript) list.appendChild(chip('transcript: ' + p.transcript.name));
     if (p.texts.length > 1) list.appendChild(chip((p.texts.length - 1) + ' other text file(s) ignored'));
     if (p.wav && p.mode === 'capture') list.appendChild(chip('narration: ' + p.wav.name));
@@ -64,7 +69,7 @@
     titleRow.hidden = p.mode !== 'photo';
     plan.hidden = false;
     go.disabled = false;
-    if (!n && p.mode === 'photo'){ err.textContent = 'No screenshots found \u2014 drop PNG/JPG images or a capture folder.'; go.disabled = true; }
+    if (!n && p.mode === 'photo'){ err.textContent = 'No screenshots found \u2014 drop PNG/JPG images, a PDF/Word document, or a capture folder.'; go.disabled = true; }
     go.focus();
   }
   function submit(){

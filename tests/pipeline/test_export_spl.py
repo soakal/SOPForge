@@ -165,3 +165,76 @@ def test_photo_titles_survive_slide_export_and_fit_planning(tmp_path, monkeypatc
             return True
 
     plan_slides(m, results, estimator=Estimator())
+
+
+def _authoring(m):
+    from pipeline import authoring as auth
+
+    s1, s2, s3 = m.step_ids()[:3]
+    return auth.validate(
+        {
+            "prerequisites": ["Admin rights on **{{host}}**"],
+            "params": [{"name": "host", "default": "srv01"}],
+            "paths": ["Win"],
+            "steps": {
+                s1: {
+                    "bullets": ["Pick **Advanced**"],
+                    "commands": ["ping {{host}}"],
+                    "warning": "Do **not** reboot",
+                    "path": "Win",
+                    "callouts": [[10, 20], [50, 50]],
+                    "verdict": "correct",
+                },
+                s3: {"verdict": "incorrect"},
+            },
+            "blocks": [
+                {"after": s2, "heading": "Flush DNS", "commands": ["ipconfig /flushdns"]},
+                {"after": s2, "text": "Prose only, not in the deck."},
+            ],
+        },
+        m.step_ids(),
+    )
+
+
+def test_authoring_adds_prereqs_callouts_notes_and_blocks(tmp_path, monkeypatch):
+    monkeypatch.setattr(export_spl, "powerpoint_available", lambda: False)
+    m, results, paths = _rendered(tmp_path, n=4)
+    out, problems = build_spl_deck(m, results, paths, tmp_path / "a.pptx", authoring=_authoring(m))
+    assert problems == []
+    texts = _slide_texts(out)
+    assert any("Prerequisites" in t for t in texts[1]) and "Admin rights on srv01" in texts[1]
+    body = "\n".join(t for slide in texts[2:] for t in slide)
+    assert "Do not reboot" in body and "ping srv01" in body  # notes line
+    assert f"{results[0]['text']} — Win only" in body and "Pick Advanced" in body
+    assert "Flush DNS" in body and "ipconfig /flushdns" in body
+    assert "Prose only" not in body
+    # step order unchanged, block sits between step 2 and step 3
+    order = [body.index(results[0]["text"]), body.index(results[1]["text"])]
+    order += [
+        body.index("Flush DNS"),
+        body.index(results[2]["text"]),
+        body.index(results[3]["text"]),
+    ]
+    assert order == sorted(order)
+    names = [sh.name for slide in Presentation(str(out)).slides for sh in slide.shapes]
+    assert sum(n.startswith("Oval 6") for n in names) == 2
+    assert {"Rectangle 8", "Rectangle 11", "Rectangle 9", "Rectangle 10"} <= set(names)
+
+
+def test_authored_blocks_are_numbered_and_planned_with_steps():
+    m = _manifest(4)
+    results = [{"step_id": s.id, "text": f"Click Button {i}."} for i, s in enumerate(m.steps, 1)]
+    slides = plan_slides(m, results, authoring=_authoring(m))
+    entries = [e for _name, es in slides for e in es]
+    assert [n for n, _s, _r in entries] == [1, 2, 3, 4, 5]
+    assert [s.id if s else None for _n, s, _r in entries] == m.step_ids()[:2] + [
+        None
+    ] + m.step_ids()[2:]
+
+
+def test_no_authoring_is_identical_plan():
+    from pipeline import authoring as auth
+
+    m = _manifest(6)
+    results = [{"step_id": s.id, "text": f"Click Button {i}."} for i, s in enumerate(m.steps, 1)]
+    assert plan_slides(m, results) == plan_slides(m, results, authoring=auth.EMPTY)

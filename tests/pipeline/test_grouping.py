@@ -14,7 +14,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 from PIL import Image, ImageDraw
 
-from pipeline.assembler import toc_lines
+from pipeline.assembler import document_outline, toc_lines
 from pipeline.docx_assembler import assemble_docx
 from pipeline.export_html import render_single_file_html
 from pipeline.grouping import (
@@ -249,10 +249,14 @@ def test_grouped_docx_has_phase_sections_and_every_step(tmp_path):
     )
     document = docx.Document(out)
     texts = [p.text for p in document.paragraphs]
-    assert "Sign in" in texts and "Configure" in texts and "Procedure" not in texts
-    assert texts.index("Sign in") < texts.index("Configure")
-    for n, step in enumerate(m.steps, start=1):
-        assert any(t.startswith(f"Step {n} —") for t in texts), step.id
+    assert "1.  Sign in" in texts and "2.  Configure" in texts
+    assert not any(t.endswith("Procedure") for t in texts)
+    assert texts.index("1.  Sign in") < texts.index("2.  Configure")
+    headings = [i[4] for i in document_outline(m, results, None, phases) if i[0] == "step"]
+    assert len(headings) == len(m.steps)
+    pos = -1
+    for h in headings:  # every lettered step heading, in manifest order
+        pos = texts.index(h, pos + 1)
     pictures = sum(1 for p in document.paragraphs if p._p.xpath(".//w:drawing"))
     assert pictures == len(m.steps) - 1
 
@@ -376,7 +380,7 @@ def test_ungrouped_toc_lists_steps_with_vision_titles():
     results = [{"step_id": s.id, "text": "t"} for s in m.steps]
     results[0]["title"] = "Sign in"
     lines = toc_lines(m, None, None, results)
-    assert lines[1] == "      Step 1 — Sign in"
+    assert lines[1] == "      A)  Sign in"
 
 
 def test_grouped_docx_toc_field_collects_sections_only(tmp_path):
@@ -409,6 +413,8 @@ def test_pdf_toc_prints_the_real_page_numbers(tmp_path):
     for name in ("Sign in", "Configure", "Revision History"):
         printed = int(re.search(rf"{name}\s*(\d+)", toc).group(1))
         actual = next(
-            i for i, text in enumerate(pages, 1) if i > 2 and re.search(rf"^{name}$", text, re.M)
+            i
+            for i, text in enumerate(pages, 1)
+            if i > 2 and re.search(rf"^\d+\.\s+{name}$", text, re.M)
         )
         assert printed == actual, (name, printed, actual)

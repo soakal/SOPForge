@@ -57,41 +57,100 @@ def phase_starts(manifest, phases=None):
     return {p.step_ids[0]: p.name for p in resolve_phases(manifest, phases) if p.step_ids}
 
 
-def toc_entries(manifest, narrative_text, phases=None, step_results=None):
-    """The document outline as [(key, display string)]: an optional numbered
-    "N.  Overview" line, a numbered "N.  Procedure" line followed by each
-    step's indented heading, and a closing "N.  Revision History" line.
-    Grouped into phases, it lists the numbered phase sections only, SOP
-    Factory style (no per-step lines). `key` ("overview", "revision", a
-    step id, or "phase:<first step id>"/"procedure") lets a renderer attach
-    a page number to each line. Shared by docx_assembler.py and
-    export_pdf.py so their two TOCs can never independently drift out of
-    sync for the same session."""
+def sub_label(k):
+    """SOP Factory's subsection letter: "A)" .. "Z)", then "27)" onward."""
+    return f"{chr(64 + k)})" if k <= 26 else f"{k})"
+
+
+def short_heading(n, step, result=None):
+    """step_heading without its "Step N — " prefix (the label replaces it)."""
+    full = step_heading(n, step, result)
+    return full.partition(" — ")[2] or full
+
+
+PREREQ_SECTION = "Before You Begin"
+
+
+def document_outline(manifest, step_results=None, narrative_text=None, phases=None, authoring=None):
+    """The VRSI document layout (SOP Factory's build scripts) as an ordered
+    item list, shared by the docx, the PDF and their TOCs:
+
+    ("section", key, "N.  Name")   numbered top-level section
+    ("step", n, step, result, "A)  Heading")
+    ("block", block, "B)  Heading" | None)   authored content between steps
+
+    Sections: Overview (narrative), Before You Begin (prerequisites), each
+    phase (or one "Procedure"), any authored block's own `section`, then
+    Revision History. Inside a section, steps and headed blocks are lettered
+    A), B), ... Every manifest step appears exactly once, in order -- blocks
+    are added around them, never instead of them."""
+    from pipeline import authoring as auth
+
     results = step_results or [None] * len(manifest.steps)
-    section = 0
-    entries = []
+    items = []
+    state = {"section": 0, "letter": 0}
+
+    def section(key, name):
+        state["section"] += 1
+        state["letter"] = 0
+        items.append(("section", key, f"{state['section']}.  {name}"))
+
+    def lettered(text):
+        state["letter"] += 1
+        return f"{sub_label(state['letter'])}  {text}"
+
+    def add_blocks(after):
+        for i, block in enumerate(auth.blocks_after(authoring, after)):
+            if block["section"]:
+                section(f"block:{after}:{i}", block["section"])
+            items.append(("block", block, lettered(block["heading"]) if block["heading"] else None))
+
     if narrative_text:
-        section += 1
-        entries.append(("overview", f"{section}.  Overview"))
+        section("overview", "Overview")
+    if (authoring or auth.EMPTY)["prerequisites"]:
+        section("prereq", PREREQ_SECTION)
     starts = phase_starts(manifest, phases)
-    grouped = is_grouped(phases)
     if not starts:
-        section += 1
-        entries.append(("procedure", f"{section}.  {DEFAULT_PHASE_NAME}"))
+        section("procedure", DEFAULT_PHASE_NAME)
+    first = True
     for n, (step, result) in enumerate(zip(manifest.steps, results, strict=True), 1):
         if step.id in starts:
-            section += 1
-            entries.append((f"phase:{step.id}", f"{section}.  {starts[step.id]}"))
-        if not grouped:
-            entries.append((step.id, f"      {step_heading(n, step, result)}"))
-    section += 1
-    entries.append(("revision", f"{section}.  Revision History"))
+            section(f"phase:{step.id}", starts[step.id])
+        if first:
+            add_blocks("")
+            first = False
+        items.append(("step", n, step, result, lettered(short_heading(n, step, result))))
+        add_blocks(step.id)
+    if not manifest.steps:
+        add_blocks("")
+    section("revision", "Revision History")
+    return items
+
+
+def toc_entries(manifest, narrative_text, phases=None, step_results=None, authoring=None):
+    """The document outline as [(key, display string)]: every numbered
+    section, plus -- ungrouped only -- each step's indented lettered
+    heading. Grouped into phases, it lists the numbered sections only, SOP
+    Factory style. `key` ("overview", "revision", a step id,
+    "phase:<first step id>", "procedure", "prereq", "block:...") lets a
+    renderer attach a page number to each line. Shared by
+    docx_assembler.py and export_pdf.py so their two TOCs can never drift."""
+    grouped = is_grouped(phases)
+    entries = []
+    for item in document_outline(manifest, step_results, narrative_text, phases, authoring):
+        if item[0] == "section":
+            entries.append((item[1], item[2]))
+        elif item[0] == "step" and not grouped:
+            entries.append((item[2].id, f"      {item[4]}"))
     return entries
 
 
-def toc_lines(manifest, narrative_text, phases=None, step_results=None):
+def toc_lines(manifest, narrative_text, phases=None, step_results=None, authoring=None):
     """toc_entries' display strings only."""
-    return [line for _key, line in toc_entries(manifest, narrative_text, phases, step_results)]
+    return [
+        line
+        for _key, line in toc_entries(manifest, narrative_text, phases, step_results, authoring)
+    ]
 
 
 def format_doc_date(started_utc):

@@ -118,3 +118,20 @@ def _no_real_word(monkeypatch):
     import pipeline.server
 
     monkeypatch.setattr(pipeline.server, "word_available", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_runtime_config(monkeypatch, tmp_path_factory):
+    """Tests never read the real per-user ~/SOPForge/models.toml: with polish
+    switched on there, every test build made live LLM calls (5 s each) and
+    the session-wait tests timed out. Each test gets a fresh copy of the
+    bundled default; tests that need specific config still pass config_path."""
+    import shutil
+
+    import pipeline.config
+    import pipeline.server
+
+    path = tmp_path_factory.mktemp("cfg") / "models.toml"
+    shutil.copyfile(pipeline.config.default_config_path(), path)
+    monkeypatch.setattr(pipeline.config, "runtime_config_path", lambda: path)
+    monkeypatch.setattr(pipeline.server, "runtime_config_path", lambda: path)
